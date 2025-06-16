@@ -1,8 +1,8 @@
-module github.com/jakobilobi/wsstat
+module github.com/jkbrsn/wsstat
 
-go 1.23.2
+go 1.24.3
 
-require github.com/jakobilobi/go-wsstat v1.1.2
+require github.com/jkbrsn/go-wsstat v1.1.3
 
 require (
 	github.com/gorilla/websocket v1.5.3 // indirect

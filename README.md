@@ -1,6 +1,6 @@
 # wsstat [![Go Documentation](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)][godocs]  [![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)][license]
 
-[godocs]: http://godoc.org/github.com/jakobilobi/wsstat
+[godocs]: http://godoc.org/github.com/jkbrsn/wsstat
 [license]: /LICENSE
 
 The aim of this project is to provide a simple and easy to use tool to check the status of a WebSocket endpoint:
@@ -47,14 +47,14 @@ Install via Go:
 
 ```sh
 # To install the latest version, specify other releases with @<tag>
-go install github.com/jakobilobi/wsstat@latest
+go install github.com/jkbrsn/wsstat@latest
 
 # To include the version in the binary, run the install from the root of the repo
-git clone github.com/jakobilobi/wsstat
+git clone github.com/jkbrsn/wsstat
 cd wsstat
 git fetch --all
 git checkout origin/main
-go install -ldflags "-X main.version=$(cat VERSION)" github.com/jakobilobi/wsstat@latest
+go install -ldflags "-X main.version=$(cat VERSION)" github.com/jkbrsn/wsstat@latest
 ```
 
 Note: installing the package with `@latest`  will always install the latest version no matter the other parameters of the command.
@@ -65,10 +65,10 @@ The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
 #### Linux & macOS
 
-Download the binary appropriate for your system from the latest release on [the release page](https://github.com/jakobilobi/wsstat/releases):
+Download the binary appropriate for your system from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases):
 
 ```sh
-wget https://github.com/jakobilobi/wsstat/releases/download/<tag>/wsstat-<OS>-<ARCH>
+wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat-<OS>-<ARCH>
 ```
 
 Make the binary executable:
@@ -86,7 +86,7 @@ mv wsstat-<OS>-<ARCH> ~/bin/wsstat  # user-specific, ensure ~/bin is in your PAT
 
 #### Windows
 
-1. Download the `wsstat-windows-<ARCH>.exe` binary from the latest release on [the release page](https://github.com/jakobilobi/wsstat/releases).
+1. Download the `wsstat-windows-<ARCH>.exe` binary from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases).
 2. Place the binary in a directory of your choice and add the directory to your `PATH` environment variable.
 3. Rename the binary to `wsstat.exe` for convenience.
 4. You can now run `wsstat` from the command prompt or PowerShell.

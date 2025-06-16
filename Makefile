@@ -1,5 +1,5 @@
 CMD=wsstat
-PACKAGE_NAME=github.com/jakobilobi/${CMD}
+PACKAGE_NAME=github.com/jkbrsn/${CMD}
 OS_ARCH_PAIRS=linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/386 windows/amd64 windows/arm64
 VERSION := $(shell cat VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION}"

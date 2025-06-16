@@ -24,7 +24,7 @@ parts:
     plugin: nil
     build-snaps: 
       - go
-    source: https://github.com/jakobilobi/wsstat.git
+    source: https://github.com/jkbrsn/wsstat.git
     # source-tag: v0.1.1  # uncomment this line to build on a specific tag instead of on the latest commit
     override-pull: |
       craftctl default

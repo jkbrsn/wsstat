@@ -4,10 +4,8 @@ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/godbus/dbus/v5 v5.0.4/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
-github.com/jakobilobi/go-wsstat v1.1.1 h1:E5w3E0y3Hqs8dyAH419elz9SASkx5dvlgRIXB33dP8M=
-github.com/jakobilobi/go-wsstat v1.1.1/go.mod h1:LmQFsrR6E9HBHZtQGAh5/uQLLVb9UbTQAPhQgm0w3To=
-github.com/jakobilobi/go-wsstat v1.1.2 h1:4n4hZ+ZhoNTfV1pfa4diImhvaFFyIsyARR3NdvIIQDY=
-github.com/jakobilobi/go-wsstat v1.1.2/go.mod h1:LmQFsrR6E9HBHZtQGAh5/uQLLVb9UbTQAPhQgm0w3To=
+github.com/jkbrsn/go-wsstat v1.1.3 h1:7ktxpaBbTh9anW5jXcWV6RUl6C59Mk5uF4ezvCIMlkY=
+github.com/jkbrsn/go-wsstat v1.1.3/go.mod h1:hsNDiNpR3lVyjyqALpAILj5fbolEXhOkRM6pmNB7few=
 github.com/mattn/go-colorable v0.1.13 h1:fFA4WZxdEF4tXPZVKMLwD8oUnCTTo08duU7wxecdEvA=
 github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
 github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
