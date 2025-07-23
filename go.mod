@@ -1,6 +1,6 @@
 module github.com/jkbrsn/wsstat
 
-go 1.24.3
+go 1.24.4
 
 require github.com/jkbrsn/go-wsstat v1.1.3
 
