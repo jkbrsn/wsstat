@@ -55,14 +55,16 @@ type WSClient struct {
 	Basic   bool
 	Quiet   bool
 	Verbose bool
+
+	// The result of a MeasureLatency call. Is overwritten if the function is called again.
+	Result *wsstat.Result
 }
 
 // MeasureLatency measures the latency of the WebSocket connection, applying different methods
 // based on the flags passed to the program.
-func (c *WSClient) MeasureLatency(url *url.URL) (*wsstat.Result, any, error) {
+func (c *WSClient) MeasureLatency(url *url.URL) (any, error) {
 	header := parseHeaders(c.InputHeaders)
 
-	var result *wsstat.Result
 	var response any
 	var err error
 	if c.TextMessage != "" {
@@ -70,9 +72,9 @@ func (c *WSClient) MeasureLatency(url *url.URL) (*wsstat.Result, any, error) {
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = c.TextMessage
 		}
-		result, response, err = wsstat.MeasureLatencyBurst(url, msgs, header)
+		c.Result, response, err = wsstat.MeasureLatencyBurst(url, msgs, header)
 		if err != nil {
-			return nil, nil, handleConnectionError(err, url.String())
+			return nil, handleConnectionError(err, url.String())
 		}
 		if responseArray, ok := response.([]string); ok && len(responseArray) > 0 {
 			response = responseArray[0]
@@ -84,7 +86,7 @@ func (c *WSClient) MeasureLatency(url *url.URL) (*wsstat.Result, any, error) {
 			if ok {
 				err := json.Unmarshal([]byte(responseStr), &decodedMessage)
 				if err != nil {
-					return nil, nil, fmt.Errorf("error unmarshalling JSON message: %v", err)
+					return nil, fmt.Errorf("error unmarshalling JSON message: %v", err)
 				}
 				response = decodedMessage
 			}
@@ -103,51 +105,53 @@ func (c *WSClient) MeasureLatency(url *url.URL) (*wsstat.Result, any, error) {
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = msg
 		}
-		result, response, err = wsstat.MeasureLatencyJSONBurst(url, msgs, header)
+		c.Result, response, err = wsstat.MeasureLatencyJSONBurst(url, msgs, header)
 		if err != nil {
-			return nil, nil, handleConnectionError(err, url.String())
+			return nil, handleConnectionError(err, url.String())
 		}
 	} else {
-		result, err = wsstat.MeasureLatencyPingBurst(url, c.Burst, header)
+		c.Result, err = wsstat.MeasureLatencyPingBurst(url, c.Burst, header)
 		if err != nil {
-			return nil, nil, handleConnectionError(err, url.String())
+			return nil, handleConnectionError(err, url.String())
 		}
 	}
-	res := result
-	return res, response, nil
+	return response, nil
 }
 
-// PrintRequestDetails prints the results of the WS connection, with verbosity based on the flags
-// passed to the program.
-func (c *WSClient) PrintRequestDetails(result wsstat.Result) {
+// PrintRequestDetails prints the results of the WSClient, with verbosity based on the flags
+// passed to the program. If no results have been produced yet, the function errors.
+func (c *WSClient) PrintRequestDetails() error {
+	if c.Result == nil {
+		return fmt.Errorf("no results have been produced")
+	}
 	fmt.Println()
 
 	// Print basic output
 	if c.Basic {
-		fmt.Printf("%s: %s\n", colorTeaGreen("URL"), result.URL.Hostname())
-		if len(result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), result.IPs[0])
+		fmt.Printf("%s: %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
+		if len(c.Result.IPs) > 0 {
+			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
 		}
-		return
+		return nil
 	}
 
 	// Print verbose output
 	if c.Verbose {
 		fmt.Println(colorWSOrange("Target"))
-		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), result.URL.Hostname())
+		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
 		// Loop in case there are multiple IPs with the target
-		for _, ip := range result.IPs {
+		for _, ip := range c.Result.IPs {
 			fmt.Printf("  %s: %s\n", colorTeaGreen("IP"), ip)
 		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent:"), result.MessageCount)
+		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent:"), c.Result.MessageCount)
 		fmt.Println()
-		if result.TLSState != nil {
+		if c.Result.TLSState != nil {
 			fmt.Println(colorWSOrange("TLS"))
-			fmt.Printf("  %s: %s\n", colorTeaGreen("Version"), tls.VersionName(result.TLSState.Version))
-			fmt.Printf("  %s: %s\n", colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(result.TLSState.CipherSuite))
+			fmt.Printf("  %s: %s\n", colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+			fmt.Printf("  %s: %s\n", colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
 
 			// Print the certificate details
-			for i, cert := range result.TLSState.PeerCertificates {
+			for i, cert := range c.Result.TLSState.PeerCertificates {
 				fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
 				fmt.Printf("    Subject: %s\n", cert.Subject)
 				fmt.Printf("    Issuer: %s\n", cert.Issuer)
@@ -157,30 +161,32 @@ func (c *WSClient) PrintRequestDetails(result wsstat.Result) {
 			fmt.Println()
 		}
 		fmt.Println(colorWSOrange("Request headers"))
-		for key, values := range result.RequestHeaders {
+		for key, values := range c.Result.RequestHeaders {
 			fmt.Printf("  %s: %s\n", colorTeaGreen(key), strings.Join(values, ", "))
 		}
 		fmt.Println(colorWSOrange("Response headers"))
-		for key, values := range result.ResponseHeaders {
+		for key, values := range c.Result.ResponseHeaders {
 			fmt.Printf("  %s: %s\n", colorTeaGreen(key), strings.Join(values, ", "))
 		}
-		return
+		return nil
 	}
 
 	// Print standard output
-	fmt.Printf("%s: %s\n", colorWSOrange("Target"), result.URL.Hostname())
-	for _, values := range result.IPs {
+	fmt.Printf("%s: %s\n", colorWSOrange("Target"), c.Result.URL.Hostname())
+	for _, values := range c.Result.IPs {
 		fmt.Printf("%s: %s\n", colorWSOrange("IP"), values)
 	}
-	fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), result.MessageCount)
-	for key, values := range result.RequestHeaders {
+	fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), c.Result.MessageCount)
+	for key, values := range c.Result.RequestHeaders {
 		if key == "Sec-WebSocket-Version" {
 			fmt.Printf("%s: %s\n", colorWSOrange("WS version"), strings.Join(values, ", "))
 		}
 	}
-	if result.TLSState != nil {
-		fmt.Printf("%s: %s\n", colorWSOrange("TLS version"), tls.VersionName(result.TLSState.Version))
+	if c.Result.TLSState != nil {
+		fmt.Printf("%s: %s\n", colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
 	}
+
+	return nil
 }
 
 // PrintResponse prints the response to the terminal, if there is a response.
@@ -220,12 +226,18 @@ func (c *WSClient) PrintResponse(response any) {
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *WSClient) PrintTimingResults(url *url.URL, result wsstat.Result) {
-	if c.Basic {
-		printTimingResultsBasic(result, c.Burst)
-	} else {
-		printTimingResultsTiered(result, url)
+func (c *WSClient) PrintTimingResults(url *url.URL) error {
+	if c.Result == nil {
+		return fmt.Errorf("no results have been produced")
 	}
+
+	if c.Basic {
+		printTimingResultsBasic(c.Result, c.Burst)
+	} else {
+		printTimingResultsTiered(c.Result, url)
+	}
+
+	return nil
 }
 
 // colorWSOrange returns the text with a custom orange color.
@@ -280,7 +292,7 @@ func parseHeaders(headers string) http.Header {
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
-func printTimingResultsBasic(result wsstat.Result, burst int) {
+func printTimingResultsBasic(result *wsstat.Result, burst int) {
 	fmt.Println()
 	rttString := "Round-trip time"
 	if burst > 1 {
@@ -304,7 +316,7 @@ func printTimingResultsBasic(result wsstat.Result, burst int) {
 }
 
 // printTimingResultsTiered formats and prints the WebSocket statistics to the terminal in a tiered fashion.
-func printTimingResultsTiered(result wsstat.Result, url *url.URL) {
+func printTimingResultsTiered(result *wsstat.Result, url *url.URL) {
 	fmt.Println()
 	switch url.Scheme {
 	case "wss":
