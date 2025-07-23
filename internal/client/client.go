@@ -267,8 +267,8 @@ func handleConnectionError(err error, url string) error {
 func parseHeaders(headers string) http.Header {
 	header := http.Header{}
 	if headers != "" {
-		headerParts := strings.Split(headers, ",")
-		for _, part := range headerParts {
+		headerParts := strings.SplitSeq(headers, ",")
+		for part := range headerParts {
 			parts := strings.SplitN(part, ":", 2)
 			if len(parts) != 2 {
 				log.Fatalf("Invalid header format: %s", part)
