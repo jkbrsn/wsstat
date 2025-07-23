@@ -143,9 +143,9 @@ func handleConnectionError(err error, url string) error {
 
 // measureLatency measures the latency of the WebSocket connection, applying different methods
 // based on the flags passed to the program.
-func measureLatency(url *url.URL, header http.Header) (*wsstat.Result, interface{}, error) {
+func measureLatency(url *url.URL, header http.Header) (*wsstat.Result, any, error) {
 	var result *wsstat.Result
-	var response interface{}
+	var response any
 	var err error
 	if *textMessage != "" {
 		msgs := make([]string, *burst)
@@ -161,7 +161,7 @@ func measureLatency(url *url.URL, header http.Header) (*wsstat.Result, interface
 		}
 		if !*rawOutput {
 			// Automatically decode JSON messages
-			decodedMessage := make(map[string]interface{})
+			decodedMessage := make(map[string]any)
 			responseStr, ok := response.(string)
 			if ok {
 				err := json.Unmarshal([]byte(responseStr), &decodedMessage)
@@ -181,7 +181,7 @@ func measureLatency(url *url.URL, header http.Header) (*wsstat.Result, interface
 			ID:         "1",
 			RPCVersion: "2.0",
 		}
-		msgs := make([]interface{}, *burst)
+		msgs := make([]any, *burst)
 		for i := 0; i < *burst; i++ {
 			msgs[i] = msg
 		}
@@ -299,7 +299,7 @@ func printRequestDetails(result wsstat.Result) {
 }
 
 // printResponse prints the response to the terminal, if there is a response.
-func printResponse(response interface{}) {
+func printResponse(response any) {
 	if response == nil {
 		return
 	}
@@ -312,7 +312,7 @@ func printResponse(response interface{}) {
 	if *rawOutput {
 		// If raw output is requested, print the raw data before trying to assert any types
 		fmt.Printf("%s%v\n", baseMessage, response)
-	} else if responseMap, ok := response.(map[string]interface{}); ok {
+	} else if responseMap, ok := response.(map[string]any); ok {
 		// If JSON in request, print response as JSON
 		if _, isJSON := responseMap["jsonrpc"]; isJSON || *jsonMethod != "" {
 			responseJSON, err := json.Marshal(responseMap)
@@ -324,7 +324,7 @@ func printResponse(response interface{}) {
 		} else {
 			fmt.Printf("%s%v\n", baseMessage, responseMap)
 		}
-	} else if responseArray, ok := response.([]interface{}); ok {
+	} else if responseArray, ok := response.([]any); ok {
 		fmt.Printf("%s%v\n", baseMessage, responseArray)
 	} else if responseBytes, ok := response.([]byte); ok {
 		fmt.Printf("%s%v\n", baseMessage, responseBytes)
