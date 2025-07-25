@@ -56,39 +56,41 @@ type WSClient struct {
 	Quiet   bool
 	Verbose bool
 
+	// The response of a MeasureLatency call. Is overwritten if the function is called again.
+	Response any
+
 	// The result of a MeasureLatency call. Is overwritten if the function is called again.
 	Result *wsstat.Result
 }
 
 // MeasureLatency measures the latency of the WebSocket connection, applying different methods
 // based on the flags passed to the program.
-func (c *WSClient) MeasureLatency(url *url.URL) (any, error) {
+func (c *WSClient) MeasureLatency(url *url.URL) error {
 	header := parseHeaders(c.InputHeaders)
 
-	var response any
 	var err error
 	if c.TextMessage != "" {
 		msgs := make([]string, c.Burst)
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = c.TextMessage
 		}
-		c.Result, response, err = wsstat.MeasureLatencyBurst(url, msgs, header)
+		c.Result, c.Response, err = wsstat.MeasureLatencyBurst(url, msgs, header)
 		if err != nil {
-			return nil, handleConnectionError(err, url.String())
+			return handleConnectionError(err, url.String())
 		}
-		if responseArray, ok := response.([]string); ok && len(responseArray) > 0 {
-			response = responseArray[0]
+		if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
+			c.Response = responseArray[0]
 		}
 		if !c.RawOutput {
 			// Automatically decode JSON messages
 			decodedMessage := make(map[string]any)
-			responseStr, ok := response.(string)
+			responseStr, ok := c.Response.(string)
 			if ok {
 				err := json.Unmarshal([]byte(responseStr), &decodedMessage)
 				if err != nil {
-					return nil, fmt.Errorf("error unmarshalling JSON message: %v", err)
+					return fmt.Errorf("error unmarshalling JSON message: %v", err)
 				}
-				response = decodedMessage
+				c.Response = decodedMessage
 			}
 		}
 	} else if c.JsonMethod != "" {
@@ -105,17 +107,17 @@ func (c *WSClient) MeasureLatency(url *url.URL) (any, error) {
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = msg
 		}
-		c.Result, response, err = wsstat.MeasureLatencyJSONBurst(url, msgs, header)
+		c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(url, msgs, header)
 		if err != nil {
-			return nil, handleConnectionError(err, url.String())
+			return handleConnectionError(err, url.String())
 		}
 	} else {
 		c.Result, err = wsstat.MeasureLatencyPingBurst(url, c.Burst, header)
 		if err != nil {
-			return nil, handleConnectionError(err, url.String())
+			return handleConnectionError(err, url.String())
 		}
 	}
-	return response, nil
+	return nil
 }
 
 // PrintRequestDetails prints the results of the WSClient, with verbosity based on the flags
@@ -189,42 +191,6 @@ func (c *WSClient) PrintRequestDetails() error {
 	return nil
 }
 
-// PrintResponse prints the response to the terminal, if there is a response.
-func (c *WSClient) PrintResponse(response any) {
-	if response == nil {
-		return
-	}
-	baseMessage := colorWSOrange("Response") + ": "
-	if c.Quiet {
-		baseMessage = ""
-	} else {
-		fmt.Println()
-	}
-	if c.RawOutput {
-		// If raw output is requested, print the raw data before trying to assert any types
-		fmt.Printf("%s%v\n", baseMessage, response)
-	} else if responseMap, ok := response.(map[string]any); ok {
-		// If JSON in request, print response as JSON
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JsonMethod != "" {
-			responseJSON, err := json.Marshal(responseMap)
-			if err != nil {
-				fmt.Printf("Could not marshal response to JSON. Response: %v, error: %v", responseMap, err)
-				return
-			}
-			fmt.Printf("%s%s\n", baseMessage, responseJSON)
-		} else {
-			fmt.Printf("%s%v\n", baseMessage, responseMap)
-		}
-	} else if responseArray, ok := response.([]any); ok {
-		fmt.Printf("%s%v\n", baseMessage, responseArray)
-	} else if responseBytes, ok := response.([]byte); ok {
-		fmt.Printf("%s%v\n", baseMessage, responseBytes)
-	}
-	if !c.Quiet {
-		fmt.Println()
-	}
-}
-
 // PrintTimingResults prints the WebSocket statistics to the terminal.
 func (c *WSClient) PrintTimingResults(url *url.URL) error {
 	if c.Result == nil {
@@ -238,6 +204,45 @@ func (c *WSClient) PrintTimingResults(url *url.URL) error {
 	}
 
 	return nil
+}
+
+// PrintResponse prints the response to the terminal if there is one, otherwise does nothing.
+func (c *WSClient) PrintResponse() {
+	if c.Response == nil {
+		return
+	}
+
+	baseMessage := colorWSOrange("Response") + ": "
+
+	if c.Quiet {
+		baseMessage = ""
+	} else {
+		fmt.Println()
+	}
+
+	if c.RawOutput {
+		// If raw output is requested, print the raw data before trying to assert any types
+		fmt.Printf("%s%v\n", baseMessage, c.Response)
+	} else if responseMap, ok := c.Response.(map[string]any); ok {
+		// If JSON in request, print response as JSON
+		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JsonMethod != "" {
+			responseJSON, err := json.Marshal(responseMap)
+			if err != nil {
+				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
+			}
+			fmt.Printf("%s%s\n", baseMessage, responseJSON)
+		} else {
+			fmt.Printf("%s%v\n", baseMessage, responseMap)
+		}
+	} else if responseArray, ok := c.Response.([]any); ok {
+		fmt.Printf("%s%v\n", baseMessage, responseArray)
+	} else if responseBytes, ok := c.Response.([]byte); ok {
+		fmt.Printf("%s%v\n", baseMessage, responseBytes)
+	}
+
+	if !c.Quiet {
+		fmt.Println()
+	}
 }
 
 // Validate validates the WSClient is ready for measurement; it checks that the client settings are

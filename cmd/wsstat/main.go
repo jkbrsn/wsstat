@@ -101,8 +101,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: store response in the client instead?
-	response, err := client.MeasureLatency(url)
+	err = client.MeasureLatency(url)
 	if err != nil {
 		fmt.Printf("Error measuring latency: %v\n", err)
 		os.Exit(1)
@@ -111,18 +110,22 @@ func main() {
 	// Print the results if there is no expected response or if the quiet flag is not set
 	if !*quiet {
 		// Print details of the request
-		err := client.PrintRequestDetails()
+		err = client.PrintRequestDetails()
 		if err != nil {
 			fmt.Printf("Error printing request details: %v\n", err)
 			os.Exit(1)
 		}
 
 		// Print the timing results
-		client.PrintTimingResults(url)
+		err = client.PrintTimingResults(url)
+		if err != nil {
+			fmt.Printf("Error printing timing results: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Print the response, if there is one
-	client.PrintResponse(response)
+	client.PrintResponse()
 }
 
 // parseValidateInput parses and validates the flags and input passed to the program.
