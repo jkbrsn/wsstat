@@ -75,7 +75,6 @@ func init() {
 }
 
 func main() {
-	// TODO: move validation to the client
 	url, err := parseValidateInput()
 	if err != nil {
 		fmt.Printf("Error parsing input: %v\n\n", err)
