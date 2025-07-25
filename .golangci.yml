@@ -1,0 +1,49 @@
+version: "2"
+
+run:
+  timeout: 2m
+  tests: true
+
+linters:
+  # standard includes the 5 linters: errcheck, govet, ineffassign, staticcheck, and unused
+  default: standard
+  enable:
+    - revive
+    - misspell
+  settings:
+    revive:
+      # See https://golangci-lint.run/usage/linters/#revive for more information.
+      max-open-files: 2048
+      severity: error
+      enable-all-rules: true
+      directives:
+        - name: specify-disable-reason
+          severity: error
+      confidence: 0.2
+      rules:
+        - name: add-constant
+          disabled: false
+          exclude: [TEST]
+          arguments:
+            - max-lit-count: "3"
+              allow-strs: '""'
+              allow-ints: "0,1,2"
+              allow-floats: "0.0,0.,1.0,1.,2.0,2."
+        - name: line-length-limit
+          disabled: false
+          exclude: [""]
+          arguments: [100]
+        - name: cognitive-complexity
+          disabled: false
+          exclude: [""]
+          arguments: [21]
+        - name: cyclomatic
+          disabled: false
+          exclude: [""]
+          arguments: [15]
+    misspell:
+      locale: US
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
