@@ -4,7 +4,7 @@ OS_ARCH_PAIRS=linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 window
 VERSION := $(shell cat VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION}"
 
-.PHONY: build build-all build-snapcraft build-multi build-os-arch explain
+.PHONY: build build-all build-multi build-os-arch explain test
 
 .DEFAULT_GOAL := explain
 
@@ -14,6 +14,7 @@ explain:
 	@echo "Targets:"
 	@echo "  build           - Build the binary for the host OS/Arch."
 	@echo "  build-all       - Build binaries for all target OS/Arch pairs."
+	@echo "  test            - Run tests."
 	@echo "  explain         - Display this help message."
 
 build:
@@ -29,3 +30,6 @@ build-os-arch:
 	@GOOS=$(firstword $(subst /, ,$(OS_ARCH))) \
 	GOARCH=$(lastword $(subst /, ,$(OS_ARCH))) \
 	go build ${LDFLAGS} -o 'bin/$(CMD)-$(firstword $(subst /, ,$(OS_ARCH)))-$(lastword $(subst /, ,$(OS_ARCH)))' ${PACKAGE_NAME}
+
+test:
+	go test ./... -v

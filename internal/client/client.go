@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jkbrsn/go-wsstat"
+	"github.com/jkbrsn/wsstat/pkg/wsstat"
 )
 
 var (
