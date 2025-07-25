@@ -43,7 +43,7 @@ type WSClient struct {
 	// Input
 	Burst        int    // Number of messages to send in a burst (if > 1)
 	InputHeaders string // Comma-separated headers for connection establishment
-	JsonMethod   string // A single JSON RPC method (no params)
+	JSONMethod   string // A single JSON RPC method (no params)
 	TextMessage  string // A text message
 	// Output
 	RawOutput   bool
@@ -93,13 +93,13 @@ func (c *WSClient) MeasureLatency(url *url.URL) error {
 				c.Response = decodedMessage
 			}
 		}
-	} else if c.JsonMethod != "" {
+	} else if c.JSONMethod != "" {
 		msg := struct {
 			Method     string `json:"method"`
 			ID         string `json:"id"`
 			RPCVersion string `json:"jsonrpc"`
 		}{
-			Method:     c.JsonMethod,
+			Method:     c.JSONMethod,
 			ID:         "1",
 			RPCVersion: "2.0",
 		}
@@ -225,7 +225,7 @@ func (c *WSClient) PrintResponse() {
 		fmt.Printf("%s%v\n", baseMessage, c.Response)
 	} else if responseMap, ok := c.Response.(map[string]any); ok {
 		// If JSON in request, print response as JSON
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JsonMethod != "" {
+		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JSONMethod != "" {
 			responseJSON, err := json.Marshal(responseMap)
 			if err != nil {
 				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
@@ -251,7 +251,7 @@ func (c *WSClient) Validate() error {
 	if c.Burst < 1 {
 		return fmt.Errorf("burst must be greater than 0")
 	}
-	if c.TextMessage != "" && c.JsonMethod != "" {
+	if c.TextMessage != "" && c.JSONMethod != "" {
 		return fmt.Errorf("mutually exclusive messaging flags")
 	}
 	return nil

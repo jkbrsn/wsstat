@@ -85,7 +85,7 @@ func main() {
 	client := client.WSClient{
 		Burst:        *burst,
 		InputHeaders: *inputHeaders,
-		JsonMethod:   *jsonMethod,
+		JSONMethod:   *jsonMethod,
 		TextMessage:  *textMessage,
 		RawOutput:    *rawOutput,
 		ShowVersion:  *showVersion,
