@@ -3,7 +3,11 @@
 [godocs]: http://godoc.org/github.com/jkbrsn/wsstat
 [license]: /LICENSE
 
-The aim of this project is to provide a simple and easy to use tool to check the status of a WebSocket endpoint:
+This is a project that provides a way to measure the latency of a WebSocket connection. It implements the Go package [wsstat](https://github.com/jkbrsn/wsstat) and a CLI tool, also named `wsstat`.
+
+## wsstat CLI Client
+
+The CLI client provides a simple and easy to use tool to check the status of a WebSocket endpoint:
 
 ```sh
 ~ wsstat example.org
@@ -23,15 +27,11 @@ TLS version: TLS 1.3
 -                                                                         Total:186ms
 ```
 
-What I've done is to basically try to replicate what [reorx/httpstat](https://github.com/reorx/httpstat) and [davecheney/httpstat](https://github.com/davecheney/httpstat) does for HTTP requests, but instead do it for WebSocket connections, and it should be quite clear that this project draws a lot of inspiration from those two.
+The client replicates what [reorx/httpstat](https://github.com/reorx/httpstat) and [davecheney/httpstat](https://github.com/davecheney/httpstat) does for HTTP, but for WebSocket. It is said that imitation is the sincerest form of flattery, and inspiration has for certain been sourced from these projects.
 
-> Imitation is the sincerest form of flattery.
+### Install
 
-## Installation
-
-There are a number of ways to install this tool, depending on your preference. The easiest one at the moment is to install via Snap, and with time I'll aim to add Homebrew support for macOS users.
-
-### Snap installation
+#### Snap
 
 If you are using a Linux distribution that supports Snap, you can install the tool from the Snap Store:
 
@@ -39,7 +39,7 @@ If you are using a Linux distribution that supports Snap, you can install the to
 sudo snap install wsstat
 ```
 
-### Go installation
+#### Go
 
 Requires that you have Go installed on your system and that you have `$GOPATH/bin` in your `PATH`. Recommended Go version is 1.21 or later.
 
@@ -61,9 +61,9 @@ Note: installing the package with `@latest`  will always install the latest vers
 
 The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
-### Binary download
+#### Binary
 
-#### Linux & macOS
+##### Linux & macOS
 
 Download the binary appropriate for your system from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases):
 
@@ -84,14 +84,14 @@ sudo mv wsstat-<OS>-<ARCH> /usr/local/bin/wsstat  # system-wide
 mv wsstat-<OS>-<ARCH> ~/bin/wsstat  # user-specific, ensure ~/bin is in your PATH
 ```
 
-#### Windows
+##### Windows
 
 1. Download the `wsstat-windows-<ARCH>.exe` binary from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases).
 2. Place the binary in a directory of your choice and add the directory to your `PATH` environment variable.
 3. Rename the binary to `wsstat.exe` for convenience.
 4. You can now run `wsstat` from the command prompt or PowerShell.
 
-## Usage
+### Usage
 
 Basic usage:
 
@@ -111,17 +111,41 @@ For more options:
 wsstat -h
 ```
 
-## Building
+## wsstat Package
 
-To build the project from source, you can use the `go build` command ro just run the Makefile:
+Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [gorilla/websocket](https://pkg.go.dev/github.com/gorilla/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.
 
-```sh
-go build -o wsstat cmd/wsstat/main.go
-make build
+### Install
+
+Install to use in your Go project:
+
+```bash
+go get github.com/jkbrsn/wsstat
 ```
 
-If you need to build it for a different platform than your host machine, there's a `build-all` command available through the Makefile:
+### Usage
+
+The [_example/main.go](./_example/main.go) program demonstrates two ways to use the `wsstat` package to trace a WebSocket connection. The example only executes one-hit message reads and writes, but WSStat also support operating on a continuous connection.
+
+Run the example like this, from project root:
+
+```bash
+go run _example/main.go <a WebSocket URL>
+```
+
+## Build & Test
+
+The project has a `Makefile` that provides a number of commands to build and test the project:
 
 ```sh
-make build-all
+# build
+make build
+make build-all  # build for all supported platforms
+
+# test
+make test
+make test V=1 RACE=1  # test with optional flags
+
+# lint
+make lint
 ```
