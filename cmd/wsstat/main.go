@@ -95,6 +95,11 @@ func main() {
 		Quiet:        *quiet,
 		Verbose:      *verbose,
 	}
+	err = client.Validate()
+	if err != nil {
+		fmt.Printf("Error in input settings: %v\n", err)
+		os.Exit(1)
+	}
 
 	// TODO: store response in the client instead?
 	response, err := client.MeasureLatency(url)

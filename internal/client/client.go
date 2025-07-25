@@ -240,6 +240,18 @@ func (c *WSClient) PrintTimingResults(url *url.URL) error {
 	return nil
 }
 
+// Validate validates the WSClient is ready for measurement; it checks that the client settings are
+// set to valid values.
+func (c *WSClient) Validate() error {
+	if c.Burst < 1 {
+		return fmt.Errorf("burst must be greater than 0")
+	}
+	if c.TextMessage != "" && c.JsonMethod != "" {
+		return fmt.Errorf("mutually exclusive messaging flags")
+	}
+	return nil
+}
+
 // colorWSOrange returns the text with a custom orange color.
 // The color is from the WS logo, #ff6600 is its hex code.
 func colorWSOrange(text string) string {
