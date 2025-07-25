@@ -70,7 +70,11 @@ func TestMeasureLatencyJSONBurst(t *testing.T) {
 		interfaceMessages = append(interfaceMessages, msg)
 	}
 
-	result, responses, err := MeasureLatencyJSONBurst(echoServerAddrWs, interfaceMessages, http.Header{})
+	result, responses, err := MeasureLatencyJSONBurst(
+		echoServerAddrWs,
+		interfaceMessages,
+		http.Header{},
+	)
 
 	assert.NoError(t, err)
 	require.NotNil(t, result)

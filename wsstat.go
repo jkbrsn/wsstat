@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -295,7 +296,7 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 			resp.Body.Close()
 			return fmt.Errorf("failed dial response '%s': %v", string(body), err)
 		}
-		return err
+		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
 	ws.timings.wsHandshakeDone = time.Now()
 	ws.conn = conn
@@ -317,7 +318,7 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	// Lookup IP
 	ips, err := net.LookupIP(url.Hostname())
 	if err != nil {
-		return fmt.Errorf("failed to lookup IP: %v", err)
+		return fmt.Errorf("failed IP lookup: %v", err)
 	}
 	ws.result.IPs = make([]string, len(ips))
 	for i, ip := range ips {
@@ -334,9 +335,7 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 		// "Sec-WebSocket-Protocol",     // Also set by gorilla/websocket, but only if subprotocols are specified
 	}
 	// Merge custom headers
-	for name, values := range documentedDefaultHeaders {
-		headers[name] = values
-	}
+	maps.Copy(headers, documentedDefaultHeaders)
 	ws.result.RequestHeaders = headers
 	ws.result.ResponseHeaders = resp.Header
 

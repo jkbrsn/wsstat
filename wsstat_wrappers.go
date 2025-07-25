@@ -1,6 +1,7 @@
 package wsstat
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -10,19 +11,21 @@ import (
 // MeasureLatency is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatency(url *url.URL, msg string, customHeaders http.Header) (*Result, []byte, error) {
+func MeasureLatency(
+	targetURL *url.URL,
+	msg string,
+	customHeaders http.Header,
+) (*Result, []byte, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
-		return nil, nil, err
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
+		return nil, nil, fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
 	ws.WriteMessage(websocket.TextMessage, []byte(msg))
 	_, p, err := ws.ReadMessage()
 	if err != nil {
-		logger.Debug().Err(err).Msg("Failed to read message")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to read message: %v", err)
 	}
 	ws.Close()
 
@@ -34,12 +37,15 @@ func MeasureLatency(url *url.URL, msg string, customHeaders http.Header) (*Resul
 // to the server, sends all messages, reads the responses, and closes the connection.
 // Note: sets all times in the Result object, where the MessageRTT will be the mean round trip time
 // of all messages sent.
-func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header) (*Result, []string, error) {
+func MeasureLatencyBurst(
+	targetURL *url.URL,
+	msgs []string,
+	customHeaders http.Header,
+) (*Result, []string, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 
@@ -51,8 +57,7 @@ func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header)
 	for range len(msgs) {
 		_, p, err := ws.ReadMessage()
 		if err != nil {
-			logger.Debug().Err(err).Msg("Failed to read message")
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to read message: %v", err)
 		}
 		responses = append(responses, string(p))
 	}
@@ -64,18 +69,20 @@ func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header)
 // MeasureLatencyJSON is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a JSON message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyJSON(url *url.URL, v any, customHeaders http.Header) (*Result, any, error) {
+func MeasureLatencyJSON(
+	targetURL *url.URL,
+	v any,
+	customHeaders http.Header,
+) (*Result, any, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 	p, err := ws.OneHitMessageJSON(v)
 	if err != nil {
-		logger.Debug().Err(err).Msg("Failed to send message")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to send message: %v", err)
 	}
 	ws.Close()
 
@@ -87,12 +94,15 @@ func MeasureLatencyJSON(url *url.URL, v any, customHeaders http.Header) (*Result
 // to the server, sends all JSON messages, reads the responses, and closes the connection.
 // Note: sets all times in the Result object, where the MessageRTT will be the mean round trip time
 // of all messages sent.
-func MeasureLatencyJSONBurst(url *url.URL, v []any, customHeaders http.Header) (*Result, []any, error) {
+func MeasureLatencyJSONBurst(
+	targetURL *url.URL,
+	v []any,
+	customHeaders http.Header,
+) (*Result, []any, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 
@@ -104,8 +114,7 @@ func MeasureLatencyJSONBurst(url *url.URL, v []any, customHeaders http.Header) (
 	for range len(v) {
 		resp, err := ws.ReadMessageJSON()
 		if err != nil {
-			logger.Debug().Err(err).Msg("Failed to read message")
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to read message: %v", err)
 		}
 		responses = append(responses, resp)
 	}
@@ -118,12 +127,14 @@ func MeasureLatencyJSONBurst(url *url.URL, v []any, customHeaders http.Header) (
 // establishes a WebSocket connection, sends a ping message, awaits the pong response, and closes
 // the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyPing(url *url.URL, customHeaders http.Header) (*Result, error) {
+func MeasureLatencyPing(
+	targetURL *url.URL,
+	customHeaders http.Header,
+) (*Result, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, err
 	}
 	ws.PingPong()
@@ -136,18 +147,21 @@ func MeasureLatencyPing(url *url.URL, customHeaders http.Header) (*Result, error
 // It establishes a WebSocket connection, sends ping messages according to pingCount, awaits the
 // pong responses, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyPingBurst(url *url.URL, pingCount int, customHeaders http.Header) (*Result, error) {
+func MeasureLatencyPingBurst(
+	targetURL *url.URL,
+	pingCount int,
+	customHeaders http.Header,
+) (*Result, error) {
 	ws := New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, err
 	}
-	for i := 0; i < pingCount; i++ {
+	for range pingCount {
 		ws.WriteMessage(websocket.PingMessage, nil)
 	}
-	for i := 0; i < pingCount; i++ {
+	for range pingCount {
 		ws.ReadPong()
 	}
 	ws.Close()
