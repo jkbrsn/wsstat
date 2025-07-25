@@ -64,7 +64,7 @@ func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header)
 // MeasureLatencyJSON is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a JSON message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyJSON(url *url.URL, v interface{}, customHeaders http.Header) (*Result, interface{}, error) {
+func MeasureLatencyJSON(url *url.URL, v any, customHeaders http.Header) (*Result, any, error) {
 	ws := New()
 	defer ws.Close()
 
@@ -87,7 +87,7 @@ func MeasureLatencyJSON(url *url.URL, v interface{}, customHeaders http.Header) 
 // to the server, sends all JSON messages, reads the responses, and closes the connection.
 // Note: sets all times in the Result object, where the MessageRTT will be the mean round trip time
 // of all messages sent.
-func MeasureLatencyJSONBurst(url *url.URL, v []interface{}, customHeaders http.Header) (*Result, []interface{}, error) {
+func MeasureLatencyJSONBurst(url *url.URL, v []any, customHeaders http.Header) (*Result, []any, error) {
 	ws := New()
 	defer ws.Close()
 
@@ -100,7 +100,7 @@ func MeasureLatencyJSONBurst(url *url.URL, v []interface{}, customHeaders http.H
 		ws.WriteMessageJSON(msg)
 	}
 
-	var responses []interface{}
+	var responses []any
 	for range len(v) {
 		resp, err := ws.ReadMessageJSON()
 		if err != nil {

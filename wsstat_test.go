@@ -204,7 +204,7 @@ func TestOneHitMessageJSON(t *testing.T) {
 	}
 	response, err := ws.OneHitMessageJSON(message)
 	assert.NoError(t, err)
-	responseMap, ok := response.(map[string]interface{})
+	responseMap, ok := response.(map[string]any)
 	require.True(t, ok, "Response is not a map")
 	assert.Equal(t, message.Text, responseMap["text"])
 

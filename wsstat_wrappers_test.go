@@ -50,7 +50,7 @@ func TestMeasureLatencyJSON(t *testing.T) {
 	assert.Greater(t, result.TotalTime, time.Duration(0))
 	assert.NotEqual(t, nil, response)
 
-	responseMap, ok := response.(map[string]interface{})
+	responseMap, ok := response.(map[string]any)
 	require.True(t, ok, "Response is not a map")
 	assert.Equal(t, message.Text, responseMap["text"])
 }
@@ -64,8 +64,8 @@ func TestMeasureLatencyJSONBurst(t *testing.T) {
 		{Text: "msg 3"},
 	}
 
-	// Convert messages to a slice of interface{}
-	var interfaceMessages []interface{}
+	// Convert messages to a slice of any
+	var interfaceMessages []any
 	for _, msg := range messages {
 		interfaceMessages = append(interfaceMessages, msg)
 	}
@@ -79,7 +79,7 @@ func TestMeasureLatencyJSONBurst(t *testing.T) {
 	assert.Greater(t, result.TotalTime, time.Duration(0))
 	require.NotNil(t, responses)
 	for i, response := range responses {
-		responseMap, ok := response.(map[string]interface{})
+		responseMap, ok := response.(map[string]any)
 		require.True(t, ok, "Response is not a map")
 		assert.Equal(t, messages[i].Text, responseMap["text"])
 	}
