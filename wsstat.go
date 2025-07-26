@@ -562,33 +562,33 @@ func (r *Result) Format(s fmt.State, verb rune) {
 			fmt.Fprintln(s)
 
 			var buf bytes.Buffer
-			_, _ = fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
+			fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
 				int(r.DNSLookup/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
+			fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
 				int(r.TCPConnection/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
+			fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
 				int(r.TLSHandshake/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
+			fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
 				int(r.WSHandshake/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
+			fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
 				int(r.MessageRTT/time.Millisecond))
 
-			_, _ = fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
+			fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
 				int(r.DNSLookupDone/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
+			fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
 				int(r.TCPConnected/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
+			fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
 				int(r.TLSHandshakeDone/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
+			fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
 				int(r.WSHandshakeDone/time.Millisecond))
-			_, _ = fmt.Fprintf(&buf, "First msg response: %4d ms\n",
+			fmt.Fprintf(&buf, "First msg response: %4d ms\n",
 				int(r.FirstMessageResponse/time.Millisecond))
 
 			if r.TotalTime > 0 {
-				_, _ = fmt.Fprintf(&buf, "Total:              %4d ms\n",
+				fmt.Fprintf(&buf, "Total:              %4d ms\n",
 					int(r.TotalTime/time.Millisecond))
 			} else {
-				_, _ = fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
+				fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
 			}
 			io.WriteString(s, buf.String())
 			return

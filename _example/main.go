@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to measure latency: %v", err)
 	}
-	_, _ = fmt.Printf("Basic example\nResponse: %s\n\nResult:\n%+v\n", p, result)
+	fmt.Printf("Basic example\nResponse: %s\n\nResult:\n%+v\n", p, result)
 
 	// Measure latency with more control over the steps in the process by using the WSStat instance
 	ws := wsstat.New()
@@ -47,5 +47,5 @@ func main() {
 	}
 
 	result = ws.ExtractResult()
-	_, _ = fmt.Printf("More involved example\nResponse: %s\n\nResult:\n%+v\n", p, result)
+	fmt.Printf("More involved example\nResponse: %s\n\nResult:\n%+v\n", p, result)
 }
