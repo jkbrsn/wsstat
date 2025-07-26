@@ -2,7 +2,6 @@ package wsstat
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -46,7 +45,7 @@ func TestMain(m *testing.M) {
 	time.Sleep(250 * time.Millisecond)
 
 	// Run the tests in this file
-	os.Exit(m.Run())
+	m.Run()
 }
 
 func TestNew(t *testing.T) {
@@ -120,7 +119,8 @@ func TestBufferedReadWrite(t *testing.T) {
 
 		result := ws.ExtractResult()
 		assert.NotNil(t, result)
-		assert.Greater(t, result.TotalTime, time.Duration(0), "Exepcted valid TotalTime despite no reads")
+		assert.Greater(t, result.TotalTime, time.Duration(0),
+			"Exepcted valid TotalTime despite no reads")
 		assert.Equal(t, time.Duration(0), result.MessageRTT, "Expected 0 MessageRTT with no reads")
 	})
 
@@ -144,14 +144,16 @@ func TestBufferedReadWrite(t *testing.T) {
 
 		result := ws.ExtractResult()
 		assert.NotNil(t, result)
-		assert.Greater(t, result.TotalTime, time.Duration(0), "Exepcted valid TotalTime despite no reads")
+		assert.Greater(t, result.TotalTime, time.Duration(0),
+			"Exepcted valid TotalTime despite no reads")
 		assert.Equal(t, time.Duration(0), result.MessageRTT, "Expected 0 MessageRTT with no reads")
 		assert.Zero(t, result.MessageCount, "Expected 0 MessageCount with no reads")
 
 		for i := 0; i < messageCount; i++ {
 			_, receivedMessage, err := ws.ReadMessage()
 			assert.NoError(t, err)
-			assert.Equal(t, message, receivedMessage, "Received message does not match sent message")
+			assert.Equal(t, message, receivedMessage,
+				"Received message does not match sent message")
 		}
 
 		result = ws.ExtractResult()
@@ -259,7 +261,8 @@ func TestLoggerFunctionality(t *testing.T) {
 	// Return log level to Info and confirm debug messages are not logged
 	SetLogLevel(zerolog.InfoLevel)
 	logger.Debug().Msg("another debug message")
-	assert.False(t, bytes.Contains(buf.Bytes(), []byte("another debug message")), "Did not expect debug level log")
+	assert.False(t, bytes.Contains(buf.Bytes(),
+		[]byte("another debug message")), "Did not expect debug level log")
 
 	// Restore original logger to avoid affecting other tests
 	logger = zerolog.New(os.Stderr).Level(zerolog.DebugLevel).With().Timestamp().Logger()
@@ -276,7 +279,7 @@ func getFunctionName() string {
 // startEchoServer starts a WebSocket server that echoes back any received messages.
 func startEchoServer(addr string) {
 	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
+		CheckOrigin: func(_ *http.Request) bool {
 			return true // Allow all origins
 		},
 	}
@@ -305,12 +308,12 @@ func startEchoServer(addr string) {
 		}
 	})
 
-	fmt.Printf("Echo server started on %s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	log.Printf("Echo server started on %s\n", addr)
+	log.Println(http.ListenAndServe(addr, nil))
 }
 
 // Validation of WSStat results after Dial has been called
-func validateDialResult(testStart time.Time, ws *WSStat, url *url.URL, msg string, t *testing.T) {
+func validateDialResult(testStart time.Time, ws *WSStat, u *url.URL, msg string, t *testing.T) {
 	assert.Greater(t,
 		ws.timings.dnsLookupDone.Sub(testStart),
 		time.Duration(0),
@@ -320,7 +323,7 @@ func validateDialResult(testStart time.Time, ws *WSStat, url *url.URL, msg strin
 		time.Duration(0),
 		"Invalid TCPConnected time in %s", msg)
 
-	if strings.Contains(url.String(), "wss://") {
+	if strings.Contains(u.String(), "wss://") {
 		assert.Greater(t,
 			ws.timings.tlsHandshakeDone.Sub(ws.timings.dnsLookupDone),
 			time.Duration(0),
@@ -336,7 +339,8 @@ func validateDialResult(testStart time.Time, ws *WSStat, url *url.URL, msg strin
 // validateOneHitResult validates Result after both write and read have been called
 func validateOneHitResult(ws *WSStat, msg string, t *testing.T) {
 	assert.Greater(t, ws.result.MessageRTT, time.Duration(0), "Invalid MessageRTT time in %s", msg)
-	assert.Greater(t, ws.result.FirstMessageResponse, time.Duration(0), "Invalid FirstMessageResponse time in %s", msg)
+	assert.Greater(t, ws.result.FirstMessageResponse, time.Duration(0),
+		"Invalid FirstMessageResponse time in %s", msg)
 }
 
 // validateCloseResult validates Results after Close has been called
