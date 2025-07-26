@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +25,6 @@ import (
 )
 
 var (
-	// Package-specific logger, defaults to Info level
-	logger = zerolog.New(os.Stderr).Level(zerolog.InfoLevel).With().Timestamp().Logger()
-
 	// Default timeout for dialing and reading from the WebSocket connection
 	defaultTimeout = 5 * time.Second
 
@@ -80,6 +76,8 @@ type Result struct {
 
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
+	log zerolog.Logger
+
 	conn    *websocket.Conn
 	dialer  *websocket.Dialer
 	timings *wsTimings
@@ -190,7 +188,7 @@ func (ws *WSStat) readPump() {
 			return
 		default:
 			if err := ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout)); err != nil {
-				logger.Debug().Err(err).Msg("Failed to set read deadline")
+				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
 				ws.readChan <- &wsRead{err: err, messageType: messageType}
@@ -218,7 +216,7 @@ func (ws *WSStat) writePump() {
 			}
 
 			if err := ws.conn.WriteMessage(write.messageType, write.data); err != nil {
-				logger.Debug().Err(err).Msg("Failed to write message")
+				ws.log.Debug().Err(err).Msg("Failed to write message")
 				return
 			}
 		case <-ws.ctx.Done():
@@ -238,7 +236,7 @@ func (ws *WSStat) Close() {
 		if ws.conn != nil {
 			// Set read deadline to stop reading messages
 			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
-				logger.Debug().Err(err).Msg("Failed to set read deadline")
+				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 
 			// Send close frame
@@ -249,11 +247,11 @@ func (ws *WSStat) Close() {
 				formattedCloseMessage,
 				deadline,
 			); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				logger.Debug().Err(err).Msg("Failed to write close message")
+				ws.log.Debug().Err(err).Msg("Failed to write close message")
 			}
 
 			if err := ws.conn.Close(); err != nil {
-				logger.Debug().Err(err).Msg("Failed to close connection")
+				ws.log.Debug().Err(err).Msg("Failed to close connection")
 			}
 			ws.conn = nil
 		}
@@ -276,7 +274,7 @@ func (ws *WSStat) Close() {
 		case <-done:
 			// All goroutines finished
 		case <-pumpsTimeoutCtx.Done():
-			logger.Warn().Msg("Timeout closing WSStat pumps")
+			ws.log.Warn().Msg("Timeout closing WSStat pumps")
 		}
 
 		// Close the pump channels
@@ -707,13 +705,16 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 
 // New creates and returns a new WSStat instance. To adjust the size of the read and write channel
 // buffers, call SetChanBufferSize before calling New().
-func New() *WSStat {
+func New(logger zerolog.Logger) *WSStat {
+	log := logger.With().Str("pkg", "wsstat").Logger()
+
 	result := &Result{}
 	timings := &wsTimings{}
 	dialer := newDialer(result, timings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
+		log:       log,
 		dialer:    dialer,
 		timings:   timings,
 		result:    result,
@@ -741,14 +742,4 @@ func SetCustomTLSConfig(config *tls.Config) {
 // SetDefaultTimeout sets the default timeout for WSStat.
 func SetDefaultTimeout(timeout time.Duration) {
 	defaultTimeout = timeout
-}
-
-// SetLogLevel sets the log level for WSStat.
-func SetLogLevel(level zerolog.Level) {
-	logger = logger.Level(level)
-}
-
-// SetLogger sets the logger for WSStat.
-func SetLogger(l zerolog.Logger) {
-	logger = l
 }

@@ -1,11 +1,9 @@
 package wsstat
 
 import (
-	"bytes"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -29,9 +27,6 @@ func init() {
 	if err != nil {
 		log.Fatalf("Failed to parse URL: %v", err)
 	}
-
-	// Set log level to debug for the tests
-	SetLogLevel(zerolog.DebugLevel)
 }
 
 // TestMain sets up the test server and runs the tests in this file.
@@ -49,7 +44,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestNew(t *testing.T) {
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
 	assert.NotNil(t, ws)
@@ -64,7 +59,7 @@ func TestNew(t *testing.T) {
 
 func TestDial(t *testing.T) {
 	testStart := time.Now()
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
 	err := ws.Dial(echoServerAddrWs, http.Header{})
@@ -75,7 +70,7 @@ func TestDial(t *testing.T) {
 
 func TestWriteReadClose(t *testing.T) {
 	testStart := time.Now()
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -101,7 +96,7 @@ func TestBufferedReadWrite(t *testing.T) {
 	testStart := time.Now()
 
 	t.Run("No reads", func(t *testing.T) {
-		ws := New()
+		ws := New(zerolog.Nop())
 		defer func() {
 			ws.Close()
 			validateCloseResult(ws, getFunctionName(), t)
@@ -125,7 +120,7 @@ func TestBufferedReadWrite(t *testing.T) {
 	})
 
 	t.Run("Writes and reads", func(t *testing.T) {
-		ws := New()
+		ws := New(zerolog.Nop())
 		defer func() {
 			ws.Close()
 			validateCloseResult(ws, getFunctionName(), t)
@@ -166,7 +161,7 @@ func TestBufferedReadWrite(t *testing.T) {
 
 func TestOneHitMessage(t *testing.T) {
 	testStart := time.Now()
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -189,7 +184,7 @@ func TestOneHitMessage(t *testing.T) {
 
 func TestOneHitMessageJSON(t *testing.T) {
 	testStart := time.Now()
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -218,7 +213,7 @@ func TestOneHitMessageJSON(t *testing.T) {
 
 func TestPingPong(t *testing.T) {
 	testStart := time.Now()
-	ws := New()
+	ws := New(zerolog.Nop())
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -239,33 +234,6 @@ func TestPingPong(t *testing.T) {
 	ws.Close()
 
 	validateOneHitResult(ws, getFunctionName(), t)
-}
-
-func TestLoggerFunctionality(t *testing.T) {
-	// Set custom logger with buffer as output
-	var buf bytes.Buffer
-	customLogger := zerolog.New(&buf).Level(zerolog.InfoLevel).With().Timestamp().Logger()
-	SetLogger(customLogger)
-
-	// Test log level Info
-	logger.Info().Msg("info message")
-	assert.True(t, bytes.Contains(buf.Bytes(), []byte("info message")), "Expected info level log")
-	buf.Reset() // Clear buffer
-
-	// Test log level Debug
-	SetLogLevel(zerolog.DebugLevel)
-	logger.Debug().Msg("debug message")
-	assert.True(t, bytes.Contains(buf.Bytes(), []byte("debug message")), "Expected debug level log")
-	buf.Reset() // Clear buffer
-
-	// Return log level to Info and confirm debug messages are not logged
-	SetLogLevel(zerolog.InfoLevel)
-	logger.Debug().Msg("another debug message")
-	assert.False(t, bytes.Contains(buf.Bytes(),
-		[]byte("another debug message")), "Did not expect debug level log")
-
-	// Restore original logger to avoid affecting other tests
-	logger = zerolog.New(os.Stderr).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 }
 
 // Helpers
