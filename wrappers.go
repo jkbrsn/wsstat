@@ -1,28 +1,36 @@
+// Package wsstat measures the latency of WebSocket connections.
+// It wraps the gorilla/websocket package and includes latency measurements in the Result struct.
 package wsstat
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 )
+
+// TODO: replace zerolog.Nop() with optional function parameter for a logger
 
 // MeasureLatency is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatency(url *url.URL, msg string, customHeaders http.Header) (*Result, []byte, error) {
-	ws := New()
+func MeasureLatency(
+	targetURL *url.URL,
+	msg string,
+	customHeaders http.Header,
+) (*Result, []byte, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
-		return nil, nil, err
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
+		return nil, nil, fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
 	ws.WriteMessage(websocket.TextMessage, []byte(msg))
 	_, p, err := ws.ReadMessage()
 	if err != nil {
-		logger.Debug().Err(err).Msg("Failed to read message")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to read message: %v", err)
 	}
 	ws.Close()
 
@@ -34,12 +42,15 @@ func MeasureLatency(url *url.URL, msg string, customHeaders http.Header) (*Resul
 // to the server, sends all messages, reads the responses, and closes the connection.
 // Note: sets all times in the Result object, where the MessageRTT will be the mean round trip time
 // of all messages sent.
-func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header) (*Result, []string, error) {
-	ws := New()
+func MeasureLatencyBurst(
+	targetURL *url.URL,
+	msgs []string,
+	customHeaders http.Header,
+) (*Result, []string, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 
@@ -51,8 +62,7 @@ func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header)
 	for range len(msgs) {
 		_, p, err := ws.ReadMessage()
 		if err != nil {
-			logger.Debug().Err(err).Msg("Failed to read message")
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to read message: %v", err)
 		}
 		responses = append(responses, string(p))
 	}
@@ -64,18 +74,20 @@ func MeasureLatencyBurst(url *url.URL, msgs []string, customHeaders http.Header)
 // MeasureLatencyJSON is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a JSON message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyJSON(url *url.URL, v interface{}, customHeaders http.Header) (*Result, interface{}, error) {
-	ws := New()
+func MeasureLatencyJSON(
+	targetURL *url.URL,
+	v any,
+	customHeaders http.Header,
+) (*Result, any, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 	p, err := ws.OneHitMessageJSON(v)
 	if err != nil {
-		logger.Debug().Err(err).Msg("Failed to send message")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to send message: %v", err)
 	}
 	ws.Close()
 
@@ -87,12 +99,15 @@ func MeasureLatencyJSON(url *url.URL, v interface{}, customHeaders http.Header) 
 // to the server, sends all JSON messages, reads the responses, and closes the connection.
 // Note: sets all times in the Result object, where the MessageRTT will be the mean round trip time
 // of all messages sent.
-func MeasureLatencyJSONBurst(url *url.URL, v []interface{}, customHeaders http.Header) (*Result, []interface{}, error) {
-	ws := New()
+func MeasureLatencyJSONBurst(
+	targetURL *url.URL,
+	v []any,
+	customHeaders http.Header,
+) (*Result, []any, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, err
 	}
 
@@ -100,12 +115,11 @@ func MeasureLatencyJSONBurst(url *url.URL, v []interface{}, customHeaders http.H
 		ws.WriteMessageJSON(msg)
 	}
 
-	var responses []interface{}
+	var responses []any
 	for range len(v) {
 		resp, err := ws.ReadMessageJSON()
 		if err != nil {
-			logger.Debug().Err(err).Msg("Failed to read message")
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to read message: %v", err)
 		}
 		responses = append(responses, resp)
 	}
@@ -118,12 +132,14 @@ func MeasureLatencyJSONBurst(url *url.URL, v []interface{}, customHeaders http.H
 // establishes a WebSocket connection, sends a ping message, awaits the pong response, and closes
 // the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyPing(url *url.URL, customHeaders http.Header) (*Result, error) {
-	ws := New()
+func MeasureLatencyPing(
+	targetURL *url.URL,
+	customHeaders http.Header,
+) (*Result, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, err
 	}
 	ws.PingPong()
@@ -136,18 +152,21 @@ func MeasureLatencyPing(url *url.URL, customHeaders http.Header) (*Result, error
 // It establishes a WebSocket connection, sends ping messages according to pingCount, awaits the
 // pong responses, and closes the connection.
 // Note: sets all times in the Result object.
-func MeasureLatencyPingBurst(url *url.URL, pingCount int, customHeaders http.Header) (*Result, error) {
-	ws := New()
+func MeasureLatencyPingBurst(
+	targetURL *url.URL,
+	pingCount int,
+	customHeaders http.Header,
+) (*Result, error) {
+	ws := New(zerolog.Nop())
 	defer ws.Close()
 
-	if err := ws.Dial(url, customHeaders); err != nil {
-		logger.Debug().Err(err).Msg("Failed to establish WebSocket connection")
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, err
 	}
-	for i := 0; i < pingCount; i++ {
+	for range pingCount {
 		ws.WriteMessage(websocket.PingMessage, nil)
 	}
-	for i := 0; i < pingCount; i++ {
+	for range pingCount {
 		ws.ReadPong()
 	}
 	ws.Close()
