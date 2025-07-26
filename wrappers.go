@@ -1,3 +1,5 @@
+// Package wsstat measures the latency of WebSocket connections.
+// It wraps the gorilla/websocket package and includes latency measurements in the Result struct.
 package wsstat
 
 import (
