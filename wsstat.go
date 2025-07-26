@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -188,7 +189,9 @@ func (ws *WSStat) readPump() {
 		case <-ws.ctx.Done():
 			return
 		default:
-			ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout))
+			if err := ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout)); err != nil {
+				logger.Debug().Err(err).Msg("Failed to set read deadline")
+			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
 				ws.readChan <- &wsRead{err: err, messageType: messageType}
 				return
@@ -234,18 +237,18 @@ func (ws *WSStat) Close() {
 		// If the connection is not already closed, close it gracefully
 		if ws.conn != nil {
 			// Set read deadline to stop reading messages
-			ws.conn.SetReadDeadline(time.Now())
+			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
+				logger.Debug().Err(err).Msg("Failed to set read deadline")
+			}
 
 			// Send close frame
 			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 			deadline := time.Now().Add(time.Second)
-			err := ws.conn.WriteControl(websocket.CloseMessage, formattedCloseMessage, deadline)
-			if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+			if err := ws.conn.WriteControl(websocket.CloseMessage, formattedCloseMessage, deadline); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 				logger.Debug().Err(err).Msg("Failed to write close message")
 			}
 
-			err = ws.conn.Close()
-			if err != nil {
+			if err := ws.conn.Close(); err != nil {
 				logger.Debug().Err(err).Msg("Failed to close connection")
 			}
 			ws.conn = nil
@@ -293,7 +296,9 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	if err != nil {
 		if resp != nil {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			defer func() {
+				_ = resp.Body.Close()
+			}()
 			return fmt.Errorf("failed dial response '%s': %v", string(body), err)
 		}
 		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
@@ -453,7 +458,7 @@ func (ws *WSStat) WriteMessage(messageType int, data []byte) {
 // Sets time: MessageWrites
 func (ws *WSStat) WriteMessageJSON(v any) {
 	jsonBytes := new(bytes.Buffer)
-	json.NewEncoder(jsonBytes).Encode(&v)
+	json.NewEncoder(jsonBytes).Encode(&v) //nolint:errcheck // TODO: handle error
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
 	ws.writeChan <- &wsWrite{data: jsonBytes.Bytes(), messageType: websocket.TextMessage}
 }
@@ -526,7 +531,7 @@ func (r *Result) Format(s fmt.State, verb rune) {
 			fmt.Fprintln(s)
 
 			if r.TLSState != nil {
-				fmt.Fprintf(s, "TLS handshake details\n")
+				fmt.Fprint(s, "TLS handshake details\n")
 				fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
 				fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
 				fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
@@ -548,13 +553,13 @@ func (r *Result) Format(s fmt.State, verb rune) {
 			}
 
 			if r.RequestHeaders != nil {
-				fmt.Fprintf(s, "Request headers\n")
+				fmt.Fprint(s, "Request headers\n")
 				for k, v := range r.RequestHeaders {
 					fmt.Fprintf(s, "  %s: %s\n", k, v)
 				}
 			}
 			if r.ResponseHeaders != nil {
-				fmt.Fprintf(s, "Response headers\n")
+				fmt.Fprint(s, "Response headers\n")
 				for k, v := range r.ResponseHeaders {
 					fmt.Fprintf(s, "  %s: %s\n", k, v)
 				}
@@ -684,7 +689,7 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			tlsConn := tls.Client(netConn, tlsConfig)
 			err = tlsConn.Handshake()
 			if err != nil {
-				netConn.Close()
+				err = errors.Join(err, netConn.Close())
 				return nil, err
 			}
 			timings.tlsHandshakeDone = time.Now()

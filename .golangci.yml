@@ -17,6 +17,7 @@ linters:
         - fmt.Fprint
         - fmt.Fprintln
         - fmt.Fprintf
+        - io.WriteString
     revive:
       # See https://golangci-lint.run/usage/linters/#revive for more information.
       max-open-files: 2048
@@ -57,6 +58,7 @@ linters:
             - "^fmt.Print"
             - "^fmt.Printf"
             - "^fmt.Println"
+            - "^io.WriteString"
     misspell:
       locale: US
 

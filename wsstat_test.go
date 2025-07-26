@@ -290,7 +290,9 @@ func startEchoServer(addr string) {
 			log.Print("upgrade:", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+		}()
 		for {
 			mt, message, err := conn.ReadMessage()
 			if err != nil {
