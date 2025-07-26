@@ -244,7 +244,11 @@ func (ws *WSStat) Close() {
 			// Send close frame
 			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 			deadline := time.Now().Add(time.Second)
-			if err := ws.conn.WriteControl(websocket.CloseMessage, formattedCloseMessage, deadline); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+			if err := ws.conn.WriteControl(
+				websocket.CloseMessage,
+				formattedCloseMessage,
+				deadline,
+			); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 				logger.Debug().Err(err).Msg("Failed to write close message")
 			}
 
@@ -458,7 +462,7 @@ func (ws *WSStat) WriteMessage(messageType int, data []byte) {
 // Sets time: MessageWrites
 func (ws *WSStat) WriteMessageJSON(v any) {
 	jsonBytes := new(bytes.Buffer)
-	json.NewEncoder(jsonBytes).Encode(&v) //nolint:errcheck // TODO: handle error
+	json.NewEncoder(jsonBytes).Encode(&v) //nolint:errcheck,revive // TODO: handle error
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
 	ws.writeChan <- &wsWrite{data: jsonBytes.Bytes(), messageType: websocket.TextMessage}
 }
