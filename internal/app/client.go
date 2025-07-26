@@ -1,5 +1,6 @@
-// Package client utilizes the wsstat package to measure the latency of a WebSocket connection.
-package client
+// Package app measures utilizes the wsstat package to measure to construct a
+// client that measures the latency of a WebSocket connection.
+package app
 
 import (
 	"crypto/tls"
@@ -41,9 +42,9 @@ var (
 		`-                                                        Total:%s` + "\n"
 )
 
-// WSClient measures the latency of a WebSocket connection, applying different methods
+// Client measures the latency of a WebSocket connection, applying different methods
 // based on the settings passed to the struct.
-type WSClient struct {
+type Client struct {
 	// Input
 	Burst        int    // Number of messages to send in a burst (if > 1)
 	InputHeaders string // Comma-separated headers for connection establishment
@@ -71,7 +72,7 @@ type WSClient struct {
 // based on the flags passed to the program.
 // revive:disable:cognitive-complexity temporary
 // TODO: fix cognitive complexity
-func (c *WSClient) MeasureLatency(target *url.URL) error {
+func (c *Client) MeasureLatency(target *url.URL) error {
 	header, err := parseHeaders(c.InputHeaders)
 	if err != nil {
 		return err
@@ -128,9 +129,9 @@ func (c *WSClient) MeasureLatency(target *url.URL) error {
 	return nil
 }
 
-// PrintRequestDetails prints the results of the WSClient, with verbosity based on the flags
+// PrintRequestDetails prints the results of the Client, with verbosity based on the flags
 // passed to the program. If no results have been produced yet, the function errors.
-func (c *WSClient) PrintRequestDetails() error {
+func (c *Client) PrintRequestDetails() error {
 	if c.Result == nil {
 		return errors.New("no results have been produced")
 	}
@@ -203,7 +204,7 @@ func (c *WSClient) PrintRequestDetails() error {
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *WSClient) PrintTimingResults(u *url.URL) error {
+func (c *Client) PrintTimingResults(u *url.URL) error {
 	if c.Result == nil {
 		return errors.New("no results have been produced")
 	}
@@ -218,7 +219,7 @@ func (c *WSClient) PrintTimingResults(u *url.URL) error {
 }
 
 // PrintResponse prints the response to the terminal if there is one, otherwise does nothing.
-func (c *WSClient) PrintResponse() {
+func (c *Client) PrintResponse() {
 	if c.Response == nil {
 		return
 	}
@@ -256,9 +257,9 @@ func (c *WSClient) PrintResponse() {
 	}
 }
 
-// Validate validates the WSClient is ready for measurement; it checks that the client settings are
+// Validate validates the Client is ready for measurement; it checks that the client settings are
 // set to valid values.
-func (c *WSClient) Validate() error {
+func (c *Client) Validate() error {
 	if c.Burst < 1 {
 		return errors.New("burst must be greater than 0")
 	}

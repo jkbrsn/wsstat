@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jkbrsn/wsstat/internal/client"
+	"github.com/jkbrsn/wsstat/internal/app"
 )
 
 var (
@@ -64,7 +64,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ws := client.WSClient{
+	ws := app.Client{
 		Burst:        *burst,
 		InputHeaders: *inputHeaders,
 		JSONMethod:   *jsonMethod,
