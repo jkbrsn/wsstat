@@ -32,7 +32,7 @@ var (
 	defaultTimeout = 5 * time.Second
 
 	// Stores optional user-provided TLS configuration
-	customTLSConfig *tls.Config = nil
+	customTLSConfig *tls.Config
 
 	// Sets the size of the read and write channel buffers
 	chanBufferSize = 8
@@ -282,14 +282,14 @@ func (ws *WSStat) Close() {
 // Dial establishes a new WebSocket connection using the custom dialer defined in this package.
 // If required, specify custom headers to merge with the default headers.
 // Sets times: dialStart, wsHandshakeDone
-func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
-	ws.result.URL = url
+func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
+	ws.result.URL = targetURL
 	headers := http.Header{}
 	for name, values := range customHeaders {
 		headers.Add(name, strings.Join(values, ","))
 	}
 	ws.timings.dialStart = time.Now()
-	conn, resp, err := ws.dialer.Dial(url.String(), headers)
+	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
 	if err != nil {
 		if resp != nil {
 			body, _ := io.ReadAll(resp.Body)
@@ -300,7 +300,7 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	}
 	ws.timings.wsHandshakeDone = time.Now()
 	ws.conn = conn
-	ws.conn.SetPongHandler(func(appData string) error {
+	ws.conn.SetPongHandler(func(_ string) error {
 		select {
 		case <-ws.ctx.Done():
 			return nil
@@ -316,7 +316,7 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	go ws.writePump()
 
 	// Lookup IP
-	ips, err := net.LookupIP(url.Hostname())
+	ips, err := net.LookupIP(targetURL.Hostname())
 	if err != nil {
 		return fmt.Errorf("failed IP lookup: %v", err)
 	}
@@ -330,9 +330,13 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	var documentedDefaultHeaders = map[string][]string{
 		"Upgrade":               {"websocket"}, // Constant value
 		"Connection":            {"Upgrade"},   // Constant value
-		"Sec-WebSocket-Key":     {"<hidden>"},  // A nonce value; dynamically generated for each request
 		"Sec-WebSocket-Version": {"13"},        // Constant value
-		// "Sec-WebSocket-Protocol",     // Also set by gorilla/websocket, but only if subprotocols are specified
+
+		// A nonce value; dynamically generated for each request
+		"Sec-WebSocket-Key": {"<hidden>"},
+
+		// Set by gorilla/websocket, but only if subprotocols are specified
+		// "Sec-WebSocket-Protocol",
 	}
 	// Merge custom headers
 	maps.Copy(headers, documentedDefaultHeaders)
@@ -391,13 +395,17 @@ func (ws *WSStat) PingPong() {
 	ws.ReadPong()
 }
 
-// ReadMessage reads a message from the WebSocket connection and measures the round-trip time. If
-// an error occurs, it will be returned.
+// ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
+// If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
 	msg := <-ws.readChan
 	if msg.err != nil {
-		if websocket.IsUnexpectedCloseError(msg.err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+		if websocket.IsUnexpectedCloseError(
+			msg.err,
+			websocket.CloseGoingAway,
+			websocket.CloseNormalClosure,
+		) {
 			return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
 		}
 		return msg.messageType, nil, msg.err
@@ -468,7 +476,8 @@ func (r *Result) durations() map[string]time.Duration {
 	}
 }
 
-// CertificateDetails returns a slice of CertificateDetails for each certificate in the TLS connection.
+// CertificateDetails returns a slice of CertificateDetails for each certificate in the
+// TLS connection.
 func (r *Result) CertificateDetails() []CertificateDetails {
 	if r.TLSState == nil {
 		return nil
@@ -493,6 +502,10 @@ func (r *Result) CertificateDetails() []CertificateDetails {
 }
 
 // Format formats the time.Duration members of Result.
+// revive:disable:cognitive-complexity temporary
+// revive:disable:cyclomatic temporary
+// revive:disable:function-length temporary
+// TODO: fix cognitive, cyclomatic, and function length
 func (r *Result) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
@@ -549,33 +562,33 @@ func (r *Result) Format(s fmt.State, verb rune) {
 			fmt.Fprintln(s)
 
 			var buf bytes.Buffer
-			fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
 				int(r.DNSLookup/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
 				int(r.TCPConnection/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
 				int(r.TLSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
 				int(r.WSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
+			_, _ = fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
 				int(r.MessageRTT/time.Millisecond))
 
-			fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
 				int(r.DNSLookupDone/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
 				int(r.TCPConnected/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
 				int(r.TLSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
 				int(r.WSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "First msg response: %4d ms\n",
+			_, _ = fmt.Fprintf(&buf, "First msg response: %4d ms\n",
 				int(r.FirstMessageResponse/time.Millisecond))
 
 			if r.TotalTime > 0 {
-				fmt.Fprintf(&buf, "Total:              %4d ms\n",
+				_, _ = fmt.Fprintf(&buf, "Total:              %4d ms\n",
 					int(r.TotalTime/time.Millisecond))
 			} else {
-				fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
+				_, _ = fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
 			}
 			io.WriteString(s, buf.String())
 			return
@@ -598,7 +611,7 @@ func (r *Result) Format(s fmt.State, verb rune) {
 }
 
 // hostPort returns the host and port from a URL.
-func hostPort(u *url.URL) (string, string) {
+func hostPort(u *url.URL) (host, port string) {
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
 		log.Debug().Err(err).Msg("Failed to split host and port")
@@ -618,7 +631,8 @@ func hostPort(u *url.URL) (string, string) {
 	return host, port
 }
 
-// newDialer initializes and returns a websocket.Dialer with customized dial functions to measure the connection phases.
+// newDialer initializes and returns a websocket.Dialer with customized dial functions
+// to measure the connection phases.
 // Sets timings: dnsLookupDone, tcpConnected, tlsHandshakeDone.
 func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 	return &websocket.Dialer{
@@ -704,7 +718,7 @@ func New() *WSStat {
 	return ws
 }
 
-// SetBufferSize sets the size of the read and write channel buffers.
+// SetChanBufferSize sets the size of the read and write channel buffers.
 func SetChanBufferSize(size int) {
 	chanBufferSize = size
 }
