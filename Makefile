@@ -52,7 +52,7 @@ build-os-arch:
 
 lint:
 	@echo "==> Running linter (golangci-lint)..."
-	@golangci-lint run ./... || echo "Linting failed or golangci-lint not found. Consider installing it: https://golangci-lint.run/usage/install/"
+	@golangci-lint run ./...
 
 test:
 	@echo "==> Running tests..."

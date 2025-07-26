@@ -11,6 +11,12 @@ linters:
     - revive
     - misspell
   settings:
+    errcheck:
+      # See https://golangci-lint.run/usage/linters/#errcheck for more information.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
     revive:
       # See https://golangci-lint.run/usage/linters/#revive for more information.
       max-open-files: 2048
@@ -29,10 +35,6 @@ linters:
               allow-strs: '""'
               allow-ints: "0,1,2"
               allow-floats: "0.0,0.,1.0,1.,2.0,2."
-        - name: line-length-limit
-          disabled: false
-          exclude: [""]
-          arguments: [100]
         - name: cognitive-complexity
           disabled: false
           exclude: [""]
@@ -41,6 +43,20 @@ linters:
           disabled: false
           exclude: [""]
           arguments: [15]
+        - name: line-length-limit
+          disabled: false
+          exclude: [""]
+          arguments: [100]
+        - name: unhandled-error
+          disabled: false
+          exclude: [""]
+          arguments:
+            - "^fmt.Fprint"
+            - "^fmt.Fprintf"
+            - "^fmt.Fprintln"
+            - "^fmt.Print"
+            - "^fmt.Printf"
+            - "^fmt.Println"
     misspell:
       locale: US
 
