@@ -4,8 +4,8 @@ package client
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +17,11 @@ import (
 )
 
 var (
+	// Templates for printing singular results
+	printValueTemp         = `%s: %s\n`
+	printIndentedValueTemp = `  %s: %s\n`
+
+	// Templates for printing tiered results
 	wssPrintTemplate = `` +
 		`  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    Message RTT` + "\n" +
 		`|%s  |      %s  |     %s  |    %s  |   %s  |` + "\n" +
@@ -26,7 +31,6 @@ var (
 		`|                                       TLS done:%s      |              |` + "\n" +
 		`|                                                        WS done:%s     |` + "\n" +
 		`-                                                                         Total:%s` + "\n"
-
 	wsPrintTemplate = `` +
 		`  DNS Lookup    TCP Connection    WS Handshake    Message RTT` + "\n" +
 		`|%s  |      %s  |    %s  |  %s   |` + "\n" +
@@ -65,18 +69,22 @@ type WSClient struct {
 
 // MeasureLatency measures the latency of the WebSocket connection, applying different methods
 // based on the flags passed to the program.
-func (c *WSClient) MeasureLatency(url *url.URL) error {
-	header := parseHeaders(c.InputHeaders)
+// revive:disable:cognitive-complexity temporary
+// TODO: fix cognitive complexity
+func (c *WSClient) MeasureLatency(target *url.URL) error {
+	header, err := parseHeaders(c.InputHeaders)
+	if err != nil {
+		return err
+	}
 
-	var err error
 	if c.TextMessage != "" {
 		msgs := make([]string, c.Burst)
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = c.TextMessage
 		}
-		c.Result, c.Response, err = wsstat.MeasureLatencyBurst(url, msgs, header)
+		c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
 		if err != nil {
-			return handleConnectionError(err, url.String())
+			return handleConnectionError(err, target.String())
 		}
 		if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
 			c.Response = responseArray[0]
@@ -107,14 +115,14 @@ func (c *WSClient) MeasureLatency(url *url.URL) error {
 		for i := 0; i < c.Burst; i++ {
 			msgs[i] = msg
 		}
-		c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(url, msgs, header)
+		c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
 		if err != nil {
-			return handleConnectionError(err, url.String())
+			return handleConnectionError(err, target.String())
 		}
 	} else {
-		c.Result, err = wsstat.MeasureLatencyPingBurst(url, c.Burst, header)
+		c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
 		if err != nil {
-			return handleConnectionError(err, url.String())
+			return handleConnectionError(err, target.String())
 		}
 	}
 	return nil
@@ -124,13 +132,13 @@ func (c *WSClient) MeasureLatency(url *url.URL) error {
 // passed to the program. If no results have been produced yet, the function errors.
 func (c *WSClient) PrintRequestDetails() error {
 	if c.Result == nil {
-		return fmt.Errorf("no results have been produced")
+		return errors.New("no results have been produced")
 	}
 	fmt.Println()
 
 	// Print basic output
 	if c.Basic {
-		fmt.Printf("%s: %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
+		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
 		if len(c.Result.IPs) > 0 {
 			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
 		}
@@ -143,14 +151,16 @@ func (c *WSClient) PrintRequestDetails() error {
 		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
 		// Loop in case there are multiple IPs with the target
 		for _, ip := range c.Result.IPs {
-			fmt.Printf("  %s: %s\n", colorTeaGreen("IP"), ip)
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
 		}
 		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent:"), c.Result.MessageCount)
 		fmt.Println()
 		if c.Result.TLSState != nil {
 			fmt.Println(colorWSOrange("TLS"))
-			fmt.Printf("  %s: %s\n", colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
-			fmt.Printf("  %s: %s\n", colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
+			fmt.Printf(printIndentedValueTemp,
+				colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+			fmt.Printf(printIndentedValueTemp,
+				colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
 
 			// Print the certificate details
 			for i, cert := range c.Result.TLSState.PeerCertificates {
@@ -164,43 +174,44 @@ func (c *WSClient) PrintRequestDetails() error {
 		}
 		fmt.Println(colorWSOrange("Request headers"))
 		for key, values := range c.Result.RequestHeaders {
-			fmt.Printf("  %s: %s\n", colorTeaGreen(key), strings.Join(values, ", "))
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
 		}
 		fmt.Println(colorWSOrange("Response headers"))
 		for key, values := range c.Result.ResponseHeaders {
-			fmt.Printf("  %s: %s\n", colorTeaGreen(key), strings.Join(values, ", "))
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
 		}
 		return nil
 	}
 
 	// Print standard output
-	fmt.Printf("%s: %s\n", colorWSOrange("Target"), c.Result.URL.Hostname())
+	fmt.Printf(printValueTemp, colorWSOrange("Target"), c.Result.URL.Hostname())
 	for _, values := range c.Result.IPs {
-		fmt.Printf("%s: %s\n", colorWSOrange("IP"), values)
+		fmt.Printf(printValueTemp, colorWSOrange("IP"), values)
 	}
 	fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), c.Result.MessageCount)
 	for key, values := range c.Result.RequestHeaders {
 		if key == "Sec-WebSocket-Version" {
-			fmt.Printf("%s: %s\n", colorWSOrange("WS version"), strings.Join(values, ", "))
+			fmt.Printf(printValueTemp, colorWSOrange("WS version"), strings.Join(values, ", "))
 		}
 	}
 	if c.Result.TLSState != nil {
-		fmt.Printf("%s: %s\n", colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
+		fmt.Printf(printValueTemp,
+			colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
 	}
 
 	return nil
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *WSClient) PrintTimingResults(url *url.URL) error {
+func (c *WSClient) PrintTimingResults(u *url.URL) error {
 	if c.Result == nil {
-		return fmt.Errorf("no results have been produced")
+		return errors.New("no results have been produced")
 	}
 
 	if c.Basic {
 		printTimingResultsBasic(c.Result, c.Burst)
 	} else {
-		printTimingResultsTiered(c.Result, url)
+		printTimingResultsTiered(c.Result, u)
 	}
 
 	return nil
@@ -249,10 +260,19 @@ func (c *WSClient) PrintResponse() {
 // set to valid values.
 func (c *WSClient) Validate() error {
 	if c.Burst < 1 {
-		return fmt.Errorf("burst must be greater than 0")
+		return errors.New("burst must be greater than 0")
 	}
+
+	// Fix grammar if burst is greater than 1
+	if c.Burst > 1 {
+		wssPrintTemplate = strings.Replace(
+			wssPrintTemplate, "Message RTT", "Mean Message RTT", 1)
+		wsPrintTemplate = strings.Replace(
+			wsPrintTemplate, "Message RTT", "Mean Message RTT", 1)
+	}
+
 	if c.TextMessage != "" && c.JSONMethod != "" {
-		return fmt.Errorf("mutually exclusive messaging flags")
+		return errors.New("mutually exclusive messaging flags")
 	}
 	return nil
 }
@@ -260,13 +280,13 @@ func (c *WSClient) Validate() error {
 // colorWSOrange returns the text with a custom orange color.
 // The color is from the WS logo, #ff6600 is its hex code.
 func colorWSOrange(text string) string {
-	return customColor(255, 102, 0, text)
+	return customColor(255, 102, 0, text) //revive:disable:add-constant should allow
 }
 
 // colorTeaGreen returns the text with a custom tea green color.
 // The color has hex code #d3f9b5.
 func colorTeaGreen(text string) string {
-	return customColor(211, 249, 181, text)
+	return customColor(211, 249, 181, text) //revive:disable:add-constant should allow
 }
 
 // customColor returns the text with a custom RGB color.
@@ -285,27 +305,27 @@ func formatPadRight(d time.Duration) string {
 }
 
 // handleConnectionError prints the error message and exits the program.
-func handleConnectionError(err error, url string) error {
+func handleConnectionError(err error, address string) error {
 	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
-		return fmt.Errorf("error establishing secure WS connection to '%s': %v", url, err)
+		return fmt.Errorf("error establishing secure WS connection to '%s': %v", address, err)
 	}
-	return fmt.Errorf("error establishing WS connection to '%s': %v", url, err)
+	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
 }
 
 // parseHeaders parses comma separated headers into an HTTP header.
-func parseHeaders(headers string) http.Header {
+func parseHeaders(headers string) (http.Header, error) {
 	header := http.Header{}
 	if headers != "" {
 		headerParts := strings.SplitSeq(headers, ",")
 		for part := range headerParts {
 			parts := strings.SplitN(part, ":", 2)
 			if len(parts) != 2 {
-				log.Fatalf("Invalid header format: %s", part)
+				return nil, fmt.Errorf("invalid header format: %s", part)
 			}
 			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
 		}
 	}
-	return header
+	return header, nil
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
@@ -326,16 +346,17 @@ func printTimingResultsBasic(result *wsstat.Result, burst int) {
 		result.MessageCount,
 		msgCountString)
 	fmt.Printf(
-		"%s: %s\n",
+		printValueTemp,
 		"Total time",
 		colorWSOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
 	fmt.Println()
 }
 
-// printTimingResultsTiered formats and prints the WebSocket statistics to the terminal in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, url *url.URL) {
+// printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
+// in a tiered fashion.
+func printTimingResultsTiered(result *wsstat.Result, u *url.URL) {
 	fmt.Println()
-	switch url.Scheme {
+	switch u.Scheme {
 	case "wss":
 		fmt.Fprintf(os.Stdout, wssPrintTemplate,
 			colorTeaGreen(formatPadLeft(result.DNSLookup)),
@@ -347,7 +368,7 @@ func printTimingResultsTiered(result *wsstat.Result, url *url.URL) {
 			colorTeaGreen(formatPadRight(result.TCPConnected)),
 			colorTeaGreen(formatPadRight(result.TLSHandshakeDone)),
 			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			//formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
+			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
 			colorWSOrange(formatPadRight(result.TotalTime)),
 		)
 	case "ws":
@@ -359,7 +380,7 @@ func printTimingResultsTiered(result *wsstat.Result, url *url.URL) {
 			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
 			colorTeaGreen(formatPadRight(result.TCPConnected)),
 			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			//formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
+			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
 			colorWSOrange(formatPadRight(result.TotalTime)),
 		)
 	}
