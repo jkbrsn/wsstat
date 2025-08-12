@@ -483,6 +483,115 @@ func (r *Result) durations() map[string]time.Duration {
 	}
 }
 
+// formatCompact prints the single-line comma-separated view used by %s, %q, and %v without '+'.
+func (r *Result) formatCompact(s fmt.State) {
+	d := r.durations()
+	list := make([]string, 0, len(d))
+	for k, v := range d {
+		// Handle when ws.Close function has not been called
+		if k == "TotalTime" && r.TotalTime == 0 {
+			list = append(list, fmt.Sprintf("%s: - ms", k))
+			continue
+		}
+		list = append(list, fmt.Sprintf("%s: %d ms", k, v/time.Millisecond))
+	}
+	io.WriteString(s, strings.Join(list, ", "))
+}
+
+// formatVerbosePlus prints the verbose multi-line view used by %#v.
+func (r *Result) formatVerbosePlus(s fmt.State) {
+	r.printURLAndIPSection(s)
+	r.printTLSSectionIfPresent(s)
+	r.printHeadersSection(s)
+	r.printDurationsSection(s)
+}
+
+// printURLAndIPSection prints the URL details and IPs, followed by a blank line.
+func (r *Result) printURLAndIPSection(s fmt.State) {
+	fmt.Fprintln(s, "URL")
+	fmt.Fprintf(s, "  Scheme: %s\n", r.URL.Scheme)
+	host, port := hostPort(r.URL)
+	fmt.Fprintf(s, "  Host: %s\n", host)
+	fmt.Fprintf(s, "  Port: %s\n", port)
+	if r.URL.Path != "" {
+		fmt.Fprintf(s, "  Path: %s\n", r.URL.Path)
+	}
+	if r.URL.RawQuery != "" {
+		fmt.Fprintf(s, "  Query: %s\n", r.URL.RawQuery)
+	}
+	fmt.Fprintln(s, "IP")
+	fmt.Fprintf(s, "  %v\n", r.IPs)
+	fmt.Fprintln(s)
+}
+
+// printTLSSectionIfPresent prints TLS handshake details and certificate information
+// if TLSState is set. It ends with a blank line only when TLS details are printed,
+// matching previous behavior.
+func (r *Result) printTLSSectionIfPresent(s fmt.State) {
+	if r.TLSState == nil {
+		return
+	}
+	fmt.Fprint(s, "TLS handshake details\n")
+	fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
+	fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
+	fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
+	fmt.Fprintf(s, "  Handshake Complete: %t\n", r.TLSState.HandshakeComplete)
+
+	for i, cert := range r.CertificateDetails() {
+		fmt.Fprintf(s, "Certificate %d\n", i+1)
+		fmt.Fprintf(s, "  Common Name: %s\n", cert.CommonName)
+		fmt.Fprintf(s, "  Issuer: %s\n", cert.Issuer)
+		fmt.Fprintf(s, "  Not Before: %s\n", cert.NotBefore)
+		fmt.Fprintf(s, "  Not After: %s\n", cert.NotAfter)
+		fmt.Fprintf(s, "  Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm.String())
+		fmt.Fprintf(s, "  Signature Algorithm: %s\n", cert.SignatureAlgorithm.String())
+		fmt.Fprintf(s, "  DNS Names: %v\n", cert.DNSNames)
+		fmt.Fprintf(s, "  IP Addresses: %v\n", cert.IPAddresses)
+		fmt.Fprintf(s, "  URIs: %v\n", cert.URIs)
+	}
+	fmt.Fprintln(s)
+}
+
+// printHeadersSection prints request and response headers (if present) and then a blank line.
+func (r *Result) printHeadersSection(s fmt.State) {
+	if r.RequestHeaders != nil {
+		fmt.Fprint(s, "Request headers\n")
+		for k, v := range r.RequestHeaders {
+			fmt.Fprintf(s, "  %s: %s\n", k, v)
+		}
+	}
+	if r.ResponseHeaders != nil {
+		fmt.Fprint(s, "Response headers\n")
+		for k, v := range r.ResponseHeaders {
+			fmt.Fprintf(s, "  %s: %s\n", k, v)
+		}
+	}
+	fmt.Fprintln(s)
+}
+
+// printDurationsSection prints the durations table exactly as before.
+func (r *Result) printDurationsSection(s fmt.State) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n", int(r.DNSLookup/time.Millisecond))
+	fmt.Fprintf(&buf, "TCP connection: %4d ms\n", int(r.TCPConnection/time.Millisecond))
+	fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n", int(r.TLSHandshake/time.Millisecond))
+	fmt.Fprintf(&buf, "WS handshake:   %4d ms\n", int(r.WSHandshake/time.Millisecond))
+	fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n", int(r.MessageRTT/time.Millisecond))
+
+	fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n", int(r.DNSLookupDone/time.Millisecond))
+	fmt.Fprintf(&buf, "TCP connected:      %4d ms\n", int(r.TCPConnected/time.Millisecond))
+	fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n", int(r.TLSHandshakeDone/time.Millisecond))
+	fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n", int(r.WSHandshakeDone/time.Millisecond))
+	fmt.Fprintf(&buf, "First msg response: %4d ms\n", int(r.FirstMessageResponse/time.Millisecond))
+
+	if r.TotalTime > 0 {
+		fmt.Fprintf(&buf, "Total:              %4d ms\n", int(r.TotalTime/time.Millisecond))
+	} else {
+		fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
+	}
+	io.WriteString(s, buf.String())
+}
+
 // CertificateDetails returns a slice of CertificateDetails for each certificate in the
 // TLS connection.
 func (r *Result) CertificateDetails() []CertificateDetails {
@@ -509,111 +618,16 @@ func (r *Result) CertificateDetails() []CertificateDetails {
 }
 
 // Format formats the time.Duration members of Result.
-// revive:disable:cognitive-complexity temporary
-// revive:disable:cyclomatic temporary
-// revive:disable:function-length temporary
-// TODO: fix cognitive, cyclomatic, and function length
 func (r *Result) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
 		if s.Flag('+') {
-			fmt.Fprintln(s, "URL")
-			fmt.Fprintf(s, "  Scheme: %s\n", r.URL.Scheme)
-			host, port := hostPort(r.URL)
-			fmt.Fprintf(s, "  Host: %s\n", host)
-			fmt.Fprintf(s, "  Port: %s\n", port)
-			if r.URL.Path != "" {
-				fmt.Fprintf(s, "  Path: %s\n", r.URL.Path)
-			}
-			if r.URL.RawQuery != "" {
-				fmt.Fprintf(s, "  Query: %s\n", r.URL.RawQuery)
-			}
-			fmt.Fprintln(s, "IP")
-			fmt.Fprintf(s, "  %v\n", r.IPs)
-			fmt.Fprintln(s)
-
-			if r.TLSState != nil {
-				fmt.Fprint(s, "TLS handshake details\n")
-				fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
-				fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
-				fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
-				fmt.Fprintf(s, "  Handshake Complete: %t\n", r.TLSState.HandshakeComplete)
-
-				for i, cert := range r.CertificateDetails() {
-					fmt.Fprintf(s, "Certificate %d\n", i+1)
-					fmt.Fprintf(s, "  Common Name: %s\n", cert.CommonName)
-					fmt.Fprintf(s, "  Issuer: %s\n", cert.Issuer)
-					fmt.Fprintf(s, "  Not Before: %s\n", cert.NotBefore)
-					fmt.Fprintf(s, "  Not After: %s\n", cert.NotAfter)
-					fmt.Fprintf(s, "  Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm.String())
-					fmt.Fprintf(s, "  Signature Algorithm: %s\n", cert.SignatureAlgorithm.String())
-					fmt.Fprintf(s, "  DNS Names: %v\n", cert.DNSNames)
-					fmt.Fprintf(s, "  IP Addresses: %v\n", cert.IPAddresses)
-					fmt.Fprintf(s, "  URIs: %v\n", cert.URIs)
-				}
-				fmt.Fprintln(s)
-			}
-
-			if r.RequestHeaders != nil {
-				fmt.Fprint(s, "Request headers\n")
-				for k, v := range r.RequestHeaders {
-					fmt.Fprintf(s, "  %s: %s\n", k, v)
-				}
-			}
-			if r.ResponseHeaders != nil {
-				fmt.Fprint(s, "Response headers\n")
-				for k, v := range r.ResponseHeaders {
-					fmt.Fprintf(s, "  %s: %s\n", k, v)
-				}
-			}
-			fmt.Fprintln(s)
-
-			var buf bytes.Buffer
-			fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
-				int(r.DNSLookup/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
-				int(r.TCPConnection/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
-				int(r.TLSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
-				int(r.WSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
-				int(r.MessageRTT/time.Millisecond))
-
-			fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
-				int(r.DNSLookupDone/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
-				int(r.TCPConnected/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
-				int(r.TLSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
-				int(r.WSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "First msg response: %4d ms\n",
-				int(r.FirstMessageResponse/time.Millisecond))
-
-			if r.TotalTime > 0 {
-				fmt.Fprintf(&buf, "Total:              %4d ms\n",
-					int(r.TotalTime/time.Millisecond))
-			} else {
-				fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
-			}
-			io.WriteString(s, buf.String())
+			r.formatVerbosePlus(s)
 			return
 		}
-
 		fallthrough
 	case 's', 'q':
-		d := r.durations()
-		list := make([]string, 0, len(d))
-		for k, v := range d {
-			// Handle when ws.Close function has not been called
-			if k == "TotalTime" && r.TotalTime == 0 {
-				list = append(list, fmt.Sprintf("%s: - ms", k))
-				continue
-			}
-			list = append(list, fmt.Sprintf("%s: %d ms", k, v/time.Millisecond))
-		}
-		io.WriteString(s, strings.Join(list, ", "))
+		r.formatCompact(s)
 	}
 }
 
