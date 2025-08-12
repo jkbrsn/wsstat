@@ -706,15 +706,13 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 // New creates and returns a new WSStat instance. To adjust the size of the read and write channel
 // buffers, call SetChanBufferSize before calling New().
 func New(logger zerolog.Logger) *WSStat {
-	log := logger.With().Str("pkg", "wsstat").Logger()
-
 	result := &Result{}
 	timings := &wsTimings{}
 	dialer := newDialer(result, timings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
-		log:       log,
+		log:       logger.With().Str("pkg", "wsstat").Logger(),
 		dialer:    dialer,
 		timings:   timings,
 		result:    result,

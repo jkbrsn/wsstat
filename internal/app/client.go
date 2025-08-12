@@ -68,65 +68,84 @@ type Client struct {
 	Result *wsstat.Result
 }
 
+// measureText runs the text-message latency measurement flow.
+func (c *Client) measureText(target *url.URL, header http.Header) error {
+	msgs := buildRepeatedStrings(c.TextMessage, c.Burst)
+	var err error
+	c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
+	if err != nil {
+		return handleConnectionError(err, target.String())
+	}
+	return c.postProcessTextResponse()
+}
+
+// postProcessTextResponse keeps behavior identical to the original implementation:
+// - pick the first element if response is []string and non-empty
+// - if RawOutput is false and response is a string, attempt to JSON-decode into map[string]any
+func (c *Client) postProcessTextResponse() error {
+	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
+		c.Response = responseArray[0]
+	}
+	if !c.RawOutput {
+		// Automatically decode JSON messages
+		decodedMessage := make(map[string]any)
+		responseStr, ok := c.Response.(string)
+		if ok {
+			if err := json.Unmarshal([]byte(responseStr), &decodedMessage); err != nil {
+				return fmt.Errorf("error unmarshalling JSON message: %v", err)
+			}
+			c.Response = decodedMessage
+		}
+	}
+	return nil
+}
+
+// measureJSON runs the JSON-RPC latency measurement flow.
+func (c *Client) measureJSON(target *url.URL, header http.Header) error {
+	msg := struct {
+		Method     string `json:"method"`
+		ID         string `json:"id"`
+		RPCVersion string `json:"jsonrpc"`
+	}{
+		Method:     c.JSONMethod,
+		ID:         "1",
+		RPCVersion: "2.0",
+	}
+	msgs := buildRepeatedAny(msg, c.Burst)
+	var err error
+	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
+	if err != nil {
+		return handleConnectionError(err, target.String())
+	}
+	return nil
+}
+
+// measurePing runs the ping latency measurement flow.
+func (c *Client) measurePing(target *url.URL, header http.Header) error {
+	var err error
+	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
+	if err != nil {
+		return handleConnectionError(err, target.String())
+	}
+	return nil
+}
+
 // MeasureLatency measures the latency of the WebSocket connection, applying different methods
 // based on the flags passed to the program.
-// revive:disable:cognitive-complexity temporary
-// TODO: fix cognitive complexity
 func (c *Client) MeasureLatency(target *url.URL) error {
 	header, err := parseHeaders(c.InputHeaders)
 	if err != nil {
 		return err
 	}
 
-	if c.TextMessage != "" {
-		msgs := make([]string, c.Burst)
-		for i := 0; i < c.Burst; i++ {
-			msgs[i] = c.TextMessage
-		}
-		c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
-		if err != nil {
-			return handleConnectionError(err, target.String())
-		}
-		if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
-			c.Response = responseArray[0]
-		}
-		if !c.RawOutput {
-			// Automatically decode JSON messages
-			decodedMessage := make(map[string]any)
-			responseStr, ok := c.Response.(string)
-			if ok {
-				err := json.Unmarshal([]byte(responseStr), &decodedMessage)
-				if err != nil {
-					return fmt.Errorf("error unmarshalling JSON message: %v", err)
-				}
-				c.Response = decodedMessage
-			}
-		}
-	} else if c.JSONMethod != "" {
-		msg := struct {
-			Method     string `json:"method"`
-			ID         string `json:"id"`
-			RPCVersion string `json:"jsonrpc"`
-		}{
-			Method:     c.JSONMethod,
-			ID:         "1",
-			RPCVersion: "2.0",
-		}
-		msgs := make([]any, c.Burst)
-		for i := 0; i < c.Burst; i++ {
-			msgs[i] = msg
-		}
-		c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
-		if err != nil {
-			return handleConnectionError(err, target.String())
-		}
-	} else {
-		c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
-		if err != nil {
-			return handleConnectionError(err, target.String())
-		}
+	switch {
+	case c.TextMessage != "":
+		return c.measureText(target, header)
+	case c.JSONMethod != "":
+		return c.measureJSON(target, header)
+	default:
+		return c.measurePing(target, header)
 	}
-	return nil
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
@@ -276,6 +295,24 @@ func (c *Client) Validate() error {
 		return errors.New("mutually exclusive messaging flags")
 	}
 	return nil
+}
+
+// buildRepeatedStrings returns a slice of length n where every element equals s.
+func buildRepeatedStrings(s string, n int) []string {
+	msgs := make([]string, n)
+	for i := range msgs {
+		msgs[i] = s
+	}
+	return msgs
+}
+
+// buildRepeatedAny returns a slice of length n where every element equals v.
+func buildRepeatedAny(v any, n int) []any {
+	msgs := make([]any, n)
+	for i := range msgs {
+		msgs[i] = v
+	}
+	return msgs
 }
 
 // colorWSOrange returns the text with a custom orange color.
