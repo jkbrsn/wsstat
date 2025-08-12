@@ -19,27 +19,29 @@ import (
 
 var (
 	// Templates for printing singular results
-	printValueTemp         = `%s: %s\n`
-	printIndentedValueTemp = `  %s: %s\n`
+	printValueTemp         = "%s: %s\n"
+	printIndentedValueTemp = "  %s: %s\n"
 
 	// Templates for printing tiered results
-	wssPrintTemplate = `` +
-		`  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    Message RTT` + "\n" +
-		`|%s  |      %s  |     %s  |    %s  |   %s  |` + "\n" +
-		`|           |                 |                |               |              |` + "\n" +
-		`|  DNS lookup:%s        |                |               |              |` + "\n" +
-		`|                 TCP connected:%s       |               |              |` + "\n" +
-		`|                                       TLS done:%s      |              |` + "\n" +
-		`|                                                        WS done:%s     |` + "\n" +
-		`-                                                                         Total:%s` + "\n"
-	wsPrintTemplate = `` +
-		`  DNS Lookup    TCP Connection    WS Handshake    Message RTT` + "\n" +
-		`|%s  |      %s  |    %s  |  %s   |` + "\n" +
-		`|           |                 |               |              |` + "\n" +
-		`|  DNS lookup:%s        |               |              |` + "\n" +
-		`|                 TCP connected:%s      |              |` + "\n" +
-		`|                                       WS done:%s     |` + "\n" +
-		`-                                                        Total:%s` + "\n"
+	wssPrintTemplate = `
+  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    Message RTT
+|%s  |      %s  |     %s  |    %s  |   %s  |
+|           |                 |                |               |              |
+|  DNS lookup:%s        |                |               |              |
+|                 TCP connected:%s       |               |              |
+|                                       TLS done:%s      |              |
+|                                                        WS done:%s     |
+-                                                                         Total:%s
+`
+	wsPrintTemplate = `
+  DNS Lookup    TCP Connection    WS Handshake    Message RTT
+|%s  |      %s  |    %s  |  %s   |
+|           |                 |               |              |
+|  DNS lookup:%s        |               |              |
+|                 TCP connected:%s      |              |
+|                                       WS done:%s     |
+-                                                        Total:%s
+`
 )
 
 // Client measures the latency of a WebSocket connection, applying different methods
@@ -352,18 +354,18 @@ func handleConnectionError(err error, address string) error {
 
 // parseHeaders parses comma separated headers into an HTTP header.
 func parseHeaders(headers string) (http.Header, error) {
-	header := http.Header{}
-	if headers != "" {
-		headerParts := strings.SplitSeq(headers, ",")
-		for part := range headerParts {
-			parts := strings.SplitN(part, ":", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid header format: %s", part)
-			}
-			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-		}
-	}
-	return header, nil
+    header := http.Header{}
+    if headers != "" {
+        headerParts := strings.Split(headers, ",")
+        for _, part := range headerParts {
+            parts := strings.SplitN(part, ":", 2)
+            if len(parts) != 2 {
+                return nil, fmt.Errorf("invalid header format: %s", part)
+            }
+            header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+        }
+    }
+    return header, nil
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
