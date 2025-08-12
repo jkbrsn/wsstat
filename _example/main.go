@@ -1,3 +1,4 @@
+// Package main provides examples of how to use the wsstat package.
 package main
 
 import (
@@ -14,18 +15,18 @@ import (
 func main() {
 	args := os.Args
 	if len(args) < 2 {
-		log.Fatalf("Usage: go run main.go URL")
+		log.Fatal("Usage: go run main.go URL")
 	}
-	rawUrl := args[1]
+	rawURL := args[1]
 
-	url, err := url.Parse(rawUrl)
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		log.Fatalf("Failed to parse URL: %v", err)
 	}
 
 	// Measure latency with one of the convenience functions
 	var msg = "Hello, WebSocket!"
-	result, p, err := wsstat.MeasureLatency(url, msg, http.Header{})
+	result, p, err := wsstat.MeasureLatency(u, msg, http.Header{})
 	if err != nil {
 		log.Fatalf("Failed to measure latency: %v", err)
 	}
@@ -35,7 +36,7 @@ func main() {
 	ws := wsstat.New()
 	defer ws.Close()
 
-	if err := ws.Dial(url, http.Header{}); err != nil {
+	if err := ws.Dial(u, http.Header{}); err != nil {
 		log.Fatalf("Failed to establish WebSocket connection: %v", err)
 	}
 

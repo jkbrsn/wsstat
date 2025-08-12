@@ -8,12 +8,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,14 +25,11 @@ import (
 )
 
 var (
-	// Package-specific logger, defaults to Info level
-	logger = zerolog.New(os.Stderr).Level(zerolog.InfoLevel).With().Timestamp().Logger()
-
 	// Default timeout for dialing and reading from the WebSocket connection
 	defaultTimeout = 5 * time.Second
 
 	// Stores optional user-provided TLS configuration
-	customTLSConfig *tls.Config = nil
+	customTLSConfig *tls.Config
 
 	// Sets the size of the read and write channel buffers
 	chanBufferSize = 8
@@ -78,6 +76,8 @@ type Result struct {
 
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
+	log zerolog.Logger
+
 	conn    *websocket.Conn
 	dialer  *websocket.Dialer
 	timings *wsTimings
@@ -187,7 +187,9 @@ func (ws *WSStat) readPump() {
 		case <-ws.ctx.Done():
 			return
 		default:
-			ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout))
+			if err := ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout)); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
+			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
 				ws.readChan <- &wsRead{err: err, messageType: messageType}
 				return
@@ -214,7 +216,7 @@ func (ws *WSStat) writePump() {
 			}
 
 			if err := ws.conn.WriteMessage(write.messageType, write.data); err != nil {
-				logger.Debug().Err(err).Msg("Failed to write message")
+				ws.log.Debug().Err(err).Msg("Failed to write message")
 				return
 			}
 		case <-ws.ctx.Done():
@@ -233,19 +235,23 @@ func (ws *WSStat) Close() {
 		// If the connection is not already closed, close it gracefully
 		if ws.conn != nil {
 			// Set read deadline to stop reading messages
-			ws.conn.SetReadDeadline(time.Now())
+			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
+			}
 
 			// Send close frame
 			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 			deadline := time.Now().Add(time.Second)
-			err := ws.conn.WriteControl(websocket.CloseMessage, formattedCloseMessage, deadline)
-			if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				logger.Debug().Err(err).Msg("Failed to write close message")
+			if err := ws.conn.WriteControl(
+				websocket.CloseMessage,
+				formattedCloseMessage,
+				deadline,
+			); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				ws.log.Debug().Err(err).Msg("Failed to write close message")
 			}
 
-			err = ws.conn.Close()
-			if err != nil {
-				logger.Debug().Err(err).Msg("Failed to close connection")
+			if err := ws.conn.Close(); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to close connection")
 			}
 			ws.conn = nil
 		}
@@ -268,7 +274,7 @@ func (ws *WSStat) Close() {
 		case <-done:
 			// All goroutines finished
 		case <-pumpsTimeoutCtx.Done():
-			logger.Warn().Msg("Timeout closing WSStat pumps")
+			ws.log.Warn().Msg("Timeout closing WSStat pumps")
 		}
 
 		// Close the pump channels
@@ -281,25 +287,27 @@ func (ws *WSStat) Close() {
 // Dial establishes a new WebSocket connection using the custom dialer defined in this package.
 // If required, specify custom headers to merge with the default headers.
 // Sets times: dialStart, wsHandshakeDone
-func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
-	ws.result.URL = url
+func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
+	ws.result.URL = targetURL
 	headers := http.Header{}
 	for name, values := range customHeaders {
 		headers.Add(name, strings.Join(values, ","))
 	}
 	ws.timings.dialStart = time.Now()
-	conn, resp, err := ws.dialer.Dial(url.String(), headers)
+	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
 	if err != nil {
 		if resp != nil {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			defer func() {
+				_ = resp.Body.Close()
+			}()
 			return fmt.Errorf("failed dial response '%s': %v", string(body), err)
 		}
-		return err
+		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
 	ws.timings.wsHandshakeDone = time.Now()
 	ws.conn = conn
-	ws.conn.SetPongHandler(func(appData string) error {
+	ws.conn.SetPongHandler(func(_ string) error {
 		select {
 		case <-ws.ctx.Done():
 			return nil
@@ -315,9 +323,9 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	go ws.writePump()
 
 	// Lookup IP
-	ips, err := net.LookupIP(url.Hostname())
+	ips, err := net.LookupIP(targetURL.Hostname())
 	if err != nil {
-		return fmt.Errorf("failed to lookup IP: %v", err)
+		return fmt.Errorf("failed IP lookup: %v", err)
 	}
 	ws.result.IPs = make([]string, len(ips))
 	for i, ip := range ips {
@@ -329,14 +337,16 @@ func (ws *WSStat) Dial(url *url.URL, customHeaders http.Header) error {
 	var documentedDefaultHeaders = map[string][]string{
 		"Upgrade":               {"websocket"}, // Constant value
 		"Connection":            {"Upgrade"},   // Constant value
-		"Sec-WebSocket-Key":     {"<hidden>"},  // A nonce value; dynamically generated for each request
 		"Sec-WebSocket-Version": {"13"},        // Constant value
-		// "Sec-WebSocket-Protocol",     // Also set by gorilla/websocket, but only if subprotocols are specified
+
+		// A nonce value; dynamically generated for each request
+		"Sec-WebSocket-Key": {"<hidden>"},
+
+		// Set by gorilla/websocket, but only if subprotocols are specified
+		// "Sec-WebSocket-Protocol",
 	}
 	// Merge custom headers
-	for name, values := range documentedDefaultHeaders {
-		headers[name] = values
-	}
+	maps.Copy(headers, documentedDefaultHeaders)
 	ws.result.RequestHeaders = headers
 	ws.result.ResponseHeaders = resp.Header
 
@@ -371,7 +381,7 @@ func (ws *WSStat) OneHitMessage(messageType int, data []byte) ([]byte, error) {
 // the response. Note: this function assumes that the response received is the response to the
 // sent message, make sure to only run this function sequentially to avoid unexpected behavior.
 // Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) OneHitMessageJSON(v interface{}) (interface{}, error) {
+func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
 	ws.WriteMessageJSON(v)
 
 	// Assuming immediate response
@@ -392,13 +402,17 @@ func (ws *WSStat) PingPong() {
 	ws.ReadPong()
 }
 
-// ReadMessage reads a message from the WebSocket connection and measures the round-trip time. If
-// an error occurs, it will be returned.
+// ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
+// If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
 	msg := <-ws.readChan
 	if msg.err != nil {
-		if websocket.IsUnexpectedCloseError(msg.err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+		if websocket.IsUnexpectedCloseError(
+			msg.err,
+			websocket.CloseGoingAway,
+			websocket.CloseNormalClosure,
+		) {
 			return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
 		}
 		return msg.messageType, nil, msg.err
@@ -411,7 +425,7 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
-func (ws *WSStat) ReadMessageJSON() (interface{}, error) {
+func (ws *WSStat) ReadMessageJSON() (any, error) {
 	msg := <-ws.readChan
 	if msg.err != nil {
 		return nil, msg.err
@@ -419,7 +433,7 @@ func (ws *WSStat) ReadMessageJSON() (interface{}, error) {
 
 	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
 
-	var resp interface{}
+	var resp any
 	err := json.Unmarshal(msg.data, &resp)
 	if err != nil {
 		return nil, err
@@ -444,11 +458,14 @@ func (ws *WSStat) WriteMessage(messageType int, data []byte) {
 
 // WriteMessageJSON sends a message through the WebSocket connection.
 // Sets time: MessageWrites
-func (ws *WSStat) WriteMessageJSON(v interface{}) {
-	jsonBytes := new(bytes.Buffer)
-	json.NewEncoder(jsonBytes).Encode(&v)
+func (ws *WSStat) WriteMessageJSON(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
+		return
+	}
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.writeChan <- &wsWrite{data: jsonBytes.Bytes(), messageType: websocket.TextMessage}
+	ws.writeChan <- &wsWrite{data: b, messageType: websocket.TextMessage}
 }
 
 // durations returns a map of the time.Duration members of Result.
@@ -469,7 +486,117 @@ func (r *Result) durations() map[string]time.Duration {
 	}
 }
 
-// CertificateDetails returns a slice of CertificateDetails for each certificate in the TLS connection.
+// formatCompact prints the single-line comma-separated view used by %s, %q, and %v without '+'.
+func (r *Result) formatCompact(s fmt.State) {
+	d := r.durations()
+	list := make([]string, 0, len(d))
+	for k, v := range d {
+		// Handle when ws.Close function has not been called
+		if k == "TotalTime" && r.TotalTime == 0 {
+			list = append(list, fmt.Sprintf("%s: - ms", k))
+			continue
+		}
+		list = append(list, fmt.Sprintf("%s: %d ms", k, v/time.Millisecond))
+	}
+	io.WriteString(s, strings.Join(list, ", "))
+}
+
+// formatVerbosePlus prints the verbose multi-line view used by %#v.
+func (r *Result) formatVerbosePlus(s fmt.State) {
+	r.printURLAndIPSection(s)
+	r.printTLSSectionIfPresent(s)
+	r.printHeadersSection(s)
+	r.printDurationsSection(s)
+}
+
+// printURLAndIPSection prints the URL details and IPs, followed by a blank line.
+func (r *Result) printURLAndIPSection(s fmt.State) {
+	fmt.Fprintln(s, "URL")
+	fmt.Fprintf(s, "  Scheme: %s\n", r.URL.Scheme)
+	host, port := hostPort(r.URL)
+	fmt.Fprintf(s, "  Host: %s\n", host)
+	fmt.Fprintf(s, "  Port: %s\n", port)
+	if r.URL.Path != "" {
+		fmt.Fprintf(s, "  Path: %s\n", r.URL.Path)
+	}
+	if r.URL.RawQuery != "" {
+		fmt.Fprintf(s, "  Query: %s\n", r.URL.RawQuery)
+	}
+	fmt.Fprintln(s, "IP")
+	fmt.Fprintf(s, "  %v\n", r.IPs)
+	fmt.Fprintln(s)
+}
+
+// printTLSSectionIfPresent prints TLS handshake details and certificate information
+// if TLSState is set. It ends with a blank line only when TLS details are printed,
+// matching previous behavior.
+func (r *Result) printTLSSectionIfPresent(s fmt.State) {
+	if r.TLSState == nil {
+		return
+	}
+	fmt.Fprint(s, "TLS handshake details\n")
+	fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
+	fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
+	fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
+	fmt.Fprintf(s, "  Handshake Complete: %t\n", r.TLSState.HandshakeComplete)
+
+	for i, cert := range r.CertificateDetails() {
+		fmt.Fprintf(s, "Certificate %d\n", i+1)
+		fmt.Fprintf(s, "  Common Name: %s\n", cert.CommonName)
+		fmt.Fprintf(s, "  Issuer: %s\n", cert.Issuer)
+		fmt.Fprintf(s, "  Not Before: %s\n", cert.NotBefore)
+		fmt.Fprintf(s, "  Not After: %s\n", cert.NotAfter)
+		fmt.Fprintf(s, "  Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm.String())
+		fmt.Fprintf(s, "  Signature Algorithm: %s\n", cert.SignatureAlgorithm.String())
+		fmt.Fprintf(s, "  DNS Names: %v\n", cert.DNSNames)
+		fmt.Fprintf(s, "  IP Addresses: %v\n", cert.IPAddresses)
+		fmt.Fprintf(s, "  URIs: %v\n", cert.URIs)
+	}
+	fmt.Fprintln(s)
+}
+
+// printHeadersSection prints request and response headers (if present) and then a blank line.
+func (r *Result) printHeadersSection(s fmt.State) {
+	if r.RequestHeaders != nil {
+		fmt.Fprint(s, "Request headers\n")
+		for k, v := range r.RequestHeaders {
+			fmt.Fprintf(s, "  %s: %s\n", k, v)
+		}
+	}
+	if r.ResponseHeaders != nil {
+		fmt.Fprint(s, "Response headers\n")
+		for k, v := range r.ResponseHeaders {
+			fmt.Fprintf(s, "  %s: %s\n", k, v)
+		}
+	}
+	fmt.Fprintln(s)
+}
+
+// printDurationsSection prints the durations table exactly as before.
+func (r *Result) printDurationsSection(s fmt.State) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n", int(r.DNSLookup/time.Millisecond))
+	fmt.Fprintf(&buf, "TCP connection: %4d ms\n", int(r.TCPConnection/time.Millisecond))
+	fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n", int(r.TLSHandshake/time.Millisecond))
+	fmt.Fprintf(&buf, "WS handshake:   %4d ms\n", int(r.WSHandshake/time.Millisecond))
+	fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n", int(r.MessageRTT/time.Millisecond))
+
+	fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n", int(r.DNSLookupDone/time.Millisecond))
+	fmt.Fprintf(&buf, "TCP connected:      %4d ms\n", int(r.TCPConnected/time.Millisecond))
+	fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n", int(r.TLSHandshakeDone/time.Millisecond))
+	fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n", int(r.WSHandshakeDone/time.Millisecond))
+	fmt.Fprintf(&buf, "First msg response: %4d ms\n", int(r.FirstMessageResponse/time.Millisecond))
+
+	if r.TotalTime > 0 {
+		fmt.Fprintf(&buf, "Total:              %4d ms\n", int(r.TotalTime/time.Millisecond))
+	} else {
+		fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
+	}
+	io.WriteString(s, buf.String())
+}
+
+// CertificateDetails returns a slice of CertificateDetails for each certificate in the
+// TLS connection.
 func (r *Result) CertificateDetails() []CertificateDetails {
 	if r.TLSState == nil {
 		return nil
@@ -498,108 +625,17 @@ func (r *Result) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
 		if s.Flag('+') {
-			fmt.Fprintln(s, "URL")
-			fmt.Fprintf(s, "  Scheme: %s\n", r.URL.Scheme)
-			host, port := hostPort(r.URL)
-			fmt.Fprintf(s, "  Host: %s\n", host)
-			fmt.Fprintf(s, "  Port: %s\n", port)
-			if r.URL.Path != "" {
-				fmt.Fprintf(s, "  Path: %s\n", r.URL.Path)
-			}
-			if r.URL.RawQuery != "" {
-				fmt.Fprintf(s, "  Query: %s\n", r.URL.RawQuery)
-			}
-			fmt.Fprintln(s, "IP")
-			fmt.Fprintf(s, "  %v\n", r.IPs)
-			fmt.Fprintln(s)
-
-			if r.TLSState != nil {
-				fmt.Fprintf(s, "TLS handshake details\n")
-				fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
-				fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
-				fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
-				fmt.Fprintf(s, "  Handshake Complete: %t\n", r.TLSState.HandshakeComplete)
-
-				for i, cert := range r.CertificateDetails() {
-					fmt.Fprintf(s, "Certificate %d\n", i+1)
-					fmt.Fprintf(s, "  Common Name: %s\n", cert.CommonName)
-					fmt.Fprintf(s, "  Issuer: %s\n", cert.Issuer)
-					fmt.Fprintf(s, "  Not Before: %s\n", cert.NotBefore)
-					fmt.Fprintf(s, "  Not After: %s\n", cert.NotAfter)
-					fmt.Fprintf(s, "  Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm.String())
-					fmt.Fprintf(s, "  Signature Algorithm: %s\n", cert.SignatureAlgorithm.String())
-					fmt.Fprintf(s, "  DNS Names: %v\n", cert.DNSNames)
-					fmt.Fprintf(s, "  IP Addresses: %v\n", cert.IPAddresses)
-					fmt.Fprintf(s, "  URIs: %v\n", cert.URIs)
-				}
-				fmt.Fprintln(s)
-			}
-
-			if r.RequestHeaders != nil {
-				fmt.Fprintf(s, "Request headers\n")
-				for k, v := range r.RequestHeaders {
-					fmt.Fprintf(s, "  %s: %s\n", k, v)
-				}
-			}
-			if r.ResponseHeaders != nil {
-				fmt.Fprintf(s, "Response headers\n")
-				for k, v := range r.ResponseHeaders {
-					fmt.Fprintf(s, "  %s: %s\n", k, v)
-				}
-			}
-			fmt.Fprintln(s)
-
-			var buf bytes.Buffer
-			fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n",
-				int(r.DNSLookup/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connection: %4d ms\n",
-				int(r.TCPConnection/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n",
-				int(r.TLSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake:   %4d ms\n",
-				int(r.WSHandshake/time.Millisecond))
-			fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n",
-				int(r.MessageRTT/time.Millisecond))
-
-			fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n",
-				int(r.DNSLookupDone/time.Millisecond))
-			fmt.Fprintf(&buf, "TCP connected:      %4d ms\n",
-				int(r.TCPConnected/time.Millisecond))
-			fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n",
-				int(r.TLSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n",
-				int(r.WSHandshakeDone/time.Millisecond))
-			fmt.Fprintf(&buf, "First msg response: %4d ms\n",
-				int(r.FirstMessageResponse/time.Millisecond))
-
-			if r.TotalTime > 0 {
-				fmt.Fprintf(&buf, "Total:              %4d ms\n",
-					int(r.TotalTime/time.Millisecond))
-			} else {
-				fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
-			}
-			io.WriteString(s, buf.String())
+			r.formatVerbosePlus(s)
 			return
 		}
-
 		fallthrough
 	case 's', 'q':
-		d := r.durations()
-		list := make([]string, 0, len(d))
-		for k, v := range d {
-			// Handle when ws.Close function has not been called
-			if k == "TotalTime" && r.TotalTime == 0 {
-				list = append(list, fmt.Sprintf("%s: - ms", k))
-				continue
-			}
-			list = append(list, fmt.Sprintf("%s: %d ms", k, v/time.Millisecond))
-		}
-		io.WriteString(s, strings.Join(list, ", "))
+		r.formatCompact(s)
 	}
 }
 
 // hostPort returns the host and port from a URL.
-func hostPort(u *url.URL) (string, string) {
+func hostPort(u *url.URL) (host, port string) {
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
 		log.Debug().Err(err).Msg("Failed to split host and port")
@@ -619,7 +655,8 @@ func hostPort(u *url.URL) (string, string) {
 	return host, port
 }
 
-// newDialer initializes and returns a websocket.Dialer with customized dial functions to measure the connection phases.
+// newDialer initializes and returns a websocket.Dialer with customized dial functions
+// to measure the connection phases.
 // Sets timings: dnsLookupDone, tcpConnected, tlsHandshakeDone.
 func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 	return &websocket.Dialer{
@@ -671,7 +708,7 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			tlsConn := tls.Client(netConn, tlsConfig)
 			err = tlsConn.Handshake()
 			if err != nil {
-				netConn.Close()
+				err = errors.Join(err, netConn.Close())
 				return nil, err
 			}
 			timings.tlsHandshakeDone = time.Now()
@@ -685,13 +722,14 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 
 // New creates and returns a new WSStat instance. To adjust the size of the read and write channel
 // buffers, call SetChanBufferSize before calling New().
-func New() *WSStat {
+func New(logger zerolog.Logger) *WSStat {
 	result := &Result{}
 	timings := &wsTimings{}
 	dialer := newDialer(result, timings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
+		log:       logger.With().Str("pkg", "wsstat").Logger(),
 		dialer:    dialer,
 		timings:   timings,
 		result:    result,
@@ -705,7 +743,7 @@ func New() *WSStat {
 	return ws
 }
 
-// SetBufferSize sets the size of the read and write channel buffers.
+// SetChanBufferSize sets the size of the read and write channel buffers.
 func SetChanBufferSize(size int) {
 	chanBufferSize = size
 }
@@ -719,14 +757,4 @@ func SetCustomTLSConfig(config *tls.Config) {
 // SetDefaultTimeout sets the default timeout for WSStat.
 func SetDefaultTimeout(timeout time.Duration) {
 	defaultTimeout = timeout
-}
-
-// SetLogLevel sets the log level for WSStat.
-func SetLogLevel(level zerolog.Level) {
-	logger = logger.Level(level)
-}
-
-// SetLogger sets the logger for WSStat.
-func SetLogger(l zerolog.Logger) {
-	logger = l
 }
