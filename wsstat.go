@@ -459,10 +459,13 @@ func (ws *WSStat) WriteMessage(messageType int, data []byte) {
 // WriteMessageJSON sends a message through the WebSocket connection.
 // Sets time: MessageWrites
 func (ws *WSStat) WriteMessageJSON(v any) {
-	jsonBytes := new(bytes.Buffer)
-	json.NewEncoder(jsonBytes).Encode(&v) //nolint:errcheck,revive // TODO: handle error
+	b, err := json.Marshal(v)
+	if err != nil {
+		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
+		return
+	}
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.writeChan <- &wsWrite{data: jsonBytes.Bytes(), messageType: websocket.TextMessage}
+	ws.writeChan <- &wsWrite{data: b, messageType: websocket.TextMessage}
 }
 
 // durations returns a map of the time.Duration members of Result.
