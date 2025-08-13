@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -290,8 +289,11 @@ func (ws *WSStat) Close() {
 func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	ws.result.URL = targetURL
 	headers := http.Header{}
+	// Preserve multi-value headers by copying each value individually
 	for name, values := range customHeaders {
-		headers.Add(name, strings.Join(values, ","))
+		for _, v := range values {
+			headers.Add(name, v)
+		}
 	}
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
@@ -345,8 +347,12 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 		// Set by gorilla/websocket, but only if subprotocols are specified
 		// "Sec-WebSocket-Protocol",
 	}
-	// Merge custom headers
-	maps.Copy(headers, documentedDefaultHeaders)
+	// Merge documented defaults without overwriting any user-provided values
+	for k, vals := range documentedDefaultHeaders {
+		if _, exists := headers[k]; !exists {
+			headers[k] = append([]string(nil), vals...)
+		}
+	}
 	ws.result.RequestHeaders = headers
 	ws.result.ResponseHeaders = resp.Header
 
@@ -560,13 +566,13 @@ func (r *Result) printHeadersSection(s fmt.State) {
 	if r.RequestHeaders != nil {
 		fmt.Fprint(s, "Request headers\n")
 		for k, v := range r.RequestHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, v)
+			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
 		}
 	}
 	if r.ResponseHeaders != nil {
 		fmt.Fprint(s, "Response headers\n")
 		for k, v := range r.ResponseHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, v)
+			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
 		}
 	}
 	fmt.Fprintln(s)
