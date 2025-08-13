@@ -20,7 +20,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -495,9 +494,15 @@ func (r *Result) durations() map[string]time.Duration {
 // formatCompact prints the single-line comma-separated view used by %s, %q, and %v without '+'.
 func (r *Result) formatCompact(s fmt.State) {
 	d := r.durations()
-	list := make([]string, 0, len(d))
-	for k, v := range d {
-		// Handle when ws.Close function has not been called
+	// Stable, readable order for single-line output
+	order := []string{
+		"DNSLookup", "TCPConnection", "TLSHandshake", "WSHandshake", "MessageRTT",
+		"DNSLookupDone", "TCPConnected", "TLSHandshakeDone", "WSHandshakeDone",
+		"FirstMessageResponse", "TotalTime",
+	}
+	list := make([]string, 0, len(order))
+	for _, k := range order {
+		v := d[k]
 		if k == "TotalTime" && r.TotalTime == 0 {
 			list = append(list, fmt.Sprintf("%s: - ms", k))
 			continue
@@ -642,20 +647,17 @@ func (r *Result) Format(s fmt.State, verb rune) {
 
 // hostPort returns the host and port from a URL.
 func hostPort(u *url.URL) (host, port string) {
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		log.Debug().Err(err).Msg("Failed to split host and port")
-		return "", ""
-	}
+	host = u.Hostname()
+	port = u.Port()
 	if port == "" {
-		// No port specified in the URL, return the default port based on the scheme
+		// Return the default port based on the scheme
 		switch u.Scheme {
 		case "ws":
-			return host, "80"
+			port = "80"
 		case "wss":
-			return host, "443"
+			port = "443"
 		default:
-			return host, ""
+			port = ""
 		}
 	}
 	return host, port
