@@ -707,9 +707,13 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			// Set up TLS configuration
 			tlsConfig := customTLSConfig
 			if tlsConfig == nil {
-				// Fall back to a default configuration
-				// Note: the default is an insecure configuration, use with caution
-				tlsConfig = &tls.Config{InsecureSkipVerify: true}
+				// Use safe system defaults; do not disable verification by default
+				tlsConfig = &tls.Config{}
+			}
+			// Ensure SNI/verification uses the original host name
+			if tlsConfig.ServerName == "" {
+				tlsConfig = tlsConfig.Clone()
+				tlsConfig.ServerName = host
 			}
 
 			// Initiate TLS handshake over the established TCP connection
