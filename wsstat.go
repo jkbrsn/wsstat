@@ -89,6 +89,10 @@ type WSStat struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	wgPumps   sync.WaitGroup
+
+	// instance configuration
+	timeout time.Duration
+	tlsConf *tls.Config
 }
 
 // wsRead holds the data read from the WebSocket connection.
@@ -185,7 +189,7 @@ func (ws *WSStat) readPump() {
 		case <-ws.ctx.Done():
 			return
 		default:
-			if err := ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout)); err != nil {
+			if err := ws.conn.SetReadDeadline(time.Now().Add(ws.timeout)); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
@@ -666,7 +670,12 @@ func hostPort(u *url.URL) (host, port string) {
 // newDialer initializes and returns a websocket.Dialer with customized dial functions
 // to measure the connection phases.
 // Sets timings: dnsLookupDone, tcpConnected, tlsHandshakeDone.
-func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
+func newDialer(
+	result *Result,
+	timings *wsTimings,
+	tlsConf *tls.Config,
+	timeout time.Duration,
+) *websocket.Dialer {
 	return &websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// Perform DNS lookup
@@ -678,7 +687,7 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			timings.dnsLookupDone = time.Now()
 
 			// Measure TCP connection time
-			conn, err := net.DialTimeout(network, net.JoinHostPort(addrs[0], port), defaultTimeout)
+			conn, err := net.DialTimeout(network, net.JoinHostPort(addrs[0], port), timeout)
 			if err != nil {
 				return nil, err
 			}
@@ -705,7 +714,7 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			timings.tcpConnected = time.Now()
 
 			// Set up TLS configuration
-			tlsConfig := customTLSConfig
+			tlsConfig := tlsConf
 			if tlsConfig == nil {
 				// Use safe system defaults; do not disable verification by default
 				tlsConfig = &tls.Config{}
@@ -732,12 +741,40 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 	}
 }
 
-// New creates and returns a new WSStat instance. To adjust the size of the read and write channel
-// buffers, call SetChanBufferSize before calling New().
-func New(logger zerolog.Logger) *WSStat {
+// Option configures a WSStat instance.
+type Option func(*options)
+
+type options struct {
+	tlsConfig  *tls.Config
+	timeout    time.Duration
+	bufferSize int
+}
+
+// WithTLSConfig sets the TLS configuration for the connection.
+func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
+
+// WithTimeout sets the timeout used for dialing and read deadlines.
+func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
+// WithBufferSize sets the buffer size for read/write/pong channels.
+func WithBufferSize(n int) Option { return func(o *options) { o.bufferSize = n } }
+
+// New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
+// use options. If not provided, package defaults are used for compatibility.
+func New(logger zerolog.Logger, opts ...Option) *WSStat {
+	// Start with package defaults for back-compat
+	cfg := options{
+		tlsConfig:  customTLSConfig,
+		timeout:    defaultTimeout,
+		bufferSize: chanBufferSize,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	result := &Result{}
 	timings := &wsTimings{}
-	dialer := newDialer(result, timings)
+	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
@@ -747,9 +784,11 @@ func New(logger zerolog.Logger) *WSStat {
 		result:    result,
 		ctx:       ctx,
 		cancel:    cancel,
-		readChan:  make(chan *wsRead, chanBufferSize),
-		pongChan:  make(chan bool, chanBufferSize),
-		writeChan: make(chan *wsWrite, chanBufferSize),
+		readChan:  make(chan *wsRead, cfg.bufferSize),
+		pongChan:  make(chan bool, cfg.bufferSize),
+		writeChan: make(chan *wsWrite, cfg.bufferSize),
+		timeout:   cfg.timeout,
+		tlsConf:   cfg.tlsConfig,
 	}
 
 	return ws
