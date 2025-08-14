@@ -22,15 +22,11 @@ import (
 	"github.com/rs/zerolog"
 )
 
-var (
-	// Default timeout for dialing and reading from the WebSocket connection
+const (
+	// defaultTimeout is the default read/dial timeout for WSStat instances.
 	defaultTimeout = 5 * time.Second
-
-	// Stores optional user-provided TLS configuration
-	customTLSConfig *tls.Config
-
-	// Sets the size of the read and write channel buffers
-	chanBufferSize = 8
+	// defaultChanBufferSize is the default size of read/write/pong channels.
+	defaultChanBufferSize = 8
 )
 
 // CertificateDetails holds details regarding a certificate.
@@ -768,9 +764,9 @@ func WithBufferSize(n int) Option { return func(o *options) { o.bufferSize = n }
 func New(logger zerolog.Logger, opts ...Option) *WSStat {
 	// Start with package defaults for back-compat
 	cfg := options{
-		tlsConfig:  customTLSConfig,
+		bufferSize: defaultChanBufferSize,
 		timeout:    defaultTimeout,
-		bufferSize: chanBufferSize,
+		tlsConfig:  nil,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -796,20 +792,4 @@ func New(logger zerolog.Logger, opts ...Option) *WSStat {
 	}
 
 	return ws
-}
-
-// SetChanBufferSize sets the size of the read and write channel buffers.
-func SetChanBufferSize(size int) {
-	chanBufferSize = size
-}
-
-// SetCustomTLSConfig allows users to provide their own TLS configuration.
-// Pass nil to use default settings.
-func SetCustomTLSConfig(config *tls.Config) {
-	customTLSConfig = config
-}
-
-// SetDefaultTimeout sets the default timeout for WSStat.
-func SetDefaultTimeout(timeout time.Duration) {
-	defaultTimeout = timeout
 }
