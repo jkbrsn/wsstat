@@ -217,6 +217,9 @@ func (ws *WSStat) writePump() {
 				return
 			}
 
+			if err := ws.conn.SetWriteDeadline(time.Now().Add(ws.timeout)); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to set write deadline")
+			}
 			if err := ws.conn.WriteMessage(write.messageType, write.data); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to write message")
 				return
@@ -687,7 +690,8 @@ func newDialer(
 			timings.dnsLookupDone = time.Now()
 
 			// Measure TCP connection time
-			conn, err := net.DialTimeout(network, net.JoinHostPort(addrs[0], port), timeout)
+			d := &net.Dialer{Timeout: timeout}
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
 			if err != nil {
 				return nil, err
 			}
@@ -706,7 +710,7 @@ func newDialer(
 			timings.dnsLookupDone = time.Now()
 
 			// Measure TCP connection time
-			dialer := &net.Dialer{}
+			dialer := &net.Dialer{Timeout: timeout}
 			netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
 			if err != nil {
 				return nil, err
