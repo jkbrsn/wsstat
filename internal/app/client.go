@@ -175,7 +175,7 @@ func (c *Client) PrintRequestDetails() error {
 		for _, ip := range c.Result.IPs {
 			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
 		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent:"), c.Result.MessageCount)
+		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
 		fmt.Println()
 		if c.Result.TLSState != nil {
 			fmt.Println(colorWSOrange("TLS"))
