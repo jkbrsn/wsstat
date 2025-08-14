@@ -175,7 +175,7 @@ func (c *Client) PrintRequestDetails() error {
 		for _, ip := range c.Result.IPs {
 			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
 		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent:"), c.Result.MessageCount)
+		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
 		fmt.Println()
 		if c.Result.TLSState != nil {
 			fmt.Println(colorWSOrange("TLS"))
@@ -354,18 +354,18 @@ func handleConnectionError(err error, address string) error {
 
 // parseHeaders parses comma separated headers into an HTTP header.
 func parseHeaders(headers string) (http.Header, error) {
-    header := http.Header{}
-    if headers != "" {
-        headerParts := strings.Split(headers, ",")
-        for _, part := range headerParts {
-            parts := strings.SplitN(part, ":", 2)
-            if len(parts) != 2 {
-                return nil, fmt.Errorf("invalid header format: %s", part)
-            }
-            header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-        }
-    }
-    return header, nil
+	header := http.Header{}
+	if headers != "" {
+		headerParts := strings.Split(headers, ",")
+		for _, part := range headerParts {
+			parts := strings.SplitN(part, ":", 2)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid header format: %s", part)
+			}
+			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+		}
+	}
+	return header, nil
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.

@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,18 +20,13 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
-var (
-	// Default timeout for dialing and reading from the WebSocket connection
+const (
+	// defaultTimeout is the default read/dial timeout for WSStat instances.
 	defaultTimeout = 5 * time.Second
-
-	// Stores optional user-provided TLS configuration
-	customTLSConfig *tls.Config
-
-	// Sets the size of the read and write channel buffers
-	chanBufferSize = 8
+	// defaultChanBufferSize is the default size of read/write/pong channels.
+	defaultChanBufferSize = 8
 )
 
 // CertificateDetails holds details regarding a certificate.
@@ -91,6 +85,10 @@ type WSStat struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	wgPumps   sync.WaitGroup
+
+	// instance configuration
+	timeout time.Duration
+	tlsConf *tls.Config
 }
 
 // wsRead holds the data read from the WebSocket connection.
@@ -187,7 +185,7 @@ func (ws *WSStat) readPump() {
 		case <-ws.ctx.Done():
 			return
 		default:
-			if err := ws.conn.SetReadDeadline(time.Now().Add(defaultTimeout)); err != nil {
+			if err := ws.conn.SetReadDeadline(time.Now().Add(ws.timeout)); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
@@ -215,6 +213,9 @@ func (ws *WSStat) writePump() {
 				return
 			}
 
+			if err := ws.conn.SetWriteDeadline(time.Now().Add(ws.timeout)); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to set write deadline")
+			}
 			if err := ws.conn.WriteMessage(write.messageType, write.data); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to write message")
 				return
@@ -290,8 +291,11 @@ func (ws *WSStat) Close() {
 func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	ws.result.URL = targetURL
 	headers := http.Header{}
+	// Preserve multi-value headers by copying each value individually
 	for name, values := range customHeaders {
-		headers.Add(name, strings.Join(values, ","))
+		for _, v := range values {
+			headers.Add(name, v)
+		}
 	}
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
@@ -345,8 +349,12 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 		// Set by gorilla/websocket, but only if subprotocols are specified
 		// "Sec-WebSocket-Protocol",
 	}
-	// Merge custom headers
-	maps.Copy(headers, documentedDefaultHeaders)
+	// Merge documented defaults without overwriting any user-provided values
+	for k, vals := range documentedDefaultHeaders {
+		if _, exists := headers[k]; !exists {
+			headers[k] = append([]string(nil), vals...)
+		}
+	}
 	ws.result.RequestHeaders = headers
 	ws.result.ResponseHeaders = resp.Header
 
@@ -489,9 +497,15 @@ func (r *Result) durations() map[string]time.Duration {
 // formatCompact prints the single-line comma-separated view used by %s, %q, and %v without '+'.
 func (r *Result) formatCompact(s fmt.State) {
 	d := r.durations()
-	list := make([]string, 0, len(d))
-	for k, v := range d {
-		// Handle when ws.Close function has not been called
+	// Stable, readable order for single-line output
+	order := []string{
+		"DNSLookup", "TCPConnection", "TLSHandshake", "WSHandshake", "MessageRTT",
+		"DNSLookupDone", "TCPConnected", "TLSHandshakeDone", "WSHandshakeDone",
+		"FirstMessageResponse", "TotalTime",
+	}
+	list := make([]string, 0, len(order))
+	for _, k := range order {
+		v := d[k]
 		if k == "TotalTime" && r.TotalTime == 0 {
 			list = append(list, fmt.Sprintf("%s: - ms", k))
 			continue
@@ -560,13 +574,13 @@ func (r *Result) printHeadersSection(s fmt.State) {
 	if r.RequestHeaders != nil {
 		fmt.Fprint(s, "Request headers\n")
 		for k, v := range r.RequestHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, v)
+			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
 		}
 	}
 	if r.ResponseHeaders != nil {
 		fmt.Fprint(s, "Response headers\n")
 		for k, v := range r.ResponseHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, v)
+			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
 		}
 	}
 	fmt.Fprintln(s)
@@ -636,20 +650,17 @@ func (r *Result) Format(s fmt.State, verb rune) {
 
 // hostPort returns the host and port from a URL.
 func hostPort(u *url.URL) (host, port string) {
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		log.Debug().Err(err).Msg("Failed to split host and port")
-		return "", ""
-	}
+	host = u.Hostname()
+	port = u.Port()
 	if port == "" {
-		// No port specified in the URL, return the default port based on the scheme
+		// Return the default port based on the scheme
 		switch u.Scheme {
 		case "ws":
-			return host, "80"
+			port = "80"
 		case "wss":
-			return host, "443"
+			port = "443"
 		default:
-			return host, ""
+			port = ""
 		}
 	}
 	return host, port
@@ -658,7 +669,12 @@ func hostPort(u *url.URL) (host, port string) {
 // newDialer initializes and returns a websocket.Dialer with customized dial functions
 // to measure the connection phases.
 // Sets timings: dnsLookupDone, tcpConnected, tlsHandshakeDone.
-func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
+func newDialer(
+	result *Result,
+	timings *wsTimings,
+	tlsConf *tls.Config,
+	timeout time.Duration,
+) *websocket.Dialer {
 	return &websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// Perform DNS lookup
@@ -670,7 +686,8 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			timings.dnsLookupDone = time.Now()
 
 			// Measure TCP connection time
-			conn, err := net.DialTimeout(network, net.JoinHostPort(addrs[0], port), defaultTimeout)
+			d := &net.Dialer{Timeout: timeout}
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
 			if err != nil {
 				return nil, err
 			}
@@ -689,7 +706,7 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			timings.dnsLookupDone = time.Now()
 
 			// Measure TCP connection time
-			dialer := &net.Dialer{}
+			dialer := &net.Dialer{Timeout: timeout}
 			netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
 			if err != nil {
 				return nil, err
@@ -697,11 +714,15 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 			timings.tcpConnected = time.Now()
 
 			// Set up TLS configuration
-			tlsConfig := customTLSConfig
+			tlsConfig := tlsConf
 			if tlsConfig == nil {
-				// Fall back to a default configuration
-				// Note: the default is an insecure configuration, use with caution
-				tlsConfig = &tls.Config{InsecureSkipVerify: true}
+				// Use safe system defaults; do not disable verification by default
+				tlsConfig = &tls.Config{}
+			}
+			// Ensure SNI/verification uses the original host name
+			if tlsConfig.ServerName == "" {
+				tlsConfig = tlsConfig.Clone()
+				tlsConfig.ServerName = host
 			}
 
 			// Initiate TLS handshake over the established TCP connection
@@ -720,12 +741,40 @@ func newDialer(result *Result, timings *wsTimings) *websocket.Dialer {
 	}
 }
 
-// New creates and returns a new WSStat instance. To adjust the size of the read and write channel
-// buffers, call SetChanBufferSize before calling New().
-func New(logger zerolog.Logger) *WSStat {
+// Option configures a WSStat instance.
+type Option func(*options)
+
+type options struct {
+	tlsConfig  *tls.Config
+	timeout    time.Duration
+	bufferSize int
+}
+
+// WithTLSConfig sets the TLS configuration for the connection.
+func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
+
+// WithTimeout sets the timeout used for dialing and read deadlines.
+func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
+// WithBufferSize sets the buffer size for read/write/pong channels.
+func WithBufferSize(n int) Option { return func(o *options) { o.bufferSize = n } }
+
+// New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
+// use options. If not provided, package defaults are used for compatibility.
+func New(logger zerolog.Logger, opts ...Option) *WSStat {
+	// Start with package defaults for back-compat
+	cfg := options{
+		bufferSize: defaultChanBufferSize,
+		timeout:    defaultTimeout,
+		tlsConfig:  nil,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	result := &Result{}
 	timings := &wsTimings{}
-	dialer := newDialer(result, timings)
+	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
@@ -735,26 +784,12 @@ func New(logger zerolog.Logger) *WSStat {
 		result:    result,
 		ctx:       ctx,
 		cancel:    cancel,
-		readChan:  make(chan *wsRead, chanBufferSize),
-		pongChan:  make(chan bool, chanBufferSize),
-		writeChan: make(chan *wsWrite, chanBufferSize),
+		readChan:  make(chan *wsRead, cfg.bufferSize),
+		pongChan:  make(chan bool, cfg.bufferSize),
+		writeChan: make(chan *wsWrite, cfg.bufferSize),
+		timeout:   cfg.timeout,
+		tlsConf:   cfg.tlsConfig,
 	}
 
 	return ws
-}
-
-// SetChanBufferSize sets the size of the read and write channel buffers.
-func SetChanBufferSize(size int) {
-	chanBufferSize = size
-}
-
-// SetCustomTLSConfig allows users to provide their own TLS configuration.
-// Pass nil to use default settings.
-func SetCustomTLSConfig(config *tls.Config) {
-	customTLSConfig = config
-}
-
-// SetDefaultTimeout sets the default timeout for WSStat.
-func SetDefaultTimeout(timeout time.Duration) {
-	defaultTimeout = timeout
 }
