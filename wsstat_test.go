@@ -235,6 +235,23 @@ func TestPingPong(t *testing.T) {
 	validateOneHitResult(ws, getFunctionName(), t)
 }
 
+func TestReadAfterClose(t *testing.T) {
+	ws := New()
+	ws.Close()
+
+	_, _, err := ws.ReadMessage()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read channel closed")
+
+	_, err = ws.ReadMessageJSON()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read channel closed")
+
+	err = ws.ReadPong()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pong channel closed")
+}
+
 // Helpers
 
 // getFunctionName returns the name of the calling function.

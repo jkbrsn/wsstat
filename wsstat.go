@@ -698,15 +698,25 @@ func newDialer(
 			}
 			timings.dnsLookupDone = time.Now()
 
-			// Measure TCP connection time
-			d := &net.Dialer{Timeout: timeout}
-			conn, err := d.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
-			if err != nil {
-				return nil, err
+			var dialErr error
+			// Walk through all addresses and grab the first successful connection, to make
+			// IPv4/IPv6 ordering quirks less fragile
+			for _, ip := range addrs {
+				d := &net.Dialer{Timeout: timeout}
+				conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip, port))
+				if err != nil {
+					dialErr = err
+					continue
+				}
+				timings.tcpConnected = time.Now()
+				return conn, nil
 			}
-			timings.tcpConnected = time.Now()
 
-			return conn, nil
+			if dialErr != nil {
+				return nil, dialErr
+			}
+
+			return nil, fmt.Errorf("no addresses found for %s", host)
 		},
 
 		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -718,38 +728,48 @@ func newDialer(
 			}
 			timings.dnsLookupDone = time.Now()
 
-			// Measure TCP connection time
-			dialer := &net.Dialer{Timeout: timeout}
-			netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
-			if err != nil {
-				return nil, err
-			}
-			timings.tcpConnected = time.Now()
+			var dialErr error
+			// Walk through all addresses and grab the first successful connection, to make
+			// IPv4/IPv6 ordering quirks less fragile
+			for _, ip := range addrs {
+				dialer := &net.Dialer{Timeout: timeout}
+				netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
+				if err != nil {
+					dialErr = err
+					continue
+				}
+				timings.tcpConnected = time.Now()
 
-			// Set up TLS configuration
-			tlsConfig := tlsConf
-			if tlsConfig == nil {
-				// Use safe system defaults; do not disable verification by default
-				tlsConfig = &tls.Config{}
-			}
-			// Ensure SNI/verification uses the original host name
-			if tlsConfig.ServerName == "" {
-				tlsConfig = tlsConfig.Clone()
-				tlsConfig.ServerName = host
+				// Set up TLS configuration
+				tlsConfig := tlsConf
+				if tlsConfig == nil {
+					// Use safe system defaults; do not disable verification by default
+					tlsConfig = &tls.Config{}
+				}
+				// Ensure SNI/verification uses the original host name
+				if tlsConfig.ServerName == "" {
+					tlsConfig = tlsConfig.Clone()
+					tlsConfig.ServerName = host
+				}
+
+				// Initiate TLS handshake over the established TCP connection
+				tlsConn := tls.Client(netConn, tlsConfig)
+				if err := tlsConn.Handshake(); err != nil {
+					dialErr = errors.Join(err, tlsConn.Close())
+					continue
+				}
+				timings.tlsHandshakeDone = time.Now()
+				state := tlsConn.ConnectionState()
+				result.TLSState = &state
+
+				return tlsConn, nil
 			}
 
-			// Initiate TLS handshake over the established TCP connection
-			tlsConn := tls.Client(netConn, tlsConfig)
-			err = tlsConn.Handshake()
-			if err != nil {
-				err = errors.Join(err, netConn.Close())
-				return nil, err
+			if dialErr != nil {
+				return nil, dialErr
 			}
-			timings.tlsHandshakeDone = time.Now()
-			state := tlsConn.ConnectionState()
-			result.TLSState = &state
 
-			return tlsConn, nil
+			return nil, fmt.Errorf("no addresses found for %s", host)
 		},
 	}
 }
