@@ -38,6 +38,23 @@ func TestFormatPadding(t *testing.T) {
 	assert.Equal(t, "5ms     ", formatPadRight(d)) // "5ms" + 5 trailing spaces
 }
 
+func TestPostProcessTextResponse(t *testing.T) {
+	t.Run("keeps plain text", func(t *testing.T) {
+		c := &Client{Response: "not json"}
+		require.NoError(t, c.postProcessTextResponse())
+		assert.Equal(t, "not json", c.Response)
+	})
+
+	t.Run("decodes json rpc", func(t *testing.T) {
+		payload := `{"jsonrpc":"2.0","result":"ok"}`
+		c := &Client{Response: payload}
+		require.NoError(t, c.postProcessTextResponse())
+		asMap, ok := c.Response.(map[string]any)
+		require.True(t, ok, "expected JSON-RPC response to decode into a map")
+		assert.Equal(t, "ok", asMap["result"])
+	})
+}
+
 // TestColorHelpers performs basic sanity checks on ANSI wrapped strings.
 func TestColorHelpers(t *testing.T) {
 	base := "txt"

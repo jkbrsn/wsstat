@@ -24,7 +24,7 @@ var (
 
 	// Templates for printing tiered results
 	wssPrintTemplate = `
-  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    Message RTT
+  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    %-17s
 |%s  |      %s  |     %s  |    %s  |   %s  |
 |           |                 |                |               |              |
 |  DNS lookup:%s        |                |               |              |
@@ -34,7 +34,7 @@ var (
 -                                                                         Total:%s
 `
 	wsPrintTemplate = `
-  DNS Lookup    TCP Connection    WS Handshake    Message RTT
+  DNS Lookup    TCP Connection    WS Handshake    %-17s
 |%s  |      %s  |    %s  |  %s   |
 |           |                 |               |              |
 |  DNS lookup:%s        |               |              |
@@ -81,23 +81,34 @@ func (c *Client) measureText(target *url.URL, header http.Header) error {
 	return c.postProcessTextResponse()
 }
 
-// postProcessTextResponse keeps behavior identical to the original implementation:
+// postProcessTextResponse keeps behavior identical to the original implementation while allowing
+// plain-text echoes:
 // - pick the first element if response is []string and non-empty
-// - if RawOutput is false and response is a string, attempt to JSON-decode into map[string]any
+// - if RawOutput is false and response is a JSON-RPC payload, decode into map[string]any
 func (c *Client) postProcessTextResponse() error {
 	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
 		c.Response = responseArray[0]
 	}
 	if !c.RawOutput {
-		// Automatically decode JSON messages
-		decodedMessage := make(map[string]any)
 		responseStr, ok := c.Response.(string)
-		if ok {
-			if err := json.Unmarshal([]byte(responseStr), &decodedMessage); err != nil {
-				return fmt.Errorf("error unmarshalling JSON message: %v", err)
-			}
-			c.Response = decodedMessage
+		if !ok {
+			return nil
 		}
+
+		trimmed := strings.TrimSpace(responseStr)
+		if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+			return nil
+		}
+
+		decodedMessage := make(map[string]any)
+		if err := json.Unmarshal([]byte(responseStr), &decodedMessage); err != nil {
+			return nil
+		}
+
+		if _, isJSONRPC := decodedMessage["jsonrpc"]; !isJSONRPC {
+			return nil
+		}
+		c.Response = decodedMessage
 	}
 	return nil
 }
@@ -233,7 +244,8 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 	if c.Basic {
 		printTimingResultsBasic(c.Result, c.Burst)
 	} else {
-		printTimingResultsTiered(c.Result, u)
+		useMeanLabel := c.Burst > 1 || c.Result.MessageCount > 1
+		printTimingResultsTiered(c.Result, u, useMeanLabel)
 	}
 
 	return nil
@@ -270,7 +282,7 @@ func (c *Client) PrintResponse() {
 	} else if responseArray, ok := c.Response.([]any); ok {
 		fmt.Printf("%s%v\n", baseMessage, responseArray)
 	} else if responseBytes, ok := c.Response.([]byte); ok {
-		fmt.Printf("%s%v\n", baseMessage, responseBytes)
+		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
 	}
 
 	if !c.Quiet {
@@ -283,14 +295,6 @@ func (c *Client) PrintResponse() {
 func (c *Client) Validate() error {
 	if c.Burst < 1 {
 		return errors.New("burst must be greater than 0")
-	}
-
-	// Fix grammar if burst is greater than 1
-	if c.Burst > 1 {
-		wssPrintTemplate = strings.Replace(
-			wssPrintTemplate, "Message RTT", "Mean Message RTT", 1)
-		wsPrintTemplate = strings.Replace(
-			wsPrintTemplate, "Message RTT", "Mean Message RTT", 1)
 	}
 
 	if c.TextMessage != "" && c.JSONMethod != "" {
@@ -394,11 +398,16 @@ func printTimingResultsBasic(result *wsstat.Result, burst int) {
 
 // printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
 // in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, u *url.URL) {
+func printTimingResultsTiered(result *wsstat.Result, u *url.URL, useMeanLabel bool) {
 	fmt.Println()
+	label := "Message RTT"
+	if useMeanLabel {
+		label = "Mean Message RTT"
+	}
 	switch u.Scheme {
 	case "wss":
 		fmt.Fprintf(os.Stdout, wssPrintTemplate,
+			label,
 			colorTeaGreen(formatPadLeft(result.DNSLookup)),
 			colorTeaGreen(formatPadLeft(result.TCPConnection)),
 			colorTeaGreen(formatPadLeft(result.TLSHandshake)),
@@ -413,6 +422,7 @@ func printTimingResultsTiered(result *wsstat.Result, u *url.URL) {
 		)
 	case "ws":
 		fmt.Fprintf(os.Stdout, wsPrintTemplate,
+			label,
 			colorTeaGreen(formatPadLeft(result.DNSLookup)),
 			colorTeaGreen(formatPadLeft(result.TCPConnection)),
 			colorTeaGreen(formatPadLeft(result.WSHandshake)),
