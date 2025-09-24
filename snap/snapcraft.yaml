@@ -1,7 +1,7 @@
 name: wsstat
 adopt-info: wsstat
 license: MIT
-summary: wsstat is a websocket endpoint monitoring tool.
+summary: wsstat is a websocket endpoint monitoring tool
 description: |
   wsstat provides a simple and easy to use tool to check the status and connection stats of a WebSocket endpoint.
 
@@ -9,10 +9,12 @@ description: |
 
 grade: stable
 confinement: strict
-base: core22
+base: core24
 
-architectures:
-  - build-on: amd64
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
 
 apps:
   wsstat:
@@ -20,19 +22,38 @@ apps:
     plugs: [network, home]
 
 parts:
-  wsstat:
+  go-deps:
     plugin: nil
-    build-snaps: 
-      - go
-    source: https://github.com/jkbrsn/wsstat.git
-    # source-tag: v0.1.1  # uncomment this line to build on a specific tag instead of on the latest commit
+    source: https://go.dev/dl/go1.25.1.linux-amd64.tar.gz
+    source-type: tar
+    override-build: |
+      install -d "${CRAFT_PART_INSTALL}/usr/local/go"
+      cp -a "${CRAFT_PART_SRC}/." "${CRAFT_PART_INSTALL}/usr/local/go/"
+    stage:
+      - usr/local/go/**
+    prime: []
+    # TODO: consider ignoring the testdata files
+    #lint:
+    #  ignore:
+    #    library:
+    #      - usr/local/go/src/debug/elf/testdata/libtiffxx.so_
+
+  wsstat:
+    plugin: go
+    after: [go-deps]
+    source: .
+    build-packages:
+      - git
+    build-environment:
+      - PATH: "${CRAFT_STAGE}/usr/local/go/bin:${PATH}"
+      - GOPROXY: "https://proxy.golang.org,direct"
+      - GOSUMDB: "sum.golang.org"
     override-pull: |
       craftctl default
-      craftctl set version="$(git describe --tags --abbrev=7)-$(git rev-parse --short HEAD)"
+      if git describe --tags --abbrev=7 >/tmp/wsstat.version 2>/dev/null; then
+        craftctl set version="$(cat /tmp/wsstat.version)"
+      else
+        craftctl set version="$(git rev-parse --short HEAD)"
+      fi
     override-build: |
-      craftctl default
-      make build
-      mkdir -p $SNAPCRAFT_PART_INSTALL/bin/
-      cp ./bin/wsstat $SNAPCRAFT_PART_INSTALL/bin/wsstat
-    prime:
-      - bin/wsstat
+      CGO_ENABLED=0 go build -ldflags "-X main.version=$(craftctl get version)" -o "${CRAFT_PART_INSTALL}/bin/wsstat" ./cmd/wsstat
