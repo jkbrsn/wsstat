@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +43,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestNew(t *testing.T) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	assert.NotNil(t, ws)
@@ -59,7 +58,7 @@ func TestNew(t *testing.T) {
 
 func TestDial(t *testing.T) {
 	testStart := time.Now()
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	err := ws.Dial(echoServerAddrWs, http.Header{})
@@ -70,7 +69,7 @@ func TestDial(t *testing.T) {
 
 func TestWriteReadClose(t *testing.T) {
 	testStart := time.Now()
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -96,7 +95,7 @@ func TestBufferedReadWrite(t *testing.T) {
 	testStart := time.Now()
 
 	t.Run("No reads", func(t *testing.T) {
-		ws := New(zerolog.Nop())
+		ws := New()
 		defer func() {
 			ws.Close()
 			validateCloseResult(ws, getFunctionName(), t)
@@ -120,7 +119,7 @@ func TestBufferedReadWrite(t *testing.T) {
 	})
 
 	t.Run("Writes and reads", func(t *testing.T) {
-		ws := New(zerolog.Nop())
+		ws := New()
 		defer func() {
 			ws.Close()
 			validateCloseResult(ws, getFunctionName(), t)
@@ -161,7 +160,7 @@ func TestBufferedReadWrite(t *testing.T) {
 
 func TestOneHitMessage(t *testing.T) {
 	testStart := time.Now()
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -184,7 +183,7 @@ func TestOneHitMessage(t *testing.T) {
 
 func TestOneHitMessageJSON(t *testing.T) {
 	testStart := time.Now()
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
@@ -213,7 +212,7 @@ func TestOneHitMessageJSON(t *testing.T) {
 
 func TestPingPong(t *testing.T) {
 	testStart := time.Now()
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer func() {
 		ws.Close()
 		validateCloseResult(ws, getFunctionName(), t)
