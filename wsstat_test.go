@@ -222,7 +222,8 @@ func TestPingPong(t *testing.T) {
 	assert.NoError(t, err)
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
-	ws.PingPong()
+	err = ws.PingPong()
+	assert.NoError(t, err)
 
 	result := ws.ExtractResult()
 	assert.NotNil(t, result)

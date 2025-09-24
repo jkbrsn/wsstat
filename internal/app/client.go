@@ -244,8 +244,11 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 	if c.Basic {
 		printTimingResultsBasic(c.Result, c.Burst)
 	} else {
-		useMeanLabel := c.Burst > 1 || c.Result.MessageCount > 1
-		printTimingResultsTiered(c.Result, u, useMeanLabel)
+		rttLabel := "Message RTT"
+		if c.Burst > 1 || c.Result.MessageCount > 1 {
+			rttLabel = "Mean Message RTT"
+		}
+		printTimingResultsTiered(c.Result, u, rttLabel)
 	}
 
 	return nil
@@ -398,12 +401,8 @@ func printTimingResultsBasic(result *wsstat.Result, burst int) {
 
 // printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
 // in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, u *url.URL, useMeanLabel bool) {
+func printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
 	fmt.Println()
-	label := "Message RTT"
-	if useMeanLabel {
-		label = "Mean Message RTT"
-	}
 	switch u.Scheme {
 	case "wss":
 		fmt.Fprintf(os.Stdout, wssPrintTemplate,
@@ -431,6 +430,18 @@ func printTimingResultsTiered(result *wsstat.Result, u *url.URL, useMeanLabel bo
 			colorTeaGreen(formatPadRight(result.TCPConnected)),
 			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
 			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
+			colorWSOrange(formatPadRight(result.TotalTime)),
+		)
+	default:
+		fmt.Fprintf(os.Stdout, wsPrintTemplate,
+			label,
+			colorTeaGreen(formatPadLeft(result.DNSLookup)),
+			colorTeaGreen(formatPadLeft(result.TCPConnection)),
+			colorTeaGreen(formatPadLeft(result.WSHandshake)),
+			colorTeaGreen(formatPadLeft(result.MessageRTT)),
+			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
+			colorTeaGreen(formatPadRight(result.TCPConnected)),
+			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
 			colorWSOrange(formatPadRight(result.TotalTime)),
 		)
 	}

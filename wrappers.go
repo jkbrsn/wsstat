@@ -141,7 +141,9 @@ func MeasureLatencyPing(
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, err
 	}
-	ws.PingPong()
+	if err := ws.PingPong(); err != nil {
+		return nil, err
+	}
 	ws.Close()
 
 	return ws.result, nil
@@ -166,7 +168,9 @@ func MeasureLatencyPingBurst(
 		ws.WriteMessage(websocket.PingMessage, nil)
 	}
 	for range pingCount {
-		ws.ReadPong()
+		if err := ws.ReadPong(); err != nil {
+			return nil, err
+		}
 	}
 	ws.Close()
 
