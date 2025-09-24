@@ -405,9 +405,9 @@ func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
 // Note: this function assumes that the pong received is the response to the sent message,
 // make sure to only run this function sequentially to avoid unexpected behavior.
 // Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) PingPong() {
+func (ws *WSStat) PingPong() error {
 	ws.WriteMessage(websocket.PingMessage, nil)
-	ws.ReadPong()
+	return ws.ReadPong()
 }
 
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
@@ -416,7 +416,7 @@ func (ws *WSStat) PingPong() {
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
 	msg, ok := <-ws.readChan
 	if !ok {
-		return 0, nil, fmt.Errorf("read channel closed")
+		return 0, nil, errors.New("read channel closed")
 	}
 
 	if msg.err != nil {
@@ -440,7 +440,7 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 func (ws *WSStat) ReadMessageJSON() (any, error) {
 	msg, ok := <-ws.readChan
 	if !ok {
-		return nil, fmt.Errorf("read channel closed")
+		return nil, errors.New("read channel closed")
 	}
 
 	if msg.err != nil {
@@ -463,7 +463,7 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 func (ws *WSStat) ReadPong() error {
 	_, ok := <-ws.pongChan
 	if !ok {
-		return fmt.Errorf("pong channel closed")
+		return errors.New("pong channel closed")
 	}
 
 	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
@@ -658,6 +658,8 @@ func (r *Result) Format(s fmt.State, verb rune) {
 		fallthrough
 	case 's', 'q':
 		r.formatCompact(s)
+	default:
+		r.formatCompact(s)
 	}
 }
 
@@ -690,68 +692,114 @@ func newDialer(
 ) *websocket.Dialer {
 	return &websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// Perform DNS lookup
-			host, port, _ := net.SplitHostPort(addr)
-			addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+			target, err := resolveDialTargets(ctx, addr, timings)
 			if err != nil {
 				return nil, err
 			}
-			timings.dnsLookupDone = time.Now()
 
-			// Measure TCP connection time
-			d := &net.Dialer{Timeout: timeout}
-			conn, err := d.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
-			if err != nil {
-				return nil, err
-			}
-			timings.tcpConnected = time.Now()
-
-			return conn, nil
+			return dialWithAddresses(ctx, network, target, timeout, timings, nil)
 		},
 
 		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// Perform DNS lookup
-			host, port, _ := net.SplitHostPort(addr)
-			addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+			target, err := resolveDialTargets(ctx, addr, timings)
 			if err != nil {
 				return nil, err
 			}
-			timings.dnsLookupDone = time.Now()
 
-			// Measure TCP connection time
-			dialer := &net.Dialer{Timeout: timeout}
-			netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
-			if err != nil {
-				return nil, err
-			}
-			timings.tcpConnected = time.Now()
+			wrap := func(netConn net.Conn) (net.Conn, error) {
+				tlsConfig := tlsConf
+				if tlsConfig == nil {
+					tlsConfig = &tls.Config{}
+				}
+				if tlsConfig.ServerName == "" {
+					tlsConfig = tlsConfig.Clone()
+					tlsConfig.ServerName = target.host
+				}
 
-			// Set up TLS configuration
-			tlsConfig := tlsConf
-			if tlsConfig == nil {
-				// Use safe system defaults; do not disable verification by default
-				tlsConfig = &tls.Config{}
-			}
-			// Ensure SNI/verification uses the original host name
-			if tlsConfig.ServerName == "" {
-				tlsConfig = tlsConfig.Clone()
-				tlsConfig.ServerName = host
+				tlsConn := tls.Client(netConn, tlsConfig)
+				if err := tlsConn.Handshake(); err != nil {
+					return nil, errors.Join(err, tlsConn.Close())
+				}
+
+				timings.tlsHandshakeDone = time.Now()
+				state := tlsConn.ConnectionState()
+				result.TLSState = &state
+
+				return tlsConn, nil
 			}
 
-			// Initiate TLS handshake over the established TCP connection
-			tlsConn := tls.Client(netConn, tlsConfig)
-			err = tlsConn.Handshake()
-			if err != nil {
-				err = errors.Join(err, netConn.Close())
-				return nil, err
-			}
-			timings.tlsHandshakeDone = time.Now()
-			state := tlsConn.ConnectionState()
-			result.TLSState = &state
-
-			return tlsConn, nil
+			return dialWithAddresses(ctx, network, target, timeout, timings, wrap)
 		},
 	}
+}
+
+type dialTarget struct {
+	host  string
+	port  string
+	addrs []string
+}
+
+func resolveDialTargets(
+	ctx context.Context,
+	addr string,
+	timings *wsTimings,
+) (dialTarget, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return dialTarget{}, err
+	}
+
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return dialTarget{}, err
+	}
+
+	timings.dnsLookupDone = time.Now()
+	if len(addrs) == 0 {
+		return dialTarget{}, fmt.Errorf("no addresses found for %s", host)
+	}
+
+	return dialTarget{host: host, port: port, addrs: addrs}, nil
+}
+
+func dialWithAddresses(
+	ctx context.Context,
+	network string,
+	target dialTarget,
+	timeout time.Duration,
+	timings *wsTimings,
+	wrap func(net.Conn) (net.Conn, error),
+) (net.Conn, error) {
+	var dialErr error
+	for _, ip := range target.addrs {
+		dialer := &net.Dialer{Timeout: timeout}
+		netConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip, target.port))
+		if err != nil {
+			dialErr = err
+			continue
+		}
+
+		timings.tcpConnected = time.Now()
+
+		if wrap == nil {
+			return netConn, nil
+		}
+
+		wrappedConn, err := wrap(netConn)
+		if err != nil {
+			dialErr = err
+			_ = netConn.Close()
+			continue
+		}
+
+		return wrappedConn, nil
+	}
+
+	if dialErr != nil {
+		return nil, dialErr
+	}
+
+	return nil, fmt.Errorf("no addresses found for %s", target.host)
 }
 
 // Option configures a WSStat instance.

@@ -222,7 +222,8 @@ func TestPingPong(t *testing.T) {
 	assert.NoError(t, err)
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
-	ws.PingPong()
+	err = ws.PingPong()
+	assert.NoError(t, err)
 
 	result := ws.ExtractResult()
 	assert.NotNil(t, result)
@@ -233,6 +234,23 @@ func TestPingPong(t *testing.T) {
 	ws.Close()
 
 	validateOneHitResult(ws, getFunctionName(), t)
+}
+
+func TestReadAfterClose(t *testing.T) {
+	ws := New()
+	ws.Close()
+
+	_, _, err := ws.ReadMessage()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read channel closed")
+
+	_, err = ws.ReadMessageJSON()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read channel closed")
+
+	err = ws.ReadPong()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pong channel closed")
 }
 
 // Helpers
