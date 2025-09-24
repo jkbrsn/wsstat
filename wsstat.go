@@ -748,25 +748,30 @@ type options struct {
 	tlsConfig  *tls.Config
 	timeout    time.Duration
 	bufferSize int
+	logger     zerolog.Logger
 }
-
-// WithTLSConfig sets the TLS configuration for the connection.
-func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
-
-// WithTimeout sets the timeout used for dialing and read deadlines.
-func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
 func WithBufferSize(n int) Option { return func(o *options) { o.bufferSize = n } }
 
+// WithLogger sets the logger for the WSStat instance.
+func WithLogger(logger zerolog.Logger) Option { return func(o *options) { o.logger = logger } }
+
+// WithTimeout sets the timeout used for dialing and read deadlines.
+func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
+// WithTLSConfig sets the TLS configuration for the connection.
+func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
+
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
 // use options. If not provided, package defaults are used for compatibility.
-func New(logger zerolog.Logger, opts ...Option) *WSStat {
+func New(opts ...Option) *WSStat {
 	// Start with package defaults for back-compat
 	cfg := options{
 		bufferSize: defaultChanBufferSize,
 		timeout:    defaultTimeout,
 		tlsConfig:  nil,
+		logger:     zerolog.Nop(),
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -778,7 +783,7 @@ func New(logger zerolog.Logger, opts ...Option) *WSStat {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
-		log:       logger.With().Str("pkg", "wsstat").Logger(),
+		log:       cfg.logger.With().Str("pkg", "wsstat").Logger(),
 		dialer:    dialer,
 		timings:   timings,
 		result:    result,

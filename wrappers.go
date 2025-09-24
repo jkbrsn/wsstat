@@ -8,7 +8,6 @@ import (
 	"net/url"
 
 	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog"
 )
 
 // TODO: replace zerolog.Nop() with optional function parameter for a logger
@@ -21,7 +20,7 @@ func MeasureLatency(
 	msg string,
 	customHeaders http.Header,
 ) (*Result, []byte, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
@@ -47,7 +46,7 @@ func MeasureLatencyBurst(
 	msgs []string,
 	customHeaders http.Header,
 ) (*Result, []string, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
@@ -79,7 +78,7 @@ func MeasureLatencyJSON(
 	v any,
 	customHeaders http.Header,
 ) (*Result, any, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
@@ -104,7 +103,7 @@ func MeasureLatencyJSONBurst(
 	v []any,
 	customHeaders http.Header,
 ) (*Result, []any, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
@@ -136,7 +135,7 @@ func MeasureLatencyPing(
 	targetURL *url.URL,
 	customHeaders http.Header,
 ) (*Result, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
@@ -157,7 +156,7 @@ func MeasureLatencyPingBurst(
 	pingCount int,
 	customHeaders http.Header,
 ) (*Result, error) {
-	ws := New(zerolog.Nop())
+	ws := New()
 	defer ws.Close()
 
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
