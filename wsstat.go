@@ -414,7 +414,11 @@ func (ws *WSStat) PingPong() {
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
-	msg := <-ws.readChan
+	msg, ok := <-ws.readChan
+	if !ok {
+		return 0, nil, fmt.Errorf("read channel closed")
+	}
+
 	if msg.err != nil {
 		if websocket.IsUnexpectedCloseError(
 			msg.err,
@@ -434,7 +438,11 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
-	msg := <-ws.readChan
+	msg, ok := <-ws.readChan
+	if !ok {
+		return nil, fmt.Errorf("read channel closed")
+	}
+
 	if msg.err != nil {
 		return nil, msg.err
 	}
@@ -452,9 +460,14 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 
 // ReadPong reads a pong message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
-func (ws *WSStat) ReadPong() {
-	<-ws.pongChan
+func (ws *WSStat) ReadPong() error {
+	_, ok := <-ws.pongChan
+	if !ok {
+		return fmt.Errorf("pong channel closed")
+	}
+
 	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+	return nil
 }
 
 // WriteMessage sends a message through the WebSocket connection.
