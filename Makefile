@@ -4,7 +4,7 @@ OS_ARCH_PAIRS=linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 window
 VERSION := $(shell cat VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION}"
 
-.PHONY: build build-all build-multi build-os-arch explain lint test
+.PHONY: build build-all build-multi build-os-arch fmt lint test explain
 
 .DEFAULT_GOAL := explain
 
@@ -19,6 +19,7 @@ explain:
 	@echo "Targets:"
 	@echo "  build           - Build the binary for the host OS/Arch."
 	@echo "  build-all       - Build binaries for all target OS/Arch pairs."
+	@echo "  fmt             - Format code with gofmt."
 	@echo "  lint            - Run linter (golangci-lint)."
 	@echo "  test            - Run tests."
 	@echo "  explain         - Display this help message."
@@ -35,14 +36,14 @@ ifdef V
 endif
 
 build:
-	@echo "==> Building binary..."
+	@echo "==> Building binary"
 	go build ${LDFLAGS} -o bin/${CMD} ${PACKAGE_NAME}
 
 build-all: TARGETS=$(OS_ARCH_PAIRS)
 build-all: build-multi
 
 build-multi:
-	@echo "==> Building binaries for all target OS/Arch pairs..."
+	@echo "==> Building binaries for all target OS/Arch pairs"
 	$(foreach PAIR,$(TARGETS), $(MAKE) --no-print-directory build-os-arch OS_ARCH=$(PAIR);)
 
 build-os-arch:
@@ -50,10 +51,14 @@ build-os-arch:
 	GOARCH=$(lastword $(subst /, ,$(OS_ARCH))) \
 	go build ${LDFLAGS} -o 'bin/$(CMD)-$(firstword $(subst /, ,$(OS_ARCH)))-$(lastword $(subst /, ,$(OS_ARCH)))' ${PACKAGE_NAME}
 
+fmt:
+	@echo "==> Formatting code"
+	@gofmt -s -w .
+
 lint:
-	@echo "==> Running linter (golangci-lint)..."
-	@golangci-lint run ./...
+	@echo "==> Running linter (golangci-lint)"
+	@golangci-lint run
 
 test:
-	@echo "==> Running tests..."
+	@echo "==> Running tests"
 	@go test -count=$(N) $(TEST_FLAGS) ./...
