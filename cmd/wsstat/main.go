@@ -26,7 +26,8 @@ var (
 	subscribe     = flag.Bool("subscribe", false, "keep the connection open and stream events")
 	subscribeOnce = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
 	subBuffer     = flag.Int("subscription-buffer", 0, "override subscription delivery buffer size")
-	subInterval   = flag.Duration("subscription-interval", 0, "print subscription summaries every interval; 0 disables")
+	subInterval   = flag.Duration("subscription-interval", 0,
+		"print subscription summaries every interval; 0 disables")
 	// Output
 	rawOutput   = flag.Bool("raw", false, "let printed output be the raw data of the response")
 	showVersion = flag.Bool("version", false, "print the program version")
@@ -59,7 +60,8 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscribe-once "+flag.Lookup("subscribe-once").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscription-buffer  "+flag.Lookup("subscription-buffer").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscription-interval "+flag.Lookup("subscription-interval").Usage)
+		fmt.Fprintln(os.Stderr,
+			"  -subscription-interval "+flag.Lookup("subscription-interval").Usage)
 		fmt.Fprintln(os.Stderr, "  -headers   "+flag.Lookup("headers").Usage)
 		fmt.Fprintln(os.Stderr, "  -raw       "+flag.Lookup("raw").Usage)
 		fmt.Fprintln(os.Stderr, "  -insecure  "+flag.Lookup("insecure").Usage)

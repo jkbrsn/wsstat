@@ -183,6 +183,7 @@ type SubscriptionDecoder func(messageType int, data []byte) (any, error)
 // subscription. The decoded value is only non-nil if a Decoder is configured.
 type SubscriptionMatcher func(messageType int, data []byte, decoded any) bool
 
+// subscriptionState tracks the state of a subscription.
 type subscriptionState struct {
 	id string
 
@@ -203,6 +204,7 @@ type subscriptionState struct {
 	bytes    *uint64
 }
 
+// subscriptionMetrics tracks the metrics of a subscription.
 type subscriptionMetrics struct {
 	firstEvent        time.Time
 	lastEvent         time.Time
@@ -213,6 +215,7 @@ type subscriptionMetrics struct {
 	finalErr          error
 }
 
+// activeSubscriptions returns a snapshot of the active subscriptions.
 func (ws *WSStat) activeSubscriptions() []*subscriptionState {
 	ws.subscriptionMu.RLock()
 	defer ws.subscriptionMu.RUnlock()
@@ -228,6 +231,7 @@ func (ws *WSStat) activeSubscriptions() []*subscriptionState {
 	return states
 }
 
+// trackSubscriptionEvent tracks the first and last events of a subscription.
 func (ws *WSStat) trackSubscriptionEvent(ts time.Time) {
 	if ts.IsZero() {
 		return
@@ -242,7 +246,11 @@ func (ws *WSStat) trackSubscriptionEvent(ts time.Time) {
 	}
 }
 
-func (ws *WSStat) deliverSubscriptionMessage(state *subscriptionState, message SubscriptionMessage) {
+// deliverSubscriptionMessage delivers a message to a subscription.
+func (ws *WSStat) deliverSubscriptionMessage(
+	state *subscriptionState,
+	message SubscriptionMessage,
+) {
 	if state == nil {
 		return
 	}
@@ -283,10 +291,12 @@ func (ws *WSStat) deliverSubscriptionMessage(state *subscriptionState, message S
 	select {
 	case state.buffer <- message:
 	default:
-		ws.log.Warn().Str("subscription", state.id).Msg("subscription buffer full; dropping message")
+		ws.log.Warn().Str("subscription", state.id).
+			Msg("subscription buffer full; dropping message")
 	}
 }
 
+// finalizeSubscription finalizes a subscription upon its completion or cancellation.
 func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error) {
 	if state == nil {
 		return
@@ -330,11 +340,13 @@ func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error)
 		Error:            metricsCopy.finalErr,
 	}
 	if metricsCopy.messageCount > 1 {
-		subStats.MeanInterArrival = metricsCopy.totalInterArrival / time.Duration(metricsCopy.messageCount-1)
+		subStats.MeanInterArrival =
+			metricsCopy.totalInterArrival / time.Duration(metricsCopy.messageCount-1)
 	}
 	ws.removeSubscription(state.id, &subStats)
 }
 
+// dispatchIncoming dispatches an incoming frame to the appropriate subscription.
 func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 	states := ws.activeSubscriptions()
 	if len(states) == 0 {
@@ -400,6 +412,7 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 	return claimed
 }
 
+// watchSubscription watches a subscription for its completion or cancellation.
 func (ws *WSStat) watchSubscription(state *subscriptionState) {
 	if state == nil {
 		return
@@ -412,11 +425,13 @@ func (ws *WSStat) watchSubscription(state *subscriptionState) {
 	ws.finalizeSubscription(state, err)
 }
 
+// newSubscriptionID generates a new subscription ID.
 func (ws *WSStat) newSubscriptionID() string {
 	val := atomic.AddUint64(&ws.nextSubscriptionID, 1)
 	return fmt.Sprintf("%s%d", subscriptionIDPrefix, val)
 }
 
+// registerSubscription registers a subscription.
 func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
 	ws.subscriptionMu.Lock()
 	defer ws.subscriptionMu.Unlock()
@@ -449,14 +464,7 @@ func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
 	return sub
 }
 
-func (ws *WSStat) getSubscription(id string) (*subscriptionState, bool) {
-	ws.subscriptionMu.RLock()
-	defer ws.subscriptionMu.RUnlock()
-
-	state, ok := ws.subscriptions[id]
-	return state, ok
-}
-
+// removeSubscription removes a subscription by ID.
 func (ws *WSStat) removeSubscription(id string, stats *SubscriptionStats) {
 	ws.subscriptionMu.Lock()
 	defer ws.subscriptionMu.Unlock()
@@ -472,6 +480,7 @@ func (ws *WSStat) removeSubscription(id string, stats *SubscriptionStats) {
 	}
 }
 
+// snapshotSubscriptionStats snapshots the subscription stats.
 func (ws *WSStat) snapshotSubscriptionStats() map[string]SubscriptionStats {
 	ws.subscriptionMu.RLock()
 	defer ws.subscriptionMu.RUnlock()
@@ -955,8 +964,11 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 }
 
 // SubscribeOnce registers a subscription and waits for the first delivered message before
-// cancelling the subscription. The returned message is a snapshot of the first delivery.
-func (ws *WSStat) SubscribeOnce(ctx context.Context, opts SubscriptionOptions) (SubscriptionMessage, error) {
+// canceling the subscription. The returned message is a snapshot of the first delivery.
+func (ws *WSStat) SubscribeOnce(
+	ctx context.Context,
+	opts SubscriptionOptions,
+) (SubscriptionMessage, error) {
 	sub, err := ws.Subscribe(ctx, opts)
 	if err != nil {
 		return SubscriptionMessage{}, err
@@ -977,7 +989,8 @@ func (ws *WSStat) SubscribeOnce(ctx context.Context, opts SubscriptionOptions) (
 				case <-done:
 				default:
 				}
-				return SubscriptionMessage{}, errors.New("subscription closed before delivering a message")
+				return SubscriptionMessage{},
+					errors.New("subscription closed before delivering a message")
 			}
 			if msg.Err != nil {
 				sub.Cancel()
@@ -988,7 +1001,8 @@ func (ws *WSStat) SubscribeOnce(ctx context.Context, opts SubscriptionOptions) (
 			<-done
 			return msg, nil
 		case <-done:
-			return SubscriptionMessage{}, errors.New("subscription closed before delivering a message")
+			return SubscriptionMessage{},
+				errors.New("subscription closed before delivering a message")
 		case <-ctxDone:
 			sub.Cancel()
 			<-done
@@ -1392,8 +1406,9 @@ func dialWithAddresses(
 	return nil, fmt.Errorf("no addresses found for %s", target.host)
 }
 
+// durationSinceDial returns the duration since the dial started.
 func (ws *WSStat) durationSinceDial(ts time.Time) time.Duration {
-	if ts.IsZero() || ws.timings == nil {
+	if ws.timings == nil || ts.IsZero() {
 		return 0
 	}
 	return ts.Sub(ws.timings.dialStart)

@@ -170,7 +170,7 @@ func (c *Client) MeasureLatency(target *url.URL) error {
 }
 
 // StreamSubscription establishes a WebSocket connection and streams subscription events
-// until the provided context is cancelled or the server closes the connection.
+// until the provided context is canceled or the server closes the connection.
 func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
 	header, err := parseHeaders(c.InputHeaders)
 	if err != nil {
@@ -266,6 +266,7 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 	return nil
 }
 
+// subscriptionPayload returns the payload to be sent to the server.
 func (c *Client) subscriptionPayload() (int, []byte, error) {
 	if c.TextMessage != "" {
 		return websocket.TextMessage, []byte(c.TextMessage), nil
@@ -289,6 +290,7 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 	return websocket.TextMessage, nil, nil
 }
 
+// runSubscriptionLoop runs the subscription loop.
 func (c *Client) runSubscriptionLoop(
 	ctx context.Context,
 	wsClient *wsstat.WSStat,
@@ -341,6 +343,7 @@ func (c *Client) runSubscriptionLoop(
 	}
 }
 
+// tickerC returns a channel that emits ticks from the provided ticker.
 func tickerC(t *time.Ticker) <-chan time.Time {
 	if t == nil {
 		return nil
@@ -348,6 +351,7 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 	return t.C
 }
 
+// printSubscriptionMessage prints a subscription message.
 func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
 	payload := string(msg.Data)
 	if c.RawOutput || c.Quiet {
@@ -380,6 +384,7 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	return nil
 }
 
+// printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL) {
 	if c.Result == nil {
 		return
@@ -419,6 +424,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 	}
 }
 
+// formatJSONIfPossible formats the JSON data if possible.
 func formatJSONIfPossible(data []byte) string {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
@@ -438,6 +444,7 @@ func formatJSONIfPossible(data []byte) string {
 	return string(pretty)
 }
 
+// formatDuration formats the duration.
 func formatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "-"
