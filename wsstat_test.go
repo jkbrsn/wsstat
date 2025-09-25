@@ -282,7 +282,7 @@ func TestSubscriptionMatcherFallThrough(t *testing.T) {
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
 		MessageType: websocket.TextMessage,
 		Payload:     []byte("init"),
-		Matcher: func(int, []byte, any) bool {
+		matcher: func(int, []byte, any) bool {
 			return false
 		},
 	})
