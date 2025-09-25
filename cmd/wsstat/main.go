@@ -10,15 +10,65 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/jkbrsn/wsstat/internal/app"
 )
 
+type trackedIntFlag struct {
+	value int
+	set   bool
+}
+
+func newTrackedIntFlag(defaultValue int) trackedIntFlag {
+	return trackedIntFlag{value: defaultValue}
+}
+
+func (f *trackedIntFlag) Set(s string) error {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return err
+	}
+	f.value = v
+	f.set = true
+	return nil
+}
+
+func (f *trackedIntFlag) String() string {
+	return strconv.Itoa(f.value)
+}
+
+func (f *trackedIntFlag) Value() int {
+	return f.value
+}
+
+func (f *trackedIntFlag) WasSet() bool {
+	return f.set
+}
+
+type deprecatedAliasInt struct {
+	target *trackedIntFlag
+	used   *bool
+}
+
+func (a *deprecatedAliasInt) Set(s string) error {
+	if a.used != nil {
+		*a.used = true
+	}
+	return a.target.Set(s)
+}
+
+func (a *deprecatedAliasInt) String() string {
+	return a.target.String()
+}
+
 var (
 	// Input
-	burst        = flag.Int("burst", 1, "number of messages to send in a burst")
+	countFlag = newTrackedIntFlag(1)
+	// TODO: remove the -burst alias once the flag rename has been communicated broadly.
+	burstAlias   = deprecatedAliasInt{target: &countFlag, used: &burstFlagUsed}
 	inputHeaders = flag.String("headers", "",
 		"comma-separated headers for the connection establishing request")
 	jsonMethod    = flag.String("json", "", "a single JSON RPC method to send")
@@ -41,7 +91,12 @@ var (
 	verbose = flag.Bool("v", false, "print verbose output")
 )
 
+var burstFlagUsed bool
+
 func init() {
+	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited in subscription mode")
+	flag.Var(&burstAlias, "burst", "deprecated alias for -count; will be removed in a future release")
+
 	// Define custom usage message
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage:  wsstat [options] <url>")
@@ -56,6 +111,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -q  "+flag.Lookup("q").Usage)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Other options:")
+		fmt.Fprintln(os.Stderr, "  -count     "+flag.Lookup("count").Usage)
 		fmt.Fprintln(os.Stderr, "  -burst     "+flag.Lookup("burst").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscribe-once "+flag.Lookup("subscribe-once").Usage)
@@ -77,8 +133,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if burstFlagUsed {
+		fmt.Fprintln(os.Stderr, "Warning: -burst is deprecated and will be removed in a future release; use -count instead")
+	}
+
+	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
+
 	ws := app.Client{
-		Burst:                *burst,
+		Count:                effectiveCount,
 		InputHeaders:         *inputHeaders,
 		JSONMethod:           *jsonMethod,
 		TextMessage:          *textMessage,
@@ -93,6 +155,10 @@ func main() {
 		SubscribeOnce:        *subscribeOnce,
 		SubscriptionBuffer:   *subBuffer,
 		SubscriptionInterval: *subInterval,
+	}
+
+	if *subscribeOnce {
+		ws.Subscribe = true
 	}
 	err = ws.Validate()
 	if err != nil {
@@ -196,4 +262,11 @@ func parseWSURI(rawURI string) (*url.URL, error) {
 	}
 
 	return u, nil
+}
+
+func resolveCountValue(subscribe, subscribeOnce bool) int {
+	if !countFlag.WasSet() && subscribe && !subscribeOnce {
+		return 0
+	}
+	return countFlag.Value()
 }
