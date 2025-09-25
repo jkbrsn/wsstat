@@ -310,16 +310,10 @@ func (c *Client) runSubscriptionLoop(
 		case <-ctx.Done():
 			subscription.Cancel()
 			<-subscription.Done()
-			c.Result = wsClient.ExtractResult()
-			if !c.Quiet {
-				c.printSubscriptionSummary(target)
-			}
+			c.handleSubscriptionTick(wsClient, target)
 			return nil
 		case <-subscription.Done():
-			c.Result = wsClient.ExtractResult()
-			if !c.Quiet {
-				c.printSubscriptionSummary(target)
-			}
+			c.handleSubscriptionTick(wsClient, target)
 			return nil
 		case msg, ok := <-subscription.Updates():
 			if !ok {
@@ -335,11 +329,19 @@ func (c *Client) runSubscriptionLoop(
 				return err
 			}
 		case <-tickerC(ticker):
-			c.Result = wsClient.ExtractResult()
-			if !c.Quiet {
-				c.printSubscriptionSummary(target)
-			}
+			c.handleSubscriptionTick(wsClient, target)
 		}
+	}
+}
+
+// handleSubscriptionTick handles a subscription tick.
+func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
+	if c.Result == nil {
+		return
+	}
+	c.Result = wsClient.ExtractResult()
+	if !c.Quiet {
+		c.printSubscriptionSummary(target)
 	}
 }
 
