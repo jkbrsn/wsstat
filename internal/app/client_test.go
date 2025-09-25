@@ -2,9 +2,12 @@ package app
 
 import (
 	"errors"
+	"io"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/jkbrsn/wsstat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +118,29 @@ func TestClientValidate(t *testing.T) {
 		c := &Client{Burst: 1, Subscribe: true, SubscribeOnce: true}
 		assert.Error(t, c.Validate())
 	})
+}
+
+func TestPrintSubscriptionMessageBasic(t *testing.T) {
+	msg := wsstat.SubscriptionMessage{
+		Data:     []byte("{\"foo\":\"bar\"}"),
+		Received: time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC),
+		Size:     17,
+	}
+	c := &Client{Basic: true}
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+
+	require.NoError(t, c.printSubscriptionMessage(3, msg))
+
+	require.NoError(t, w.Close())
+	os.Stdout = stdout
+	output, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	outStr := string(output)
+	assert.Contains(t, outStr, "Message received")
+	assert.NotContains(t, outStr, "foo")
 }

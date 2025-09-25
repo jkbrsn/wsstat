@@ -207,6 +207,7 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 		if err := c.PrintRequestDetails(); err != nil {
 			return err
 		}
+		fmt.Println()
 		fmt.Println(colorWSOrange("Streaming subscription events"))
 	}
 
@@ -253,6 +254,7 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 		}
 	}
 
+	fmt.Println()
 	if err := c.printSubscriptionMessage(1, msg); err != nil {
 		return err
 	}
@@ -354,6 +356,11 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	}
 
 	timestamp := msg.Received.Format(time.RFC3339Nano)
+	if c.Basic {
+		fmt.Printf("[%04d @ %s] Message received\n", index, timestamp)
+		return nil
+	}
+
 	if c.Verbose {
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
 		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
