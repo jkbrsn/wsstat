@@ -100,4 +100,19 @@ func TestClientValidate(t *testing.T) {
 		c := &Client{Burst: 1, Subscribe: true}
 		require.NoError(t, c.Validate())
 	})
+
+	t.Run("subscribe once requires single burst", func(t *testing.T) {
+		c := &Client{Burst: 2, SubscribeOnce: true}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("subscribe once valid", func(t *testing.T) {
+		c := &Client{Burst: 1, SubscribeOnce: true}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("subscription mode conflict", func(t *testing.T) {
+		c := &Client{Burst: 1, Subscribe: true, SubscribeOnce: true}
+		assert.Error(t, c.Validate())
+	})
 }

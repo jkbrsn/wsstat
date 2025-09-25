@@ -251,6 +251,29 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 	assert.GreaterOrEqual(t, stats.LastEvent, stats.FirstEvent)
 }
 
+func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	msg, err := ws.SubscribeOnce(context.Background(), SubscriptionOptions{
+		MessageType: websocket.TextMessage,
+		Payload:     []byte("hello-once"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "hello-once", string(msg.Data))
+
+	result := ws.ExtractResult()
+	require.NotNil(t, result.Subscriptions)
+	var found bool
+	for _, stats := range result.Subscriptions {
+		if stats.MessageCount == 1 {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected archived subscription stats with one message")
+}
+
 func TestSubscriptionMatcherFallThrough(t *testing.T) {
 	ws := New()
 	defer ws.Close()

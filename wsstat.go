@@ -954,6 +954,52 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 	return sub, nil
 }
 
+// SubscribeOnce registers a subscription and waits for the first delivered message before
+// cancelling the subscription. The returned message is a snapshot of the first delivery.
+func (ws *WSStat) SubscribeOnce(ctx context.Context, opts SubscriptionOptions) (SubscriptionMessage, error) {
+	sub, err := ws.Subscribe(ctx, opts)
+	if err != nil {
+		return SubscriptionMessage{}, err
+	}
+
+	updates := sub.Updates()
+	done := sub.Done()
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+
+	for {
+		select {
+		case msg, ok := <-updates:
+			if !ok {
+				select {
+				case <-done:
+				default:
+				}
+				return SubscriptionMessage{}, errors.New("subscription closed before delivering a message")
+			}
+			if msg.Err != nil {
+				sub.Cancel()
+				<-done
+				return SubscriptionMessage{}, msg.Err
+			}
+			sub.Cancel()
+			<-done
+			return msg, nil
+		case <-done:
+			return SubscriptionMessage{}, errors.New("subscription closed before delivering a message")
+		case <-ctxDone:
+			sub.Cancel()
+			<-done
+			if ctx.Err() != nil {
+				return SubscriptionMessage{}, ctx.Err()
+			}
+			return SubscriptionMessage{}, context.Canceled
+		}
+	}
+}
+
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
 // If an error occurs, it will be returned.
 // Sets time: MessageReads

@@ -126,6 +126,13 @@ incoming frame to stdout, and periodically snapshots timing metrics. Use
 include per-subscription message counts, byte totals, and mean inter-arrival
 latency.
 
+For a single-response probe, use `-subscribe-once` to send the subscription
+request and close immediately after the first event:
+
+```sh
+wsstat -subscribe-once -json '{"method":"subscribe_ticker"}' wss://example.org/ws
+```
+
 ## wsstat Package
 
 Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [gorilla/websocket](https://pkg.go.dev/github.com/gorilla/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.

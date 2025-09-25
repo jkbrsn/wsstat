@@ -67,6 +67,7 @@ type Client struct {
 	Verbose bool
 	// Subscription mode
 	Subscribe            bool
+	SubscribeOnce        bool
 	SubscriptionBuffer   int
 	SubscriptionInterval time.Duration
 
@@ -210,6 +211,57 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 	}
 
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+// StreamSubscriptionOnce establishes a subscription and exits after the first message.
+func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
+	header, err := parseHeaders(c.InputHeaders)
+	if err != nil {
+		return err
+	}
+
+	wsClient := wsstat.New()
+	defer wsClient.Close()
+
+	if err := wsClient.Dial(target, header); err != nil {
+		return handleConnectionError(err, target.String())
+	}
+
+	messageType, payload, err := c.subscriptionPayload()
+	if err != nil {
+		return err
+	}
+
+	opts := wsstat.SubscriptionOptions{
+		MessageType: messageType,
+		Payload:     payload,
+	}
+	if c.SubscriptionBuffer > 0 {
+		opts.Buffer = c.SubscriptionBuffer
+	}
+
+	msg, err := wsClient.SubscribeOnce(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	c.Result = wsClient.ExtractResult()
+
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			return err
+		}
+	}
+
+	if err := c.printSubscriptionMessage(1, msg); err != nil {
+		return err
+	}
+
+	if !c.Quiet {
+		c.printSubscriptionSummary(target)
+	}
+
+	return nil
 }
 
 func (c *Client) subscriptionPayload() (int, []byte, error) {
@@ -529,8 +581,12 @@ func (c *Client) Validate() error {
 		return errors.New("mutually exclusive messaging flags")
 	}
 
-	if c.Subscribe && c.Burst != 1 {
-		return errors.New("burst must equal 1 when subscribe mode is enabled")
+	if c.Subscribe && c.SubscribeOnce {
+		return errors.New("choose either subscribe streaming mode or subscribe-once")
+	}
+
+	if (c.Subscribe || c.SubscribeOnce) && c.Burst != 1 {
+		return errors.New("burst must equal 1 when subscription mode is enabled")
 	}
 	return nil
 }
