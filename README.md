@@ -111,6 +111,21 @@ For more options:
 wsstat -h
 ```
 
+### Subscription Mode
+
+Long-lived streaming endpoints can be exercised with the new subscription mode:
+
+```sh
+wsstat -subscribe -text '{"method":"subscribe"}' wss://example.org/stream
+```
+
+When `-subscribe` is supplied the client keeps the socket open, forwards each
+incoming frame to stdout, and periodically snapshots timing metrics. Use
+`-subscription-buffer` to adjust the per-subscription queue length and
+`-subscription-interval` (for example, `30s`) to print recurring summaries that
+include per-subscription message counts, byte totals, and mean inter-arrival
+latency.
+
 ## wsstat Package
 
 Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [gorilla/websocket](https://pkg.go.dev/github.com/gorilla/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.

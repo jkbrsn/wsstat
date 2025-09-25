@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,6 +28,9 @@ const (
 	defaultTimeout = 5 * time.Second
 	// defaultChanBufferSize is the default size of read/write/pong channels.
 	defaultChanBufferSize = 8
+	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
+	defaultSubscriptionBufferSize = 32
+	subscriptionIDPrefix          = "subscription-"
 )
 
 // CertificateDetails holds details regarding a certificate.
@@ -52,6 +56,11 @@ type Result struct {
 	TLSState        *tls.ConnectionState // State of the TLS connection
 	MessageCount    int                  // Number of messages sent and received
 
+	// Subscription statistics captured when long-lived streams are active.
+	Subscriptions          map[string]SubscriptionStats // Metrics by subscription ID
+	SubscriptionFirstEvent time.Duration                // Time until first subscription event
+	SubscriptionLastEvent  time.Duration                // Time until last subscription event
+
 	// Duration of each phase of the connection
 	DNSLookup     time.Duration // Time to resolve DNS
 	TCPConnection time.Duration // TCP connection establishment time
@@ -68,6 +77,442 @@ type Result struct {
 	TotalTime            time.Duration // Total time from opening to closing the connection
 }
 
+// Subscription captures a long-lived stream registered through Subscribe.
+// Counters are updated atomically by the WSStat instance.
+type Subscription struct {
+	ID string
+
+	cancel   context.CancelFunc
+	done     <-chan struct{}
+	messages *uint64
+	bytes    *uint64
+	updates  <-chan SubscriptionMessage
+}
+
+// SubscriptionOptions configures how WSStat establishes and demultiplexes a subscription.
+type SubscriptionOptions struct {
+	// ID can be provided to preassign a human-readable identifier. If empty, WSStat
+	// allocates an incremental identifier.
+	ID string
+
+	// MessageType and Payload describe the initial frame sent to initiate the subscription.
+	MessageType int
+	Payload     []byte
+
+	// Decoder transforms inbound frames into a convenient representation before dispatching
+	// to subscription consumers. If nil, frames are passed through as raw bytes.
+	Decoder SubscriptionDecoder
+
+	// Matcher determines whether a given frame belongs to this subscription. When nil,
+	// the dispatcher falls back to internal matching heuristics (such as explicit IDs).
+	Matcher SubscriptionMatcher
+
+	// Buffer controls the per-subscription delivery queue length. Zero implies the default.
+	Buffer int
+}
+
+// SubscriptionStats snapshots per-subscription metrics for reporting through Result.
+type SubscriptionStats struct {
+	FirstEvent       time.Duration
+	LastEvent        time.Duration
+	MessageCount     uint64
+	ByteCount        uint64
+	MeanInterArrival time.Duration
+	Error            error
+}
+
+// SubscriptionMessage represents a single frame delivered to a subscription consumer.
+type SubscriptionMessage struct {
+	MessageType int
+	Data        []byte
+	Decoded     any
+	Received    time.Time
+	Err         error
+	Size        int
+}
+
+// Cancel stops the subscription and prevents further deliveries.
+func (s *Subscription) Cancel() {
+	if s == nil || s.cancel == nil {
+		return
+	}
+	s.cancel()
+}
+
+// Unsubscribe is an alias for Cancel and preserves semantic clarity for callers.
+func (s *Subscription) Unsubscribe() {
+	s.Cancel()
+}
+
+// Done returns a channel that closes once the subscription is fully torn down.
+func (s *Subscription) Done() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.done
+}
+
+// Updates exposes the buffered stream of subscription messages.
+func (s *Subscription) Updates() <-chan SubscriptionMessage {
+	if s == nil {
+		return nil
+	}
+	return s.updates
+}
+
+// MessageCount reports the total number of messages delivered to the subscription.
+func (s *Subscription) MessageCount() uint64 {
+	if s == nil || s.messages == nil {
+		return 0
+	}
+	return atomic.LoadUint64(s.messages)
+}
+
+// ByteCount reports the aggregate payload size delivered to the subscription.
+func (s *Subscription) ByteCount() uint64 {
+	if s == nil || s.bytes == nil {
+		return 0
+	}
+	return atomic.LoadUint64(s.bytes)
+}
+
+// SubscriptionDecoder converts an incoming frame into an arbitrary representation.
+type SubscriptionDecoder func(messageType int, data []byte) (any, error)
+
+// SubscriptionMatcher returns true when the provided frame should be delivered to the
+// subscription. The decoded value is only non-nil if a Decoder is configured.
+type SubscriptionMatcher func(messageType int, data []byte, decoded any) bool
+
+type subscriptionState struct {
+	id string
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	mu     sync.Mutex
+	closed bool
+
+	matcher SubscriptionMatcher
+	decoder SubscriptionDecoder
+	options SubscriptionOptions
+
+	buffer chan SubscriptionMessage
+	stats  subscriptionMetrics
+
+	messages *uint64
+	bytes    *uint64
+}
+
+type subscriptionMetrics struct {
+	firstEvent        time.Time
+	lastEvent         time.Time
+	messageCount      uint64
+	byteCount         uint64
+	totalInterArrival time.Duration
+	lastArrival       time.Time
+	finalErr          error
+}
+
+func (ws *WSStat) activeSubscriptions() []*subscriptionState {
+	ws.subscriptionMu.RLock()
+	defer ws.subscriptionMu.RUnlock()
+
+	if len(ws.subscriptions) == 0 {
+		return nil
+	}
+
+	states := make([]*subscriptionState, 0, len(ws.subscriptions))
+	for _, state := range ws.subscriptions {
+		states = append(states, state)
+	}
+	return states
+}
+
+func (ws *WSStat) trackSubscriptionEvent(ts time.Time) {
+	if ts.IsZero() {
+		return
+	}
+	ws.subscriptionMu.Lock()
+	defer ws.subscriptionMu.Unlock()
+	if ws.subscriptionFirstEvent.IsZero() || ts.Before(ws.subscriptionFirstEvent) {
+		ws.subscriptionFirstEvent = ts
+	}
+	if ts.After(ws.subscriptionLastEvent) {
+		ws.subscriptionLastEvent = ts
+	}
+}
+
+func (ws *WSStat) deliverSubscriptionMessage(state *subscriptionState, message SubscriptionMessage) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	if state.closed {
+		state.mu.Unlock()
+		return
+	}
+	now := message.Received
+	if message.Err == nil {
+		if state.stats.firstEvent.IsZero() {
+			state.stats.firstEvent = now
+		}
+		if !state.stats.lastArrival.IsZero() {
+			state.stats.totalInterArrival += now.Sub(state.stats.lastArrival)
+		}
+		state.stats.lastArrival = now
+		state.stats.lastEvent = now
+		state.stats.messageCount++
+		state.stats.byteCount += uint64(message.Size)
+	} else {
+		if state.stats.firstEvent.IsZero() {
+			state.stats.firstEvent = now
+		}
+		state.stats.lastEvent = now
+	}
+	state.mu.Unlock()
+
+	if state.messages != nil {
+		atomic.AddUint64(state.messages, 1)
+	}
+	if state.bytes != nil {
+		atomic.AddUint64(state.bytes, uint64(message.Size))
+	}
+
+	ws.trackSubscriptionEvent(now)
+
+	select {
+	case state.buffer <- message:
+	default:
+		ws.log.Warn().Str("subscription", state.id).Msg("subscription buffer full; dropping message")
+	}
+}
+
+func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	if state.closed {
+		state.mu.Unlock()
+		return
+	}
+	state.closed = true
+	if finalErr != nil {
+		state.stats.finalErr = finalErr
+	}
+	metricsCopy := state.stats
+	var msgCount, byteCount uint64
+	if state.messages != nil {
+		msgCount = atomic.LoadUint64(state.messages)
+	}
+	if state.bytes != nil {
+		byteCount = atomic.LoadUint64(state.bytes)
+	}
+	buffer := state.buffer
+	done := state.done
+	state.mu.Unlock()
+
+	if buffer != nil {
+		close(buffer)
+	}
+	if done != nil {
+		close(done)
+	}
+	if state.cancel != nil {
+		state.cancel()
+	}
+	subStats := SubscriptionStats{
+		FirstEvent:       ws.durationSinceDial(metricsCopy.firstEvent),
+		LastEvent:        ws.durationSinceDial(metricsCopy.lastEvent),
+		MessageCount:     msgCount,
+		ByteCount:        byteCount,
+		MeanInterArrival: 0,
+		Error:            metricsCopy.finalErr,
+	}
+	if metricsCopy.messageCount > 1 {
+		subStats.MeanInterArrival = metricsCopy.totalInterArrival / time.Duration(metricsCopy.messageCount-1)
+	}
+	ws.removeSubscription(state.id, &subStats)
+}
+
+func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
+	states := ws.activeSubscriptions()
+	if len(states) == 0 {
+		return false
+	}
+
+	receivedAt := time.Now()
+
+	if read.err != nil {
+		for _, state := range states {
+			envelope := SubscriptionMessage{
+				MessageType: read.messageType,
+				Received:    receivedAt,
+				Err:         read.err,
+			}
+			ws.deliverSubscriptionMessage(state, envelope)
+			ws.finalizeSubscription(state, read.err)
+		}
+		return true
+	}
+
+	deliverAll := len(states) == 1
+	claimed := false
+	for _, state := range states {
+		if state == nil {
+			continue
+		}
+		if err := state.ctx.Err(); err != nil {
+			ws.finalizeSubscription(state, err)
+			continue
+		}
+
+		decoded := any(nil)
+		var decodeErr error
+		if state.decoder != nil {
+			decoded, decodeErr = state.decoder(read.messageType, read.data)
+		}
+
+		match := false
+		if state.matcher != nil {
+			match = state.matcher(read.messageType, read.data, decoded)
+		} else if deliverAll {
+			match = true
+		}
+
+		if !match && decodeErr == nil {
+			continue
+		}
+
+		payload := append([]byte(nil), read.data...)
+		envelope := SubscriptionMessage{
+			MessageType: read.messageType,
+			Data:        payload,
+			Decoded:     decoded,
+			Received:    receivedAt,
+			Err:         decodeErr,
+			Size:        len(payload),
+		}
+		ws.deliverSubscriptionMessage(state, envelope)
+		claimed = true
+	}
+
+	return claimed
+}
+
+func (ws *WSStat) watchSubscription(state *subscriptionState) {
+	if state == nil {
+		return
+	}
+	<-state.ctx.Done()
+	err := state.ctx.Err()
+	if errors.Is(err, context.Canceled) {
+		err = nil
+	}
+	ws.finalizeSubscription(state, err)
+}
+
+func (ws *WSStat) newSubscriptionID() string {
+	val := atomic.AddUint64(&ws.nextSubscriptionID, 1)
+	return fmt.Sprintf("%s%d", subscriptionIDPrefix, val)
+}
+
+func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
+	ws.subscriptionMu.Lock()
+	defer ws.subscriptionMu.Unlock()
+
+	if ws.subscriptions == nil {
+		ws.subscriptions = make(map[string]*subscriptionState)
+	}
+	ws.subscriptions[state.id] = state
+	if ws.subscriptionArchive == nil {
+		ws.subscriptionArchive = make(map[string]SubscriptionStats)
+	}
+	delete(ws.subscriptionArchive, state.id)
+
+	if state.messages == nil {
+		state.messages = new(uint64)
+	}
+	if state.bytes == nil {
+		state.bytes = new(uint64)
+	}
+
+	sub := &Subscription{
+		ID:       state.id,
+		cancel:   state.cancel,
+		done:     state.done,
+		messages: state.messages,
+		bytes:    state.bytes,
+		updates:  state.buffer,
+	}
+
+	return sub
+}
+
+func (ws *WSStat) getSubscription(id string) (*subscriptionState, bool) {
+	ws.subscriptionMu.RLock()
+	defer ws.subscriptionMu.RUnlock()
+
+	state, ok := ws.subscriptions[id]
+	return state, ok
+}
+
+func (ws *WSStat) removeSubscription(id string, stats *SubscriptionStats) {
+	ws.subscriptionMu.Lock()
+	defer ws.subscriptionMu.Unlock()
+
+	if ws.subscriptions != nil {
+		delete(ws.subscriptions, id)
+	}
+	if stats != nil {
+		if ws.subscriptionArchive == nil {
+			ws.subscriptionArchive = make(map[string]SubscriptionStats)
+		}
+		ws.subscriptionArchive[id] = *stats
+	}
+}
+
+func (ws *WSStat) snapshotSubscriptionStats() map[string]SubscriptionStats {
+	ws.subscriptionMu.RLock()
+	defer ws.subscriptionMu.RUnlock()
+
+	size := len(ws.subscriptions) + len(ws.subscriptionArchive)
+	if size == 0 {
+		return nil
+	}
+
+	snap := make(map[string]SubscriptionStats, size)
+	for id, state := range ws.subscriptions {
+		state.mu.Lock()
+		s := state.stats
+		var msgCount, byteCount uint64
+		if state.messages != nil {
+			msgCount = atomic.LoadUint64(state.messages)
+		}
+		if state.bytes != nil {
+			byteCount = atomic.LoadUint64(state.bytes)
+		}
+		stats := SubscriptionStats{
+			FirstEvent:       ws.durationSinceDial(s.firstEvent),
+			LastEvent:        ws.durationSinceDial(s.lastEvent),
+			MessageCount:     msgCount,
+			ByteCount:        byteCount,
+			MeanInterArrival: 0,
+			Error:            s.finalErr,
+		}
+		if s.messageCount > 1 {
+			stats.MeanInterArrival = s.totalInterArrival / time.Duration(s.messageCount-1)
+		}
+		state.mu.Unlock()
+		snap[id] = stats
+	}
+	for id, stats := range ws.subscriptionArchive {
+		snap[id] = stats
+	}
+
+	return snap
+}
+
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
 	log zerolog.Logger
@@ -80,6 +525,14 @@ type WSStat struct {
 	readChan  chan *wsRead
 	pongChan  chan bool
 	writeChan chan *wsWrite
+
+	subscriptionMu            sync.RWMutex
+	subscriptions             map[string]*subscriptionState
+	subscriptionArchive       map[string]SubscriptionStats
+	nextSubscriptionID        uint64
+	defaultSubscriptionBuffer int
+	subscriptionFirstEvent    time.Time
+	subscriptionLastEvent     time.Time
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -165,6 +618,22 @@ func (ws *WSStat) calculateResult() {
 		ws.result.FirstMessageResponse = ws.timings.messageReads[0].Sub(ws.timings.dialStart)
 	}
 
+	subscriptionStats := ws.snapshotSubscriptionStats()
+	if subscriptionStats == nil {
+		ws.result.Subscriptions = nil
+		ws.result.SubscriptionFirstEvent = 0
+		ws.result.SubscriptionLastEvent = 0
+	} else {
+		ws.result.Subscriptions = subscriptionStats
+		ws.result.SubscriptionFirstEvent = ws.durationSinceDial(ws.subscriptionFirstEvent)
+		ws.result.SubscriptionLastEvent = ws.durationSinceDial(ws.subscriptionLastEvent)
+		var subMessages int
+		for _, stats := range subscriptionStats {
+			subMessages += int(stats.MessageCount)
+		}
+		ws.result.MessageCount += subMessages
+	}
+
 	// If the WSStat is not yet closed, set the total time to the current time
 	if ws.timings.closeDone.IsZero() {
 		ws.result.TotalTime = time.Since(ws.timings.dialStart)
@@ -189,10 +658,13 @@ func (ws *WSStat) readPump() {
 				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 			if messageType, p, err := ws.conn.ReadMessage(); err != nil {
+				ws.dispatchIncoming(&wsRead{err: err, messageType: messageType})
 				ws.readChan <- &wsRead{err: err, messageType: messageType}
 				return
 			} else {
-				ws.readChan <- &wsRead{data: p, messageType: messageType}
+				if !ws.dispatchIncoming(&wsRead{data: p, messageType: messageType}) {
+					ws.readChan <- &wsRead{data: p, messageType: messageType}
+				}
 			}
 		}
 	}
@@ -232,6 +704,10 @@ func (ws *WSStat) Close() {
 	ws.closeOnce.Do(func() {
 		// Cancel the context
 		ws.cancel()
+
+		for _, state := range ws.activeSubscriptions() {
+			ws.finalizeSubscription(state, context.Canceled)
+		}
 
 		// If the connection is not already closed, close it gracefully
 		if ws.conn != nil {
@@ -366,6 +842,13 @@ func (ws *WSStat) ExtractResult() *Result {
 	ws.calculateResult()
 
 	resultCopy := *ws.result
+	if ws.result.Subscriptions != nil {
+		clone := make(map[string]SubscriptionStats, len(ws.result.Subscriptions))
+		for id, stats := range ws.result.Subscriptions {
+			clone[id] = stats
+		}
+		resultCopy.Subscriptions = clone
+	}
 	return &resultCopy
 }
 
@@ -408,6 +891,67 @@ func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
 func (ws *WSStat) PingPong() error {
 	ws.WriteMessage(websocket.PingMessage, nil)
 	return ws.ReadPong()
+}
+
+// Subscribe registers a long-lived listener using the supplied options and context.
+// The returned Subscription can be used to consume streamed frames until cancellation.
+func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Subscription, error) {
+	if ws.conn == nil {
+		return nil, errors.New("websocket connection is not established")
+	}
+
+	if opts.MessageType == 0 {
+		opts.MessageType = websocket.TextMessage
+	}
+
+	bufferSize := opts.Buffer
+	if bufferSize <= 0 {
+		bufferSize = ws.defaultSubscriptionBuffer
+	}
+
+	parentCtx := ws.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	combinedCtx, cancel := context.WithCancel(parentCtx)
+	done := make(chan struct{})
+
+	state := &subscriptionState{
+		options: opts,
+		matcher: opts.Matcher,
+		decoder: opts.Decoder,
+		buffer:  make(chan SubscriptionMessage, bufferSize),
+		done:    done,
+		cancel:  cancel,
+		ctx:     combinedCtx,
+	}
+
+	if opts.ID != "" {
+		state.id = opts.ID
+	} else {
+		state.id = ws.newSubscriptionID()
+	}
+
+	// Ensure caller-provided context cancels the subscription if terminated early.
+	if ctx != nil {
+		go func(c context.Context, cancel func()) {
+			select {
+			case <-c.Done():
+				cancel()
+			case <-done:
+			}
+		}(ctx, cancel)
+	}
+
+	sub := ws.registerSubscription(state)
+	go ws.watchSubscription(state)
+
+	// Send initial subscription request if payload is provided.
+	if len(opts.Payload) > 0 {
+		ws.WriteMessage(opts.MessageType, opts.Payload)
+	}
+
+	return sub, nil
 }
 
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
@@ -802,6 +1346,13 @@ func dialWithAddresses(
 	return nil, fmt.Errorf("no addresses found for %s", target.host)
 }
 
+func (ws *WSStat) durationSinceDial(ts time.Time) time.Duration {
+	if ts.IsZero() || ws.timings == nil {
+		return 0
+	}
+	return ts.Sub(ws.timings.dialStart)
+}
+
 // Option configures a WSStat instance.
 type Option func(*options)
 
@@ -844,17 +1395,20 @@ func New(opts ...Option) *WSStat {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
-		log:       cfg.logger.With().Str("pkg", "wsstat").Logger(),
-		dialer:    dialer,
-		timings:   timings,
-		result:    result,
-		ctx:       ctx,
-		cancel:    cancel,
-		readChan:  make(chan *wsRead, cfg.bufferSize),
-		pongChan:  make(chan bool, cfg.bufferSize),
-		writeChan: make(chan *wsWrite, cfg.bufferSize),
-		timeout:   cfg.timeout,
-		tlsConf:   cfg.tlsConfig,
+		log:                       cfg.logger.With().Str("pkg", "wsstat").Logger(),
+		dialer:                    dialer,
+		timings:                   timings,
+		result:                    result,
+		ctx:                       ctx,
+		cancel:                    cancel,
+		readChan:                  make(chan *wsRead, cfg.bufferSize),
+		pongChan:                  make(chan bool, cfg.bufferSize),
+		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
+		timeout:                   cfg.timeout,
+		tlsConf:                   cfg.tlsConfig,
+		subscriptions:             make(map[string]*subscriptionState),
+		subscriptionArchive:       make(map[string]SubscriptionStats),
+		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
 
 	return ws

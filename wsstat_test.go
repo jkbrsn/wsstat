@@ -1,6 +1,7 @@
 package wsstat
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/url"
@@ -208,6 +209,110 @@ func TestOneHitMessageJSON(t *testing.T) {
 	ws.Close()
 
 	validateOneHitResult(ws, getFunctionName(), t)
+}
+
+func TestSubscribeReceivesMessage(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: websocket.TextMessage,
+		Payload:     []byte("hello-sub"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "hello-sub", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscription message")
+	}
+
+	require.Eventually(t, func() bool {
+		return sub.MessageCount() >= 1
+	}, time.Second, 10*time.Millisecond)
+
+	sub.Cancel()
+	select {
+	case <-sub.Done():
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not close after cancel")
+	}
+
+	ws.Close()
+
+	result := ws.ExtractResult()
+	require.NotNil(t, result.Subscriptions)
+	stats, ok := result.Subscriptions[sub.ID]
+	require.True(t, ok, "expected subscription stats to be archived")
+	assert.EqualValues(t, 1, stats.MessageCount)
+	assert.Greater(t, stats.FirstEvent, time.Duration(0))
+	assert.GreaterOrEqual(t, stats.LastEvent, stats.FirstEvent)
+}
+
+func TestSubscriptionMatcherFallThrough(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: websocket.TextMessage,
+		Payload:     []byte("init"),
+		Matcher: func(int, []byte, any) bool {
+			return false
+		},
+	})
+	require.NoError(t, err)
+	defer func() {
+		sub.Cancel()
+		<-sub.Done()
+		ws.Close()
+	}()
+
+	// Initial echo should remain on the legacy read path.
+	_, initial, err := ws.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, "init", string(initial))
+
+	ws.WriteMessage(websocket.TextMessage, []byte("ping"))
+	_, data, err := ws.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, "ping", string(data))
+
+	select {
+	case msg := <-sub.Updates():
+		t.Fatalf("subscription unexpectedly claimed message %q", string(msg.Data))
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no subscription delivery
+	}
+
+	assert.EqualValues(t, 0, sub.MessageCount())
+}
+
+func TestSubscriptionCancelWithoutTraffic(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{})
+	require.NoError(t, err)
+
+	sub.Cancel()
+	select {
+	case <-sub.Done():
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not close on cancel")
+	}
+
+	ws.Close()
+	result := ws.ExtractResult()
+	if result.Subscriptions != nil {
+		stats, ok := result.Subscriptions[sub.ID]
+		if ok {
+			assert.EqualValues(t, 0, stats.MessageCount)
+		}
+	}
 }
 
 func TestPingPong(t *testing.T) {

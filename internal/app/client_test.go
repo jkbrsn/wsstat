@@ -90,4 +90,14 @@ func TestClientValidate(t *testing.T) {
 		c := &Client{Burst: 2, TextMessage: "hi"}
 		require.NoError(t, c.Validate())
 	})
+
+	t.Run("subscribe requires single burst", func(t *testing.T) {
+		c := &Client{Burst: 2, Subscribe: true}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("subscribe with burst one ok", func(t *testing.T) {
+		c := &Client{Burst: 1, Subscribe: true}
+		require.NoError(t, c.Validate())
+	})
 }

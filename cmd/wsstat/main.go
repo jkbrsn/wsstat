@@ -3,12 +3,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/jkbrsn/wsstat/internal/app"
 )
@@ -20,6 +23,9 @@ var (
 		"comma-separated headers for the connection establishing request")
 	jsonMethod  = flag.String("json", "", "a single JSON RPC method to send")
 	textMessage = flag.String("text", "", "a text message to send")
+	subscribe   = flag.Bool("subscribe", false, "keep the connection open and stream events")
+	subBuffer   = flag.Int("subscription-buffer", 0, "override subscription delivery buffer size")
+	subInterval = flag.Duration("subscription-interval", 0, "print subscription summaries every interval; 0 disables")
 	// Output
 	rawOutput   = flag.Bool("raw", false, "let printed output be the raw data of the response")
 	showVersion = flag.Bool("version", false, "print the program version")
@@ -49,6 +55,9 @@ func init() {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Other options:")
 		fmt.Fprintln(os.Stderr, "  -burst     "+flag.Lookup("burst").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscription-buffer  "+flag.Lookup("subscription-buffer").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscription-interval "+flag.Lookup("subscription-interval").Usage)
 		fmt.Fprintln(os.Stderr, "  -headers   "+flag.Lookup("headers").Usage)
 		fmt.Fprintln(os.Stderr, "  -raw       "+flag.Lookup("raw").Usage)
 		fmt.Fprintln(os.Stderr, "  -insecure  "+flag.Lookup("insecure").Usage)
@@ -65,22 +74,36 @@ func main() {
 	}
 
 	ws := app.Client{
-		Burst:        *burst,
-		InputHeaders: *inputHeaders,
-		JSONMethod:   *jsonMethod,
-		TextMessage:  *textMessage,
-		RawOutput:    *rawOutput,
-		ShowVersion:  *showVersion,
-		Version:      version,
-		Insecure:     *insecure,
-		Basic:        *basic,
-		Quiet:        *quiet,
-		Verbose:      *verbose,
+		Burst:                *burst,
+		InputHeaders:         *inputHeaders,
+		JSONMethod:           *jsonMethod,
+		TextMessage:          *textMessage,
+		RawOutput:            *rawOutput,
+		ShowVersion:          *showVersion,
+		Version:              version,
+		Insecure:             *insecure,
+		Basic:                *basic,
+		Quiet:                *quiet,
+		Verbose:              *verbose,
+		Subscribe:            *subscribe,
+		SubscriptionBuffer:   *subBuffer,
+		SubscriptionInterval: *subInterval,
 	}
 	err = ws.Validate()
 	if err != nil {
 		fmt.Printf("Error in input settings: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *subscribe {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		err = ws.StreamSubscription(ctx, targetURL)
+		if err != nil {
+			fmt.Printf("Error streaming subscription: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	err = ws.MeasureLatency(targetURL)

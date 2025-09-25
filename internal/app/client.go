@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -10,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
 )
 
@@ -62,6 +65,10 @@ type Client struct {
 	Basic   bool
 	Quiet   bool
 	Verbose bool
+	// Subscription mode
+	Subscribe            bool
+	SubscriptionBuffer   int
+	SubscriptionInterval time.Duration
 
 	// The response of a MeasureLatency call. Is overwritten if the function is called again.
 	Response any
@@ -159,6 +166,224 @@ func (c *Client) MeasureLatency(target *url.URL) error {
 	default:
 		return c.measurePing(target, header)
 	}
+}
+
+// StreamSubscription establishes a WebSocket connection and streams subscription events
+// until the provided context is cancelled or the server closes the connection.
+func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
+	header, err := parseHeaders(c.InputHeaders)
+	if err != nil {
+		return err
+	}
+
+	wsClient := wsstat.New()
+	defer wsClient.Close()
+
+	if err := wsClient.Dial(target, header); err != nil {
+		return handleConnectionError(err, target.String())
+	}
+
+	messageType, payload, err := c.subscriptionPayload()
+	if err != nil {
+		return err
+	}
+
+	opts := wsstat.SubscriptionOptions{
+		MessageType: messageType,
+		Payload:     payload,
+	}
+	if c.SubscriptionBuffer > 0 {
+		opts.Buffer = c.SubscriptionBuffer
+	}
+
+	subscription, err := wsClient.Subscribe(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	c.Result = wsClient.ExtractResult()
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			return err
+		}
+		fmt.Println(colorWSOrange("Streaming subscription events"))
+	}
+
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+func (c *Client) subscriptionPayload() (int, []byte, error) {
+	if c.TextMessage != "" {
+		return websocket.TextMessage, []byte(c.TextMessage), nil
+	}
+	if c.JSONMethod != "" {
+		msg := struct {
+			Method     string `json:"method"`
+			ID         string `json:"id"`
+			RPCVersion string `json:"jsonrpc"`
+		}{
+			Method:     c.JSONMethod,
+			ID:         "1",
+			RPCVersion: "2.0",
+		}
+		payload, err := json.Marshal(msg)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
+		}
+		return websocket.TextMessage, payload, nil
+	}
+	return websocket.TextMessage, nil, nil
+}
+
+func (c *Client) runSubscriptionLoop(
+	ctx context.Context,
+	wsClient *wsstat.WSStat,
+	subscription *wsstat.Subscription,
+	target *url.URL,
+) error {
+	var ticker *time.Ticker
+	if c.SubscriptionInterval > 0 {
+		ticker = time.NewTicker(c.SubscriptionInterval)
+		defer ticker.Stop()
+	}
+
+	messageIndex := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			subscription.Cancel()
+			<-subscription.Done()
+			c.Result = wsClient.ExtractResult()
+			if !c.Quiet {
+				c.printSubscriptionSummary(target)
+			}
+			return nil
+		case <-subscription.Done():
+			c.Result = wsClient.ExtractResult()
+			if !c.Quiet {
+				c.printSubscriptionSummary(target)
+			}
+			return nil
+		case msg, ok := <-subscription.Updates():
+			if !ok {
+				continue
+			}
+			if msg.Err != nil {
+				fmt.Fprintf(os.Stderr, "subscription error: %v\n", msg.Err)
+				continue
+			}
+			messageIndex++
+			c.Result = wsClient.ExtractResult()
+			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
+				return err
+			}
+		case <-tickerC(ticker):
+			c.Result = wsClient.ExtractResult()
+			if !c.Quiet {
+				c.printSubscriptionSummary(target)
+			}
+		}
+	}
+}
+
+func tickerC(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
+}
+
+func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
+	payload := string(msg.Data)
+	if c.RawOutput || c.Quiet {
+		fmt.Println(payload)
+		return nil
+	}
+
+	timestamp := msg.Received.Format(time.RFC3339Nano)
+	if c.Verbose {
+		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
+		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+			fmt.Println(formatted)
+		} else {
+			fmt.Println(payload)
+		}
+		fmt.Println()
+		return nil
+	}
+
+	line := payload
+	if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+		line = formatted
+	}
+	fmt.Printf("[%s] %s\n", timestamp, line)
+	return nil
+}
+
+func (c *Client) printSubscriptionSummary(target *url.URL) {
+	if c.Result == nil {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(colorWSOrange("Subscription summary"))
+	if c.Result.SubscriptionFirstEvent > 0 {
+		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
+	}
+	if c.Result.SubscriptionLastEvent > 0 {
+		fmt.Printf("  Last event latency: %s\n", formatDuration(c.Result.SubscriptionLastEvent))
+	}
+	fmt.Printf("  Total messages: %d\n", c.Result.MessageCount)
+
+	if len(c.Result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(c.Result.Subscriptions))
+		for id := range c.Result.Subscriptions {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			stats := c.Result.Subscriptions[id]
+			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
+			if stats.MeanInterArrival > 0 {
+				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
+			}
+			if stats.Error != nil {
+				fmt.Printf(" (error: %v)", stats.Error)
+			}
+			fmt.Println()
+		}
+	}
+
+	if c.Verbose {
+		_ = c.PrintTimingResults(target)
+	}
+}
+
+func formatJSONIfPossible(data []byte) string {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return ""
+	}
+	var anyJSON any
+	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
+		return ""
+	}
+	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(pretty)
+}
+
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%dms", d/time.Millisecond)
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
@@ -302,6 +527,10 @@ func (c *Client) Validate() error {
 
 	if c.TextMessage != "" && c.JSONMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
+	}
+
+	if c.Subscribe && c.Burst != 1 {
+		return errors.New("burst must equal 1 when subscribe mode is enabled")
 	}
 	return nil
 }
