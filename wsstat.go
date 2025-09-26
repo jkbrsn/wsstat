@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -343,13 +344,17 @@ func (ws *WSStat) removeSubscription(id string, stats *SubscriptionStats) {
 }
 
 // snapshotSubscriptionStats snapshots the subscription stats.
-func (ws *WSStat) snapshotSubscriptionStats() map[string]SubscriptionStats {
+func (ws *WSStat) snapshotSubscriptionStats() (
+	stats map[string]SubscriptionStats,
+	firstEvent time.Time,
+	lastEvent time.Time,
+) {
 	ws.subscriptionMu.RLock()
 	defer ws.subscriptionMu.RUnlock()
 
 	size := len(ws.subscriptions) + len(ws.subscriptionArchive)
 	if size == 0 {
-		return nil
+		return nil, time.Time{}, time.Time{}
 	}
 
 	snap := make(map[string]SubscriptionStats, size)
@@ -377,11 +382,9 @@ func (ws *WSStat) snapshotSubscriptionStats() map[string]SubscriptionStats {
 		state.mu.Unlock()
 		snap[id] = stats
 	}
-	for id, stats := range ws.subscriptionArchive {
-		snap[id] = stats
-	}
+	maps.Copy(snap, ws.subscriptionArchive)
 
-	return snap
+	return snap, ws.subscriptionFirstEvent, ws.subscriptionLastEvent
 }
 
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
@@ -489,15 +492,15 @@ func (ws *WSStat) calculateResult() {
 		ws.result.FirstMessageResponse = ws.timings.messageReads[0].Sub(ws.timings.dialStart)
 	}
 
-	subscriptionStats := ws.snapshotSubscriptionStats()
+	subscriptionStats, firstEvent, lastEvent := ws.snapshotSubscriptionStats()
 	if subscriptionStats == nil {
 		ws.result.Subscriptions = nil
 		ws.result.SubscriptionFirstEvent = 0
 		ws.result.SubscriptionLastEvent = 0
 	} else {
 		ws.result.Subscriptions = subscriptionStats
-		ws.result.SubscriptionFirstEvent = ws.durationSinceDial(ws.subscriptionFirstEvent)
-		ws.result.SubscriptionLastEvent = ws.durationSinceDial(ws.subscriptionLastEvent)
+		ws.result.SubscriptionFirstEvent = ws.durationSinceDial(firstEvent)
+		ws.result.SubscriptionLastEvent = ws.durationSinceDial(lastEvent)
 		var subMessages int
 		for _, stats := range subscriptionStats {
 			subMessages += int(stats.MessageCount)
