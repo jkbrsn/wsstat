@@ -13,27 +13,9 @@ import (
 	"github.com/jkbrsn/wsstat/internal/app"
 )
 
-type deprecatedAliasInt struct {
-	target *trackedIntFlag
-	used   *bool
-}
-
-func (a *deprecatedAliasInt) Set(s string) error {
-	if a.used != nil {
-		*a.used = true
-	}
-	return a.target.Set(s)
-}
-
-func (a *deprecatedAliasInt) String() string {
-	return a.target.String()
-}
-
 var (
 	// Input
-	countFlag = newTrackedIntFlag(1)
-	// TODO: remove the -burst alias once the flag rename has been communicated broadly.
-	burstAlias   = deprecatedAliasInt{target: &countFlag, used: &burstFlagUsed}
+	countFlag    = newTrackedIntFlag(1)
 	inputHeaders = flag.String("headers", "",
 		"comma-separated headers for the connection establishing request")
 	jsonMethod    = flag.String("json", "", "a single JSON RPC method to send")
@@ -56,11 +38,8 @@ var (
 	verbose = flag.Bool("v", false, "print verbose output")
 )
 
-var burstFlagUsed bool
-
 func init() {
 	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited in subscription mode")
-	flag.Var(&burstAlias, "burst", "deprecated alias for -count; will be removed in a future release")
 
 	// Define custom usage message
 	flag.Usage = func() {
@@ -77,7 +56,6 @@ func init() {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Other options:")
 		fmt.Fprintln(os.Stderr, "  -count     "+flag.Lookup("count").Usage)
-		fmt.Fprintln(os.Stderr, "  -burst     "+flag.Lookup("burst").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscribe-once "+flag.Lookup("subscribe-once").Usage)
 		fmt.Fprintln(os.Stderr, "  -subscription-buffer  "+flag.Lookup("subscription-buffer").Usage)
@@ -96,10 +74,6 @@ func main() {
 		fmt.Printf("Error parsing input: %v\n\n", err)
 		flag.Usage()
 		os.Exit(1)
-	}
-
-	if burstFlagUsed {
-		fmt.Fprintln(os.Stderr, "Warning: -burst is deprecated and will be removed in a future release; use -count instead")
 	}
 
 	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
