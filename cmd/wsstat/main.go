@@ -39,7 +39,8 @@ var (
 )
 
 func init() {
-	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited in subscription mode")
+	flag.Var(&countFlag, "count",
+		"number of interactions to perform; 0 means unlimited in subscription mode")
 
 	// Define custom usage message
 	flag.Usage = func() {
@@ -97,9 +98,6 @@ func main() {
 		SubscriptionInterval: *subInterval,
 	}
 
-	if *subscribeOnce {
-		ws.Subscribe = true
-	}
 	err = ws.Validate()
 	if err != nil {
 		fmt.Printf("Error in input settings: %v\n", err)

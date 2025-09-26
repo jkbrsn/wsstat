@@ -19,6 +19,84 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// subscriptionTestServer is a test server for testing subscription mode.
+type subscriptionTestServer struct {
+	wsURL   *url.URL
+	events  chan<- string
+	ready   <-chan struct{}
+	cleanup func()
+
+	// server   *httptest.Server
+	// upgrader websocket.Upgrader
+}
+
+// newSubscriptionTestServer creates a new subscription test server.
+func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
+	t.Helper()
+
+	events := make(chan string, 4)
+	done := make(chan struct{})
+	ready := make(chan struct{})
+	var once sync.Once
+	closeReady := func() {
+		once.Do(func() {
+			close(ready)
+		})
+	}
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			closeReady()
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		if _, _, err := conn.ReadMessage(); err != nil {
+			closeReady()
+			return
+		}
+		closeReady()
+
+		for {
+			select {
+			case <-done:
+				return
+			case msg, ok := <-events:
+				if !ok {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+					return
+				}
+			}
+		}
+	}))
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	cleanup := func() {
+		closeReady()
+		close(done)
+		close(events)
+		server.Close()
+	}
+
+	return subscriptionTestServer{
+		wsURL:   wsURL,
+		events:  events,
+		ready:   ready,
+		cleanup: cleanup,
+	}
+}
+
 // TestParseHeaders verifies that parseHeaders correctly handles valid and invalid input.
 func TestParseHeaders(t *testing.T) {
 	t.Run("valid headers", func(t *testing.T) {
@@ -134,8 +212,8 @@ func TestClientValidate(t *testing.T) {
 func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	t.Parallel()
 
-	wsURL, events, ready, cleanup := newSubscriptionTestServer(t)
-	defer cleanup()
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
 
 	c := &Client{
 		Count:       2,
@@ -149,12 +227,12 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- c.StreamSubscription(ctx, wsURL)
+		errCh <- c.StreamSubscription(ctx, server.wsURL)
 	}()
 
-	<-ready
-	events <- "event-1"
-	events <- "event-2"
+	<-server.ready
+	server.events <- "event-1"
+	server.events <- "event-2"
 
 	require.NoError(t, <-errCh)
 	require.NotNil(t, c.Result)
@@ -164,8 +242,8 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	t.Parallel()
 
-	wsURL, events, ready, cleanup := newSubscriptionTestServer(t)
-	defer cleanup()
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
 
 	c := &Client{
 		Subscribe:   true,
@@ -177,12 +255,12 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- c.StreamSubscription(ctx, wsURL)
+		errCh <- c.StreamSubscription(ctx, server.wsURL)
 	}()
 
-	<-ready
-	events <- "event-1"
-	events <- "event-2"
+	<-server.ready
+	server.events <- "event-1"
+	server.events <- "event-2"
 
 	select {
 	case err := <-errCh:
@@ -199,67 +277,6 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	}
 	require.NotNil(t, c.Result)
 	assert.GreaterOrEqual(t, c.Result.MessageCount, 2)
-}
-
-func newSubscriptionTestServer(t *testing.T) (*url.URL, chan<- string, <-chan struct{}, func()) {
-	t.Helper()
-
-	events := make(chan string, 4)
-	done := make(chan struct{})
-	ready := make(chan struct{})
-	var once sync.Once
-	closeReady := func() {
-		once.Do(func() {
-			close(ready)
-		})
-	}
-
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			closeReady()
-			return
-		}
-		defer func() {
-			_ = conn.Close()
-		}()
-
-		if _, _, err := conn.ReadMessage(); err != nil {
-			closeReady()
-			return
-		}
-		closeReady()
-
-		for {
-			select {
-			case <-done:
-				return
-			case msg, ok := <-events:
-				if !ok {
-					return
-				}
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
-					return
-				}
-			}
-		}
-	}))
-
-	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
-	require.NoError(t, err)
-
-	cleanup := func() {
-		closeReady()
-		close(done)
-		close(events)
-		server.Close()
-	}
-
-	return wsURL, events, ready, cleanup
 }
 
 func TestPrintSubscriptionMessageBasic(t *testing.T) {

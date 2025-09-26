@@ -97,8 +97,10 @@ func parseWSURI(rawURI string) (*url.URL, error) {
 }
 
 // resolveCountValue returns the count value based on the flags.
+//
+// revive:disable:flag-parameter allow
 func resolveCountValue(subscribe, subscribeOnce bool) int {
-	if !countFlag.WasSet() && subscribe && !subscribeOnce {
+	if !subscribeOnce && (subscribe && !countFlag.WasSet()) {
 		return 0
 	}
 	return countFlag.Value()
