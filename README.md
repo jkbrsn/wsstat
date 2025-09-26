@@ -111,6 +111,42 @@ For more options:
 wsstat -h
 ```
 
+### Subscription Mode
+
+Long-lived streaming endpoints can be exercised with the subscription mode:
+
+```sh
+wsstat -subscribe -text '{"method":"subscribe"}' wss://example.org/stream
+```
+
+When `-subscribe` is supplied the client keeps the socket open, forwards each
+incoming frame to stdout, and periodically snapshots timing metrics. Use
+`-subscription-buffer` to adjust the per-subscription queue length and
+`-subscription-interval` (for example, `30s`) to print recurring summaries that
+include per-subscription message counts, byte totals, and mean inter-arrival
+latency.
+
+Control how many interactions occur by setting `-count`. Non-subscription
+commands default to `-count 1`. When streaming (`-subscribe`), `-count 0`
+keeps the connection open until you cancel it, while any positive value limits
+delivery to that many events before wsstat disconnects:
+
+```sh
+wsstat -subscribe -count 5 -text '{"method":"subscribe"}' wss://example.org/stream
+```
+
+For a single-response probe, you can either run `-subscribe -count 1` or use the
+dedicated helper `-subscribe-once`, both of which subscribe and exit after the
+first event:
+
+```sh
+wsstat -subscribe -count 1 -json '{"method":"subscribe_ticker"}' wss://example.org/ws
+```
+
+```sh
+wsstat -subscribe-once -json '{"method":"subscribe_ticker"}' wss://example.org/ws
+```
+
 ## wsstat Package
 
 Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [gorilla/websocket](https://pkg.go.dev/github.com/gorilla/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.

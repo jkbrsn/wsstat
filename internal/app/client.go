@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -10,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
 )
 
@@ -48,7 +51,7 @@ var (
 // based on the settings passed to the struct.
 type Client struct {
 	// Input
-	Burst        int    // Number of messages to send in a burst (if > 1)
+	Count        int    // Number of interactions to perform; 0 means unlimited in subscription mode
 	InputHeaders string // Comma-separated headers for connection establishment
 	JSONMethod   string // A single JSON RPC method (no params)
 	TextMessage  string // A text message
@@ -62,6 +65,11 @@ type Client struct {
 	Basic   bool
 	Quiet   bool
 	Verbose bool
+	// Subscription mode
+	Subscribe            bool
+	SubscribeOnce        bool
+	SubscriptionBuffer   int
+	SubscriptionInterval time.Duration
 
 	// The response of a MeasureLatency call. Is overwritten if the function is called again.
 	Response any
@@ -72,7 +80,7 @@ type Client struct {
 
 // measureText runs the text-message latency measurement flow.
 func (c *Client) measureText(target *url.URL, header http.Header) error {
-	msgs := buildRepeatedStrings(c.TextMessage, c.Burst)
+	msgs := buildRepeatedStrings(c.TextMessage, c.Count)
 	var err error
 	c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
 	if err != nil {
@@ -124,7 +132,7 @@ func (c *Client) measureJSON(target *url.URL, header http.Header) error {
 		ID:         "1",
 		RPCVersion: "2.0",
 	}
-	msgs := buildRepeatedAny(msg, c.Burst)
+	msgs := buildRepeatedAny(msg, c.Count)
 	var err error
 	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
 	if err != nil {
@@ -136,7 +144,7 @@ func (c *Client) measureJSON(target *url.URL, header http.Header) error {
 // measurePing runs the ping latency measurement flow.
 func (c *Client) measurePing(target *url.URL, header http.Header) error {
 	var err error
-	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
+	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Count, header)
 	if err != nil {
 		return handleConnectionError(err, target.String())
 	}
@@ -159,6 +167,287 @@ func (c *Client) MeasureLatency(target *url.URL) error {
 	default:
 		return c.measurePing(target, header)
 	}
+}
+
+// StreamSubscription establishes a WebSocket connection and streams subscription events
+// until the provided context is canceled or the server closes the connection.
+func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer wsClient.Close()
+
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+		fmt.Println()
+		fmt.Println(colorWSOrange("Streaming subscription events"))
+	}
+
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+// StreamSubscriptionOnce establishes a subscription and exits after the first message.
+func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
+	originalCount := c.Count
+	c.Count = 1
+	defer func() { c.Count = originalCount }()
+
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer wsClient.Close()
+
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+	}
+
+	fmt.Println()
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+func (c *Client) openSubscription(
+	ctx context.Context,
+	target *url.URL,
+) (*wsstat.WSStat, *wsstat.Subscription, error) {
+	header, err := parseHeaders(c.InputHeaders)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	wsClient := wsstat.New()
+	if err := wsClient.Dial(target, header); err != nil {
+		wsClient.Close()
+		return nil, nil, handleConnectionError(err, target.String())
+	}
+
+	messageType, payload, err := c.subscriptionPayload()
+	if err != nil {
+		wsClient.Close()
+		return nil, nil, err
+	}
+
+	opts := wsstat.SubscriptionOptions{
+		MessageType: messageType,
+		Payload:     payload,
+	}
+	if c.SubscriptionBuffer > 0 {
+		opts.Buffer = c.SubscriptionBuffer
+	}
+
+	subscription, err := wsClient.Subscribe(ctx, opts)
+	if err != nil {
+		wsClient.Close()
+		return nil, nil, err
+	}
+
+	c.Result = wsClient.ExtractResult()
+	return wsClient, subscription, nil
+}
+
+// subscriptionPayload returns the payload to be sent to the server.
+func (c *Client) subscriptionPayload() (int, []byte, error) {
+	if c.TextMessage != "" {
+		return websocket.TextMessage, []byte(c.TextMessage), nil
+	}
+	if c.JSONMethod != "" {
+		msg := struct {
+			Method     string `json:"method"`
+			ID         string `json:"id"`
+			RPCVersion string `json:"jsonrpc"`
+		}{
+			Method:     c.JSONMethod,
+			ID:         "1",
+			RPCVersion: "2.0",
+		}
+		payload, err := json.Marshal(msg)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
+		}
+		return websocket.TextMessage, payload, nil
+	}
+	return websocket.TextMessage, nil, nil
+}
+
+// runSubscriptionLoop runs the subscription loop.
+func (c *Client) runSubscriptionLoop(
+	ctx context.Context,
+	wsClient *wsstat.WSStat,
+	subscription *wsstat.Subscription,
+	target *url.URL,
+) error {
+	var ticker *time.Ticker
+	if c.SubscriptionInterval > 0 {
+		ticker = time.NewTicker(c.SubscriptionInterval)
+		defer ticker.Stop()
+	}
+
+	messageIndex := 0
+	limit := c.Count
+
+	for {
+		select {
+		case <-ctx.Done():
+			subscription.Cancel()
+			<-subscription.Done()
+			c.handleSubscriptionTick(wsClient, target)
+			return nil
+		case <-subscription.Done():
+			c.handleSubscriptionTick(wsClient, target)
+			return nil
+		case msg, ok := <-subscription.Updates():
+			if !ok {
+				continue
+			}
+			if msg.Err != nil {
+				fmt.Fprintf(os.Stderr, "subscription error: %v\n", msg.Err)
+				continue
+			}
+			messageIndex++
+			c.Result = wsClient.ExtractResult()
+			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
+				return err
+			}
+			if limit > 0 && messageIndex >= limit {
+				subscription.Cancel()
+				<-subscription.Done()
+				c.handleSubscriptionTick(wsClient, target)
+				return nil
+			}
+		case <-tickerC(ticker):
+			c.handleSubscriptionTick(wsClient, target)
+			fmt.Println()
+		}
+	}
+}
+
+// handleSubscriptionTick handles a subscription tick.
+func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
+	if c.Result == nil {
+		return
+	}
+	c.Result = wsClient.ExtractResult()
+	if !c.Quiet {
+		c.printSubscriptionSummary(target)
+	}
+}
+
+// tickerC returns a channel that emits ticks from the provided ticker.
+func tickerC(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
+}
+
+// printSubscriptionMessage prints a subscription message.
+func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
+	payload := string(msg.Data)
+	if c.RawOutput || c.Quiet {
+		fmt.Println(payload)
+		return nil
+	}
+
+	timestamp := msg.Received.Format(time.RFC3339Nano)
+	if c.Basic {
+		fmt.Printf("[%04d @ %s] Message received\n", index, timestamp)
+		return nil
+	}
+
+	if c.Verbose {
+		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
+		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+			fmt.Println(formatted)
+		} else {
+			fmt.Println(payload)
+		}
+		fmt.Println()
+		return nil
+	}
+
+	line := payload
+	if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+		line = formatted
+	}
+	fmt.Printf("[%s] %s\n", timestamp, line)
+	return nil
+}
+
+// printSubscriptionSummary prints a subscription summary.
+func (c *Client) printSubscriptionSummary(target *url.URL) {
+	if c.Result == nil {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(colorWSOrange("Subscription summary"))
+	if c.Result.SubscriptionFirstEvent > 0 {
+		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
+	}
+	if c.Result.SubscriptionLastEvent > 0 {
+		fmt.Printf("  Last event latency: %s\n", formatDuration(c.Result.SubscriptionLastEvent))
+	}
+	fmt.Printf("  Total messages: %d\n", c.Result.MessageCount)
+
+	if len(c.Result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(c.Result.Subscriptions))
+		for id := range c.Result.Subscriptions {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			stats := c.Result.Subscriptions[id]
+			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
+			if stats.MeanInterArrival > 0 {
+				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
+			}
+			if stats.Error != nil {
+				fmt.Printf(" (error: %v)", stats.Error)
+			}
+			fmt.Println()
+		}
+	}
+
+	if c.Verbose {
+		_ = c.PrintTimingResults(target)
+	}
+}
+
+// formatJSONIfPossible formats the JSON data if possible.
+func formatJSONIfPossible(data []byte) string {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return ""
+	}
+	var anyJSON any
+	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
+		return ""
+	}
+	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(pretty)
+}
+
+// formatDuration formats the duration.
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%dms", d/time.Millisecond)
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
@@ -242,10 +531,10 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 	}
 
 	if c.Basic {
-		printTimingResultsBasic(c.Result, c.Burst)
+		printTimingResultsBasic(c.Result, c.Count)
 	} else {
 		rttLabel := "Message RTT"
-		if c.Burst > 1 || c.Result.MessageCount > 1 {
+		if c.Count > 1 || c.Result.MessageCount > 1 {
 			rttLabel = "Mean Message RTT"
 		}
 		printTimingResultsTiered(c.Result, u, rttLabel)
@@ -296,12 +585,33 @@ func (c *Client) PrintResponse() {
 // Validate validates the Client is ready for measurement; it checks that the client settings are
 // set to valid values.
 func (c *Client) Validate() error {
-	if c.Burst < 1 {
-		return errors.New("burst must be greater than 0")
+	if c.Count < 0 {
+		return errors.New("count must be zero or greater")
 	}
 
 	if c.TextMessage != "" && c.JSONMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
+	}
+
+	if c.SubscribeOnce {
+		c.Subscribe = true
+		if c.Count == 0 {
+			c.Count = 1
+		}
+		if c.Count != 1 {
+			return errors.New("count must equal 1 when subscribe-once is enabled")
+		}
+	}
+
+	if c.Subscribe {
+		return nil
+	}
+
+	if c.Count == 0 {
+		c.Count = 1
+	}
+	if c.Count < 1 {
+		return errors.New("count must be greater than 0")
 	}
 	return nil
 }
@@ -376,10 +686,10 @@ func parseHeaders(headers string) (http.Header, error) {
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
-func printTimingResultsBasic(result *wsstat.Result, burst int) {
+func printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Println()
 	rttString := "Round-trip time"
-	if burst > 1 {
+	if count > 1 {
 		rttString = "Mean round-trip time"
 	}
 	msgCountString := "message"

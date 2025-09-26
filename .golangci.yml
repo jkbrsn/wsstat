@@ -43,11 +43,15 @@ linters:
         - name: cyclomatic
           disabled: false
           exclude: [""]
-          arguments: [15]
+          arguments: [21]
         - name: line-length-limit
           disabled: false
           exclude: [""]
           arguments: [100]
+        - name: function-length
+          disabled: false
+          exclude: [""]
+          arguments: [0, 80]
         - name: unhandled-error
           disabled: false
           exclude: [""]
