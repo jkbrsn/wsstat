@@ -4,13 +4,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/jkbrsn/wsstat/internal/app"
@@ -18,7 +15,7 @@ import (
 
 var (
 	// Input
-	burst        = flag.Int("burst", 1, "number of messages to send in a burst")
+	countFlag    = newTrackedIntFlag(1)
 	inputHeaders = flag.String("headers", "",
 		"comma-separated headers for the connection establishing request")
 	jsonMethod    = flag.String("json", "", "a single JSON RPC method to send")
@@ -27,7 +24,7 @@ var (
 	subscribeOnce = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
 	subBuffer     = flag.Int("subscription-buffer", 0, "override subscription delivery buffer size")
 	subInterval   = flag.Duration("subscription-interval", 0,
-		"print subscription summaries every interval; 0 disables")
+		"print subscription summaries every interval; accepts values like 1s, 5m, 1h; 0 disables")
 	// Output
 	rawOutput   = flag.Bool("raw", false, "let printed output be the raw data of the response")
 	showVersion = flag.Bool("version", false, "print the program version")
@@ -42,6 +39,9 @@ var (
 )
 
 func init() {
+	flag.Var(&countFlag, "count",
+		"number of interactions to perform; 0 means unlimited in subscription mode")
+
 	// Define custom usage message
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage:  wsstat [options] <url>")
@@ -56,16 +56,17 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -q  "+flag.Lookup("q").Usage)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Other options:")
-		fmt.Fprintln(os.Stderr, "  -burst     "+flag.Lookup("burst").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscribe-once "+flag.Lookup("subscribe-once").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscription-buffer  "+flag.Lookup("subscription-buffer").Usage)
+		fmt.Fprintln(os.Stderr, "  -count                 "+flag.Lookup("count").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscribe             "+flag.Lookup("subscribe").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscribe-once        "+flag.Lookup("subscribe-once").Usage)
+		fmt.Fprintln(os.Stderr,
+			"  -subscription-buffer   "+flag.Lookup("subscription-buffer").Usage)
 		fmt.Fprintln(os.Stderr,
 			"  -subscription-interval "+flag.Lookup("subscription-interval").Usage)
-		fmt.Fprintln(os.Stderr, "  -headers   "+flag.Lookup("headers").Usage)
-		fmt.Fprintln(os.Stderr, "  -raw       "+flag.Lookup("raw").Usage)
-		fmt.Fprintln(os.Stderr, "  -insecure  "+flag.Lookup("insecure").Usage)
-		fmt.Fprintln(os.Stderr, "  -version   "+flag.Lookup("version").Usage)
+		fmt.Fprintln(os.Stderr, "  -headers               "+flag.Lookup("headers").Usage)
+		fmt.Fprintln(os.Stderr, "  -raw                   "+flag.Lookup("raw").Usage)
+		fmt.Fprintln(os.Stderr, "  -insecure              "+flag.Lookup("insecure").Usage)
+		fmt.Fprintln(os.Stderr, "  -version               "+flag.Lookup("version").Usage)
 	}
 }
 
@@ -77,8 +78,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
+
 	ws := app.Client{
-		Burst:                *burst,
+		Count:                effectiveCount,
 		InputHeaders:         *inputHeaders,
 		JSONMethod:           *jsonMethod,
 		TextMessage:          *textMessage,
@@ -94,6 +97,7 @@ func main() {
 		SubscriptionBuffer:   *subBuffer,
 		SubscriptionInterval: *subInterval,
 	}
+
 	err = ws.Validate()
 	if err != nil {
 		fmt.Printf("Error in input settings: %v\n", err)
@@ -147,53 +151,4 @@ func main() {
 
 	// Print the response, if there is one
 	ws.PrintResponse()
-}
-
-// parseValidateInput parses and validates the flags and input passed to the program.
-func parseValidateInput() (*url.URL, error) {
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Printf("Version: %s\n", version)
-		os.Exit(0) //revive:disable:deep-exit allow here
-	}
-
-	if *basic && *verbose || *basic && *quiet || *verbose && *quiet {
-		return nil, errors.New("mutually exclusive verbosity flags")
-	}
-
-	if *textMessage != "" && *jsonMethod != "" {
-		return nil, errors.New("mutually exclusive messaging flags")
-	}
-
-	args := flag.Args()
-	if len(args) != 1 {
-		return nil, errors.New("invalid number of arguments")
-	}
-
-	u, err := parseWSURI(args[0])
-	if err != nil {
-		return nil, fmt.Errorf("error parsing input URI: %v", err)
-	}
-
-	return u, nil
-}
-
-// parseWSURI parses the rawURI string into a URL object.
-func parseWSURI(rawURI string) (*url.URL, error) {
-	uri := rawURI
-	if !strings.Contains(rawURI, "://") {
-		scheme := "wss://"
-		if *insecure {
-			scheme = "ws://"
-		}
-		uri = scheme + rawURI
-	}
-
-	u, err := url.Parse(uri)
-	if err != nil {
-		return nil, err
-	}
-
-	return u, nil
 }

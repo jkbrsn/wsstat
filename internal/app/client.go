@@ -51,7 +51,7 @@ var (
 // based on the settings passed to the struct.
 type Client struct {
 	// Input
-	Burst        int    // Number of messages to send in a burst (if > 1)
+	Count        int    // Number of interactions to perform; 0 means unlimited in subscription mode
 	InputHeaders string // Comma-separated headers for connection establishment
 	JSONMethod   string // A single JSON RPC method (no params)
 	TextMessage  string // A text message
@@ -80,7 +80,7 @@ type Client struct {
 
 // measureText runs the text-message latency measurement flow.
 func (c *Client) measureText(target *url.URL, header http.Header) error {
-	msgs := buildRepeatedStrings(c.TextMessage, c.Burst)
+	msgs := buildRepeatedStrings(c.TextMessage, c.Count)
 	var err error
 	c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
 	if err != nil {
@@ -132,7 +132,7 @@ func (c *Client) measureJSON(target *url.URL, header http.Header) error {
 		ID:         "1",
 		RPCVersion: "2.0",
 	}
-	msgs := buildRepeatedAny(msg, c.Burst)
+	msgs := buildRepeatedAny(msg, c.Count)
 	var err error
 	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
 	if err != nil {
@@ -144,7 +144,7 @@ func (c *Client) measureJSON(target *url.URL, header http.Header) error {
 // measurePing runs the ping latency measurement flow.
 func (c *Client) measurePing(target *url.URL, header http.Header) error {
 	var err error
-	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
+	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Count, header)
 	if err != nil {
 		return handleConnectionError(err, target.String())
 	}
@@ -172,21 +172,68 @@ func (c *Client) MeasureLatency(target *url.URL) error {
 // StreamSubscription establishes a WebSocket connection and streams subscription events
 // until the provided context is canceled or the server closes the connection.
 func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
-	header, err := parseHeaders(c.InputHeaders)
+	wsClient, subscription, err := c.openSubscription(ctx, target)
 	if err != nil {
 		return err
 	}
-
-	wsClient := wsstat.New()
 	defer wsClient.Close()
 
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+		fmt.Println()
+		fmt.Println(colorWSOrange("Streaming subscription events"))
+	}
+
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+// StreamSubscriptionOnce establishes a subscription and exits after the first message.
+func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
+	originalCount := c.Count
+	c.Count = 1
+	defer func() { c.Count = originalCount }()
+
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer wsClient.Close()
+
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+	}
+
+	fmt.Println()
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+func (c *Client) openSubscription(
+	ctx context.Context,
+	target *url.URL,
+) (*wsstat.WSStat, *wsstat.Subscription, error) {
+	header, err := parseHeaders(c.InputHeaders)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	wsClient := wsstat.New()
 	if err := wsClient.Dial(target, header); err != nil {
-		return handleConnectionError(err, target.String())
+		wsClient.Close()
+		return nil, nil, handleConnectionError(err, target.String())
 	}
 
 	messageType, payload, err := c.subscriptionPayload()
 	if err != nil {
-		return err
+		wsClient.Close()
+		return nil, nil, err
 	}
 
 	opts := wsstat.SubscriptionOptions{
@@ -199,71 +246,12 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 
 	subscription, err := wsClient.Subscribe(ctx, opts)
 	if err != nil {
-		return err
+		wsClient.Close()
+		return nil, nil, err
 	}
 
 	c.Result = wsClient.ExtractResult()
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
-			return err
-		}
-		fmt.Println()
-		fmt.Println(colorWSOrange("Streaming subscription events"))
-	}
-
-	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
-}
-
-// StreamSubscriptionOnce establishes a subscription and exits after the first message.
-func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
-	header, err := parseHeaders(c.InputHeaders)
-	if err != nil {
-		return err
-	}
-
-	wsClient := wsstat.New()
-	defer wsClient.Close()
-
-	if err := wsClient.Dial(target, header); err != nil {
-		return handleConnectionError(err, target.String())
-	}
-
-	messageType, payload, err := c.subscriptionPayload()
-	if err != nil {
-		return err
-	}
-
-	opts := wsstat.SubscriptionOptions{
-		MessageType: messageType,
-		Payload:     payload,
-	}
-	if c.SubscriptionBuffer > 0 {
-		opts.Buffer = c.SubscriptionBuffer
-	}
-
-	msg, err := wsClient.SubscribeOnce(ctx, opts)
-	if err != nil {
-		return err
-	}
-
-	c.Result = wsClient.ExtractResult()
-
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Println()
-	if err := c.printSubscriptionMessage(1, msg); err != nil {
-		return err
-	}
-
-	if !c.Quiet {
-		c.printSubscriptionSummary(target)
-	}
-
-	return nil
+	return wsClient, subscription, nil
 }
 
 // subscriptionPayload returns the payload to be sent to the server.
@@ -304,6 +292,7 @@ func (c *Client) runSubscriptionLoop(
 	}
 
 	messageIndex := 0
+	limit := c.Count
 
 	for {
 		select {
@@ -328,8 +317,15 @@ func (c *Client) runSubscriptionLoop(
 			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
 				return err
 			}
+			if limit > 0 && messageIndex >= limit {
+				subscription.Cancel()
+				<-subscription.Done()
+				c.handleSubscriptionTick(wsClient, target)
+				return nil
+			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
+			fmt.Println()
 		}
 	}
 }
@@ -535,10 +531,10 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 	}
 
 	if c.Basic {
-		printTimingResultsBasic(c.Result, c.Burst)
+		printTimingResultsBasic(c.Result, c.Count)
 	} else {
 		rttLabel := "Message RTT"
-		if c.Burst > 1 || c.Result.MessageCount > 1 {
+		if c.Count > 1 || c.Result.MessageCount > 1 {
 			rttLabel = "Mean Message RTT"
 		}
 		printTimingResultsTiered(c.Result, u, rttLabel)
@@ -589,20 +585,33 @@ func (c *Client) PrintResponse() {
 // Validate validates the Client is ready for measurement; it checks that the client settings are
 // set to valid values.
 func (c *Client) Validate() error {
-	if c.Burst < 1 {
-		return errors.New("burst must be greater than 0")
+	if c.Count < 0 {
+		return errors.New("count must be zero or greater")
 	}
 
 	if c.TextMessage != "" && c.JSONMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
 	}
 
-	if c.Subscribe && c.SubscribeOnce {
-		return errors.New("choose either subscribe streaming mode or subscribe-once")
+	if c.SubscribeOnce {
+		c.Subscribe = true
+		if c.Count == 0 {
+			c.Count = 1
+		}
+		if c.Count != 1 {
+			return errors.New("count must equal 1 when subscribe-once is enabled")
+		}
 	}
 
-	if (c.Subscribe || c.SubscribeOnce) && c.Burst != 1 {
-		return errors.New("burst must equal 1 when subscription mode is enabled")
+	if c.Subscribe {
+		return nil
+	}
+
+	if c.Count == 0 {
+		c.Count = 1
+	}
+	if c.Count < 1 {
+		return errors.New("count must be greater than 0")
 	}
 	return nil
 }
@@ -677,10 +686,10 @@ func parseHeaders(headers string) (http.Header, error) {
 }
 
 // printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
-func printTimingResultsBasic(result *wsstat.Result, burst int) {
+func printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Println()
 	rttString := "Round-trip time"
-	if burst > 1 {
+	if count > 1 {
 		rttString = "Mean round-trip time"
 	}
 	msgCountString := "message"

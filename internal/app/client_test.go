@@ -1,16 +1,101 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// subscriptionTestServer is a test server for testing subscription mode.
+type subscriptionTestServer struct {
+	wsURL   *url.URL
+	events  chan<- string
+	ready   <-chan struct{}
+	cleanup func()
+
+	// server   *httptest.Server
+	// upgrader websocket.Upgrader
+}
+
+// newSubscriptionTestServer creates a new subscription test server.
+func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
+	t.Helper()
+
+	events := make(chan string, 4)
+	done := make(chan struct{})
+	ready := make(chan struct{})
+	var once sync.Once
+	closeReady := func() {
+		once.Do(func() {
+			close(ready)
+		})
+	}
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			closeReady()
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		if _, _, err := conn.ReadMessage(); err != nil {
+			closeReady()
+			return
+		}
+		closeReady()
+
+		for {
+			select {
+			case <-done:
+				return
+			case msg, ok := <-events:
+				if !ok {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+					return
+				}
+			}
+		}
+	}))
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	cleanup := func() {
+		closeReady()
+		close(done)
+		close(events)
+		server.Close()
+	}
+
+	return subscriptionTestServer{
+		wsURL:   wsURL,
+		events:  events,
+		ready:   ready,
+		cleanup: cleanup,
+	}
+}
 
 // TestParseHeaders verifies that parseHeaders correctly handles valid and invalid input.
 func TestParseHeaders(t *testing.T) {
@@ -79,45 +164,119 @@ func TestHandleConnectionError(t *testing.T) {
 
 // TestClientValidate exercises the validation logic for burst and mutually-exclusive flags.
 func TestClientValidate(t *testing.T) {
-	t.Run("invalid burst", func(t *testing.T) {
-		c := &Client{Burst: 0}
+	t.Run("negative count", func(t *testing.T) {
+		c := &Client{Count: -1}
 		assert.Error(t, c.Validate())
 	})
 
 	t.Run("mutually exclusive", func(t *testing.T) {
-		c := &Client{Burst: 1, TextMessage: "hi", JSONMethod: "foo"}
+		c := &Client{Count: 1, TextMessage: "hi", JSONMethod: "foo"}
 		assert.Error(t, c.Validate())
+	})
+
+	t.Run("defaults to one when unset", func(t *testing.T) {
+		c := &Client{}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, 1, c.Count)
 	})
 
 	t.Run("valid", func(t *testing.T) {
-		c := &Client{Burst: 2, TextMessage: "hi"}
+		c := &Client{Count: 2, TextMessage: "hi"}
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("subscribe requires single burst", func(t *testing.T) {
-		c := &Client{Burst: 2, Subscribe: true}
-		assert.Error(t, c.Validate())
+	t.Run("subscribe unlimited allowed", func(t *testing.T) {
+		c := &Client{Subscribe: true}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, 0, c.Count)
 	})
 
-	t.Run("subscribe with burst one ok", func(t *testing.T) {
-		c := &Client{Burst: 1, Subscribe: true}
+	t.Run("subscribe with explicit count ok", func(t *testing.T) {
+		c := &Client{Count: 3, Subscribe: true}
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("subscribe once requires single burst", func(t *testing.T) {
-		c := &Client{Burst: 2, SubscribeOnce: true}
-		assert.Error(t, c.Validate())
-	})
-
-	t.Run("subscribe once valid", func(t *testing.T) {
-		c := &Client{Burst: 1, SubscribeOnce: true}
+	t.Run("subscribe once coerces to one", func(t *testing.T) {
+		c := &Client{SubscribeOnce: true}
 		require.NoError(t, c.Validate())
+		assert.True(t, c.Subscribe)
+		assert.Equal(t, 1, c.Count)
 	})
 
-	t.Run("subscription mode conflict", func(t *testing.T) {
-		c := &Client{Burst: 1, Subscribe: true, SubscribeOnce: true}
+	t.Run("subscribe once forbids alternative counts", func(t *testing.T) {
+		c := &Client{Count: 2, SubscribeOnce: true}
 		assert.Error(t, c.Validate())
 	})
+}
+
+func TestStreamSubscriptionRespectsCount(t *testing.T) {
+	t.Parallel()
+
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
+
+	c := &Client{
+		Count:       2,
+		Subscribe:   true,
+		TextMessage: "start",
+		Quiet:       true,
+	}
+	require.NoError(t, c.Validate())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.StreamSubscription(ctx, server.wsURL)
+	}()
+
+	<-server.ready
+	server.events <- "event-1"
+	server.events <- "event-2"
+
+	require.NoError(t, <-errCh)
+	require.NotNil(t, c.Result)
+	assert.Equal(t, 2, c.Result.MessageCount)
+}
+
+func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
+	t.Parallel()
+
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
+
+	c := &Client{
+		Subscribe:   true,
+		TextMessage: "start",
+		Quiet:       true,
+	}
+	require.NoError(t, c.Validate())
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.StreamSubscription(ctx, server.wsURL)
+	}()
+
+	<-server.ready
+	server.events <- "event-1"
+	server.events <- "event-2"
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("subscription returned before cancellation: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not exit after cancellation")
+	}
+	require.NotNil(t, c.Result)
+	assert.GreaterOrEqual(t, c.Result.MessageCount, 2)
 }
 
 func TestPrintSubscriptionMessageBasic(t *testing.T) {
