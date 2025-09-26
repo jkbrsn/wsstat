@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
+	"github.com/mattn/go-isatty"
 )
 
 var (
@@ -57,7 +58,8 @@ type Client struct {
 	TextMessage string   // Text message
 
 	// Output
-	Format string // Output formatting mode: "auto" or "raw"
+	Format    string // Output formatting mode: "auto" or "raw"
+	ColorMode string // Color behaviour: "auto", "always", or "never"
 
 	// Verbosity
 	Quiet          bool // suppress request/timing output
@@ -183,7 +185,7 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 			return err
 		}
 		fmt.Println()
-		fmt.Println(colorWSOrange("Streaming subscription events"))
+		fmt.Println(c.colorizeOrange("Streaming subscription events"))
 	}
 
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
@@ -382,7 +384,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 	}
 
 	fmt.Println()
-	fmt.Println(colorWSOrange("Subscription summary"))
+	fmt.Println(c.colorizeOrange("Subscription summary"))
 	if c.Result.SubscriptionFirstEvent > 0 {
 		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
 	}
@@ -457,21 +459,21 @@ func (c *Client) PrintRequestDetails() error {
 
 	switch {
 	case c.VerbosityLevel >= 2:
-		fmt.Println(colorWSOrange("Target"))
-		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
+		fmt.Println(c.colorizeOrange("Target"))
+		fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), c.Result.URL.Hostname())
 		for _, ip := range c.Result.IPs {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
+			fmt.Printf(printIndentedValueTemp, c.colorizeGreen("IP"), ip)
 		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
+		fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), c.Result.MessageCount)
 		fmt.Println()
 		if c.Result.TLSState != nil {
-			fmt.Println(colorWSOrange("TLS"))
+			fmt.Println(c.colorizeOrange("TLS"))
 			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+				c.colorizeGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
 			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
+				c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
 			for i, cert := range c.Result.TLSState.PeerCertificates {
-				fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
+				fmt.Printf("  %s: %d\n", c.colorizeGreen("Certificate"), i+1)
 				fmt.Printf("    Subject: %s\n", cert.Subject)
 				fmt.Printf("    Issuer: %s\n", cert.Issuer)
 				fmt.Printf("    Not Before: %s\n", cert.NotBefore)
@@ -479,37 +481,74 @@ func (c *Client) PrintRequestDetails() error {
 			}
 			fmt.Println()
 		}
-		fmt.Println(colorWSOrange("Request headers"))
+		fmt.Println(c.colorizeOrange("Request headers"))
 		for key, values := range c.Result.RequestHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
+			fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
 		}
-		fmt.Println(colorWSOrange("Response headers"))
+		fmt.Println(c.colorizeOrange("Response headers"))
 		for key, values := range c.Result.ResponseHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
+			fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
 		}
 	case c.VerbosityLevel >= 1:
-		fmt.Printf(printValueTemp, colorWSOrange("Target"), c.Result.URL.Hostname())
+		fmt.Printf(printValueTemp, c.colorizeOrange("Target"), c.Result.URL.Hostname())
 		for _, values := range c.Result.IPs {
-			fmt.Printf(printValueTemp, colorWSOrange("IP"), values)
+			fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
 		}
-		fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), c.Result.MessageCount)
+		fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), c.Result.MessageCount)
 		for key, values := range c.Result.RequestHeaders {
 			if key == "Sec-WebSocket-Version" {
-				fmt.Printf(printValueTemp, colorWSOrange("WS version"), strings.Join(values, ", "))
+				fmt.Printf(printValueTemp, c.colorizeOrange("WS version"), strings.Join(values, ", "))
 			}
 		}
 		if c.Result.TLSState != nil {
 			fmt.Printf(printValueTemp,
-				colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
+				c.colorizeOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
 		}
 	default:
-		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
+		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), c.Result.URL.Hostname())
 		if len(c.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
+			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), c.Result.IPs[0])
 		}
 	}
 
 	return nil
+}
+
+// colorEnabled returns true if color output is enabled, based on both color mode and terminal
+// detection.
+func (c *Client) colorEnabled() bool {
+	switch c.ColorMode {
+	case "always":
+		return true
+	case "never":
+		return false
+	case "auto", "":
+	default:
+		return false
+	}
+
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
+		return false
+	}
+
+	fd := os.Stdout.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// colorizeOrange returns the text with orange color applied if color output is enabled.
+func (c *Client) colorizeOrange(text string) string {
+	if !c.colorEnabled() {
+		return text
+	}
+	return colorWSOrange(text)
+}
+
+// colorizeGreen returns the text with green color applied if color output is enabled.
+func (c *Client) colorizeGreen(text string) string {
+	if !c.colorEnabled() {
+		return text
+	}
+	return colorTeaGreen(text)
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
@@ -524,13 +563,13 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 
 	switch {
 	case c.VerbosityLevel <= 0:
-		printTimingResultsBasic(c.Result, c.Count)
+		c.printTimingResultsBasic(c.Result, c.Count)
 	default:
 		rttLabel := "Message RTT"
 		if c.Count > 1 || c.Result.MessageCount > 1 {
 			rttLabel = "Mean Message RTT"
 		}
-		printTimingResultsTiered(c.Result, u, rttLabel)
+		c.printTimingResultsTiered(c.Result, u, rttLabel)
 	}
 
 	return nil
@@ -542,7 +581,8 @@ func (c *Client) PrintResponse() {
 		return
 	}
 
-	baseMessage := colorWSOrange("Response") + ": "
+	label := c.colorizeOrange("Response")
+	baseMessage := label + ": "
 
 	if c.Quiet {
 		baseMessage = ""
@@ -587,6 +627,14 @@ func (c *Client) Validate() error {
 	}
 	if c.Format != "auto" && c.Format != "raw" {
 		return errors.New("format must be \"auto\" or \"raw\"")
+	}
+
+	c.ColorMode = strings.TrimSpace(strings.ToLower(c.ColorMode))
+	if c.ColorMode == "" {
+		c.ColorMode = "auto"
+	}
+	if c.ColorMode != "auto" && c.ColorMode != "always" && c.ColorMode != "never" {
+		return errors.New("color must be \"auto\", \"always\", or \"never\"")
 	}
 
 	if c.Buffer < 0 {
@@ -692,7 +740,8 @@ func parseHeaders(pairs []string) (http.Header, error) {
 }
 
 // printTimingResultsBasic prints a concise timing summary used for verbosity level 0.
-func printTimingResultsBasic(result *wsstat.Result, count int) {
+
+func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Println()
 	rttString := "Round-trip time"
 	if count > 1 {
@@ -705,59 +754,59 @@ func printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Printf(
 		"%s: %s (%d %s)\n",
 		rttString,
-		colorWSOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
+		c.colorizeOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
 		result.MessageCount,
 		msgCountString)
 	fmt.Printf(
 		printValueTemp,
 		"Total time",
-		colorWSOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
+		c.colorizeOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
 	fmt.Println()
 }
 
 // printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
 // in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
+func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
 	switch u.Scheme {
 	case "wss":
 		fmt.Fprintf(os.Stdout, wssPrintTemplate,
 			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.TLSHandshake)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.TLSHandshakeDone)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.TLSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.TLSHandshakeDone)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
 			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
 		)
 	case "ws":
 		fmt.Fprintf(os.Stdout, wsPrintTemplate,
 			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
 			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
 		)
 	default:
 		fmt.Fprintf(os.Stdout, wsPrintTemplate,
 			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			colorWSOrange(formatPadRight(result.TotalTime)),
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
 		)
 	}
 	fmt.Println()

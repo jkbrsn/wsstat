@@ -63,6 +63,13 @@ func parseValidateInput() (*url.URL, error) {
 		return nil, errors.New("invalid number of arguments")
 	}
 
+	switch strings.ToLower(*colorArg) {
+	case "auto", "always", "never":
+		// valid
+	default:
+		return nil, errors.New("-color must be auto, always, or never")
+	}
+
 	u, err := parseWSURI(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("error parsing input URI: %v", err)

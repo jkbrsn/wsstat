@@ -214,6 +214,44 @@ func TestColorHelpers(t *testing.T) {
 	assert.Contains(t, colorTeaGreen(base), "211;249;181m")
 }
 
+func TestColorModeControlsOutput(t *testing.T) {
+	res := sampleResult(t)
+
+	t.Run("never removes ANSI", func(t *testing.T) {
+		client := &Client{Result: res, ColorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintRequestDetails()
+		})
+		assert.NotContains(t, output, "\u001b[")
+	})
+
+	t.Run("always forces ANSI", func(t *testing.T) {
+		client := &Client{Result: res, ColorMode: "always"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintRequestDetails()
+		})
+		assert.Contains(t, output, "\u001b[38;2;")
+	})
+
+	t.Run("auto respects NO_COLOR", func(t *testing.T) {
+		client := &Client{Result: res, ColorMode: "auto"}
+		prev, hadEnv := os.LookupEnv("NO_COLOR")
+		require.NoError(t, os.Setenv("NO_COLOR", "1"))
+		defer func() {
+			if hadEnv {
+				_ = os.Setenv("NO_COLOR", prev)
+			} else {
+				_ = os.Unsetenv("NO_COLOR")
+			}
+		}()
+
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintRequestDetails()
+		})
+		assert.NotContains(t, output, "\u001b[")
+	})
+}
+
 func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 	res := sampleResult(t)
 
@@ -317,6 +355,11 @@ func TestClientValidate(t *testing.T) {
 
 	t.Run("negative summary interval", func(t *testing.T) {
 		c := &Client{SummaryInterval: -1}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("invalid color", func(t *testing.T) {
+		c := &Client{ColorMode: "purple"}
 		assert.Error(t, c.Validate())
 	})
 }

@@ -33,7 +33,8 @@ var (
 	version     = "unknown"
 
 	// Connection behaviour
-	noTLS = flag.Bool("no-tls", false, "assume ws:// when input URL lacks scheme (default wss://)")
+	noTLS    = flag.Bool("no-tls", false, "assume ws:// when input URL lacks scheme (default wss://)")
+	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
 
 	// Verbosity
 	quiet          = flag.Bool("q", false, "quiet all output but the response")
@@ -71,6 +72,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "Connection:")
 		fmt.Fprintf(os.Stderr, "  -H / -header string  %s\n", flag.Lookup("H").Usage)
 		fmt.Fprintf(os.Stderr, "  -no-tls              %s\n", flag.Lookup("no-tls").Usage)
+		fmt.Fprintf(os.Stderr, "  -color string        %s (auto|always|never; default %q)\n", flag.Lookup("color").Usage, *colorArg)
 		fmt.Fprintln(os.Stderr)
 
 		fmt.Fprintln(os.Stderr, "Output:")
@@ -114,6 +116,7 @@ func main() {
 		RPCMethod:       *rpcMethod,
 		TextMessage:     *textMessage,
 		Format:          strings.ToLower(*formatOption),
+		ColorMode:       strings.ToLower(*colorArg),
 		Quiet:           *quiet,
 		VerbosityLevel:  verbosityLevel.Value(),
 		Subscribe:       *subscribe,
