@@ -325,6 +325,7 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
+			fmt.Println()
 		}
 	}
 }

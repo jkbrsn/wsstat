@@ -24,7 +24,7 @@ var (
 	subscribeOnce = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
 	subBuffer     = flag.Int("subscription-buffer", 0, "override subscription delivery buffer size")
 	subInterval   = flag.Duration("subscription-interval", 0,
-		"print subscription summaries every interval; 0 disables")
+		"print subscription summaries every interval; accepts values like 1s, 5m, 1h; 0 disables")
 	// Output
 	rawOutput   = flag.Bool("raw", false, "let printed output be the raw data of the response")
 	showVersion = flag.Bool("version", false, "print the program version")
@@ -55,16 +55,17 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -q  "+flag.Lookup("q").Usage)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Other options:")
-		fmt.Fprintln(os.Stderr, "  -count     "+flag.Lookup("count").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscribe "+flag.Lookup("subscribe").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscribe-once "+flag.Lookup("subscribe-once").Usage)
-		fmt.Fprintln(os.Stderr, "  -subscription-buffer  "+flag.Lookup("subscription-buffer").Usage)
+		fmt.Fprintln(os.Stderr, "  -count                 "+flag.Lookup("count").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscribe             "+flag.Lookup("subscribe").Usage)
+		fmt.Fprintln(os.Stderr, "  -subscribe-once        "+flag.Lookup("subscribe-once").Usage)
+		fmt.Fprintln(os.Stderr,
+			"  -subscription-buffer   "+flag.Lookup("subscription-buffer").Usage)
 		fmt.Fprintln(os.Stderr,
 			"  -subscription-interval "+flag.Lookup("subscription-interval").Usage)
-		fmt.Fprintln(os.Stderr, "  -headers   "+flag.Lookup("headers").Usage)
-		fmt.Fprintln(os.Stderr, "  -raw       "+flag.Lookup("raw").Usage)
-		fmt.Fprintln(os.Stderr, "  -insecure  "+flag.Lookup("insecure").Usage)
-		fmt.Fprintln(os.Stderr, "  -version   "+flag.Lookup("version").Usage)
+		fmt.Fprintln(os.Stderr, "  -headers               "+flag.Lookup("headers").Usage)
+		fmt.Fprintln(os.Stderr, "  -raw                   "+flag.Lookup("raw").Usage)
+		fmt.Fprintln(os.Stderr, "  -insecure              "+flag.Lookup("insecure").Usage)
+		fmt.Fprintln(os.Stderr, "  -version               "+flag.Lookup("version").Usage)
 	}
 }
 
