@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net/http"
@@ -18,6 +20,65 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func captureStdoutFrom(t *testing.T, fn func() error) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	defer func() { _ = r.Close() }()
+
+	original := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = original }()
+
+	err = fn()
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	output, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(output)
+}
+
+func sampleResult(t *testing.T) *wsstat.Result {
+	t.Helper()
+	u, err := url.Parse("wss://example.test/ws")
+	require.NoError(t, err)
+	return &wsstat.Result{
+		URL:            u,
+		IPs:            []string{"192.0.2.1", "198.51.100.2"},
+		MessageCount:   2,
+		RequestHeaders: http.Header{"Sec-WebSocket-Version": {"13"}},
+		ResponseHeaders: http.Header{
+			"Server": {"demo"},
+		},
+		TLSState: &tls.ConnectionState{
+			Version:          tls.VersionTLS13,
+			CipherSuite:      tls.TLS_AES_128_GCM_SHA256,
+			PeerCertificates: []*x509.Certificate{{}},
+		},
+	}
+}
+
+func sampleTimingResult(t *testing.T) *wsstat.Result {
+	t.Helper()
+	u, err := url.Parse("wss://example.test/ws")
+	require.NoError(t, err)
+	return &wsstat.Result{
+		URL:              u,
+		MessageCount:     1,
+		DNSLookup:        10 * time.Millisecond,
+		TCPConnection:    20 * time.Millisecond,
+		TLSHandshake:     30 * time.Millisecond,
+		WSHandshake:      40 * time.Millisecond,
+		MessageRTT:       50 * time.Millisecond,
+		DNSLookupDone:    10 * time.Millisecond,
+		TCPConnected:     30 * time.Millisecond,
+		TLSHandshakeDone: 60 * time.Millisecond,
+		WSHandshakeDone:  80 * time.Millisecond,
+		TotalTime:        120 * time.Millisecond,
+	}
+}
 
 // subscriptionTestServer is a test server for testing subscription mode.
 type subscriptionTestServer struct {
@@ -153,6 +214,40 @@ func TestColorHelpers(t *testing.T) {
 	assert.Contains(t, colorTeaGreen(base), "211;249;181m")
 }
 
+func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
+	res := sampleResult(t)
+
+	t.Run("level0", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{Result: res}
+			return client.PrintRequestDetails()
+		})
+		assert.Contains(t, output, "URL")
+		assert.NotContains(t, output, "Target")
+		assert.NotContains(t, output, "Request headers")
+	})
+
+	t.Run("level1", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{Result: res, VerbosityLevel: 1}
+			return client.PrintRequestDetails()
+		})
+		assert.Contains(t, output, "Target")
+		assert.Contains(t, output, "Messages sent")
+		assert.NotContains(t, output, "Request headers")
+	})
+
+	t.Run("level2", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{Result: res, VerbosityLevel: 2}
+			return client.PrintRequestDetails()
+		})
+		assert.Contains(t, output, "Request headers")
+		assert.Contains(t, output, "Response headers")
+		assert.Contains(t, output, "Certificate")
+	})
+}
+
 // TestHandleConnectionError checks error message classification.
 func TestHandleConnectionError(t *testing.T) {
 	tlsErr := errors.New("tls: first record does not look like a TLS handshake")
@@ -226,6 +321,37 @@ func TestClientValidate(t *testing.T) {
 	})
 }
 
+func TestPrintTimingResultsVerbosityLevels(t *testing.T) {
+	base := sampleTimingResult(t)
+	ctxURL, err := url.Parse("wss://example.test/ws")
+	require.NoError(t, err)
+
+	t.Run("level0", func(t *testing.T) {
+		client := &Client{Result: base, Count: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(ctxURL)
+		})
+		assert.Contains(t, output, "Round-trip time")
+		assert.NotContains(t, output, "DNS Lookup    TCP Connection")
+	})
+
+	t.Run("level1", func(t *testing.T) {
+		client := &Client{Result: base, Count: 1, VerbosityLevel: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(ctxURL)
+		})
+		assert.Contains(t, output, "DNS Lookup    TCP Connection")
+	})
+
+	t.Run("level2", func(t *testing.T) {
+		client := &Client{Result: base, Count: 1, VerbosityLevel: 2}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(ctxURL)
+		})
+		assert.Contains(t, output, "DNS Lookup    TCP Connection")
+	})
+}
+
 func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	t.Parallel()
 
@@ -296,46 +422,40 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	assert.GreaterOrEqual(t, c.Result.MessageCount, 2)
 }
 
-func TestPrintSubscriptionMessageDefault(t *testing.T) {
+func TestPrintSubscriptionMessageLevels(t *testing.T) {
 	msg := wsstat.SubscriptionMessage{
 		Data:     []byte("{\"foo\":\"bar\"}"),
 		Received: time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC),
 		Size:     17,
 	}
-	c := &Client{VerbosityLevel: 1}
 
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	stdout := os.Stdout
-	os.Stdout = w
+	t.Run("default level", func(t *testing.T) {
+		c := &Client{}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Contains(t, output, "[0003 @ 2024-01-02T03:04:05.000000006Z]")
+		assert.NotContains(t, output, "bytes")
+		assert.Contains(t, output, "\"foo\": \"bar\"")
+	})
 
-	require.NoError(t, c.printSubscriptionMessage(3, msg))
-
-	require.NoError(t, w.Close())
-	os.Stdout = stdout
-	output, err := io.ReadAll(r)
-	require.NoError(t, err)
-
-	outStr := string(output)
-	assert.Contains(t, outStr, "[0003 @ 2024-01-02T03:04:05.000000006Z]")
-	assert.Contains(t, outStr, "\"foo\": \"bar\"")
+	t.Run("verbose level", func(t *testing.T) {
+		c := &Client{VerbosityLevel: 1}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Contains(t, output, "[0003 @ 2024-01-02T03:04:05.000000006Z]")
+		assert.Contains(t, output, "17 bytes")
+		assert.Contains(t, output, "\"foo\": \"bar\"")
+	})
 }
 
 func TestPrintSubscriptionMessageRaw(t *testing.T) {
 	msg := wsstat.SubscriptionMessage{Data: []byte("raw"), Received: time.Now()}
 	c := &Client{Format: "raw"}
 
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	stdout := os.Stdout
-	os.Stdout = w
-
-	require.NoError(t, c.printSubscriptionMessage(1, msg))
-
-	require.NoError(t, w.Close())
-	os.Stdout = stdout
-	output, err := io.ReadAll(r)
-	require.NoError(t, err)
-
-	assert.Equal(t, "raw\n", string(output))
+	output := captureStdoutFrom(t, func() error {
+		return c.printSubscriptionMessage(1, msg)
+	})
+	assert.Equal(t, "raw\n", output)
 }

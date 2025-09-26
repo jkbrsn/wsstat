@@ -60,8 +60,8 @@ type Client struct {
 	Format string // Output formatting mode: "auto" or "raw"
 
 	// Verbosity
-	Quiet          bool
-	VerbosityLevel int
+	Quiet          bool // suppress request/timing output
+	VerbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
 
 	// Subscription mode
 	Subscribe       bool
@@ -356,11 +356,6 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	}
 
 	timestamp := msg.Received.Format(time.RFC3339Nano)
-	if c.VerbosityLevel == 0 {
-		fmt.Printf("[%04d @ %s] Message received\n", index, timestamp)
-		return nil
-	}
-
 	if c.VerbosityLevel >= 1 {
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
 		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
@@ -454,25 +449,45 @@ func (c *Client) PrintRequestDetails() error {
 	if c.Result == nil {
 		return errors.New("no results have been produced")
 	}
-
-	// If quiet, -q, don't print anything.
 	if c.Quiet {
 		return nil
 	}
 
 	fmt.Println()
 
-	// Verbosity level 0
-	if c.VerbosityLevel == 0 {
-		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
-		if len(c.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
+	switch {
+	case c.VerbosityLevel >= 2:
+		fmt.Println(colorWSOrange("Target"))
+		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
+		for _, ip := range c.Result.IPs {
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
 		}
-		return nil
-	}
-
-	// Verbosity level 1, -v
-	if c.VerbosityLevel == 1 {
+		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
+		fmt.Println()
+		if c.Result.TLSState != nil {
+			fmt.Println(colorWSOrange("TLS"))
+			fmt.Printf(printIndentedValueTemp,
+				colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+			fmt.Printf(printIndentedValueTemp,
+				colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
+			for i, cert := range c.Result.TLSState.PeerCertificates {
+				fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
+				fmt.Printf("    Subject: %s\n", cert.Subject)
+				fmt.Printf("    Issuer: %s\n", cert.Issuer)
+				fmt.Printf("    Not Before: %s\n", cert.NotBefore)
+				fmt.Printf("    Not After: %s\n", cert.NotAfter)
+			}
+			fmt.Println()
+		}
+		fmt.Println(colorWSOrange("Request headers"))
+		for key, values := range c.Result.RequestHeaders {
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
+		}
+		fmt.Println(colorWSOrange("Response headers"))
+		for key, values := range c.Result.ResponseHeaders {
+			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
+		}
+	case c.VerbosityLevel >= 1:
 		fmt.Printf(printValueTemp, colorWSOrange("Target"), c.Result.URL.Hostname())
 		for _, values := range c.Result.IPs {
 			fmt.Printf(printValueTemp, colorWSOrange("IP"), values)
@@ -487,43 +502,14 @@ func (c *Client) PrintRequestDetails() error {
 			fmt.Printf(printValueTemp,
 				colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
 		}
-		return nil
-	}
-
-	// Verbosity level 2, -vv
-	fmt.Println(colorWSOrange("Target"))
-	fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
-	for _, ip := range c.Result.IPs {
-		fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
-	}
-	fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
-	fmt.Println()
-	if c.Result.TLSState != nil {
-		fmt.Println(colorWSOrange("TLS"))
-		fmt.Printf(printIndentedValueTemp,
-			colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
-		fmt.Printf(printIndentedValueTemp,
-			colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
-
-		for i, cert := range c.Result.TLSState.PeerCertificates {
-			fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
-			fmt.Printf("    Subject: %s\n", cert.Subject)
-			fmt.Printf("    Issuer: %s\n", cert.Issuer)
-			fmt.Printf("    Not Before: %s\n", cert.NotBefore)
-			fmt.Printf("    Not After: %s\n", cert.NotAfter)
+	default:
+		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
+		if len(c.Result.IPs) > 0 {
+			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
 		}
-		fmt.Println()
 	}
-	fmt.Println(colorWSOrange("Request headers"))
-	for key, values := range c.Result.RequestHeaders {
-		fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-	}
-	fmt.Println(colorWSOrange("Response headers"))
-	for key, values := range c.Result.ResponseHeaders {
-		fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-	}
-	return nil
 
+	return nil
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
@@ -536,16 +522,16 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 		return nil
 	}
 
-	if c.VerbosityLevel == 0 {
+	switch {
+	case c.VerbosityLevel <= 0:
 		printTimingResultsBasic(c.Result, c.Count)
-		return nil
+	default:
+		rttLabel := "Message RTT"
+		if c.Count > 1 || c.Result.MessageCount > 1 {
+			rttLabel = "Mean Message RTT"
+		}
+		printTimingResultsTiered(c.Result, u, rttLabel)
 	}
-
-	rttLabel := "Message RTT"
-	if c.Count > 1 || c.Result.MessageCount > 1 {
-		rttLabel = "Mean Message RTT"
-	}
-	printTimingResultsTiered(c.Result, u, rttLabel)
 
 	return nil
 }
@@ -705,7 +691,7 @@ func parseHeaders(pairs []string) (http.Header, error) {
 	return header, nil
 }
 
-// printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
+// printTimingResultsBasic prints a concise timing summary used for verbosity level 0.
 func printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Println()
 	rttString := "Round-trip time"

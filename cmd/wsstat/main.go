@@ -68,15 +68,20 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  -summary-interval    %s\n", flag.Lookup("summary-interval").Usage)
 		fmt.Fprintln(os.Stderr)
 
+		fmt.Fprintln(os.Stderr, "Connection:")
+		fmt.Fprintf(os.Stderr, "  -H / -header string  %s\n", flag.Lookup("H").Usage)
+		fmt.Fprintf(os.Stderr, "  -no-tls              %s\n", flag.Lookup("no-tls").Usage)
+		fmt.Fprintln(os.Stderr)
+
 		fmt.Fprintln(os.Stderr, "Output:")
 		fmt.Fprintf(os.Stderr, "  -q                   %s\n", flag.Lookup("q").Usage)
 		fmt.Fprintf(os.Stderr, "  -v                   %s\n", flag.Lookup("v").Usage)
 		fmt.Fprintf(os.Stderr, "  -format string       %s (default %q)\n", flag.Lookup("format").Usage, *formatOption)
 		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Connection:")
-		fmt.Fprintf(os.Stderr, "  -H / -header string  %s\n", flag.Lookup("H").Usage)
-		fmt.Fprintf(os.Stderr, "  -no-tls              %s\n", flag.Lookup("no-tls").Usage)
+		fmt.Fprintln(os.Stderr, "Verbosity:")
+		fmt.Fprintln(os.Stderr, "  default  minimal request info with summary timings")
+		fmt.Fprintln(os.Stderr, "  -v       adds target/TLS summaries and timing diagram")
+		fmt.Fprintln(os.Stderr, "  -vv      includes full TLS certificates and headers")
 		fmt.Fprintln(os.Stderr)
 
 		fmt.Fprintln(os.Stderr, "General:")
