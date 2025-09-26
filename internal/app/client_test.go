@@ -100,20 +100,22 @@ func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
 // TestParseHeaders verifies that parseHeaders correctly handles valid and invalid input.
 func TestParseHeaders(t *testing.T) {
 	t.Run("valid headers", func(t *testing.T) {
-		hdrStr := "Content-Type: application/json, Authorization: Bearer token"
-		h, err := parseHeaders(hdrStr)
+		h, err := parseHeaders([]string{
+			"Content-Type: application/json",
+			"Authorization: Bearer token",
+		})
 		require.NoError(t, err)
 		assert.Equal(t, "application/json", h.Get("Content-Type"))
 		assert.Equal(t, "Bearer token", h.Get("Authorization"))
 	})
 
 	t.Run("invalid header", func(t *testing.T) {
-		_, err := parseHeaders("Content-Type")
+		_, err := parseHeaders([]string{"Content-Type"})
 		assert.Error(t, err)
 	})
 
 	t.Run("empty string", func(t *testing.T) {
-		h, err := parseHeaders("")
+		h, err := parseHeaders(nil)
 		require.NoError(t, err)
 		assert.Len(t, h, 0)
 	})
@@ -170,7 +172,7 @@ func TestClientValidate(t *testing.T) {
 	})
 
 	t.Run("mutually exclusive", func(t *testing.T) {
-		c := &Client{Count: 1, TextMessage: "hi", JSONMethod: "foo"}
+		c := &Client{Count: 1, TextMessage: "hi", RPCMethod: "foo"}
 		assert.Error(t, c.Validate())
 	})
 
@@ -205,6 +207,21 @@ func TestClientValidate(t *testing.T) {
 
 	t.Run("subscribe once forbids alternative counts", func(t *testing.T) {
 		c := &Client{Count: 2, SubscribeOnce: true}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("invalid format", func(t *testing.T) {
+		c := &Client{Format: "xml"}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("negative buffer", func(t *testing.T) {
+		c := &Client{Buffer: -1}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("negative summary interval", func(t *testing.T) {
+		c := &Client{SummaryInterval: -1}
 		assert.Error(t, c.Validate())
 	})
 }
@@ -279,13 +296,13 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	assert.GreaterOrEqual(t, c.Result.MessageCount, 2)
 }
 
-func TestPrintSubscriptionMessageBasic(t *testing.T) {
+func TestPrintSubscriptionMessageDefault(t *testing.T) {
 	msg := wsstat.SubscriptionMessage{
 		Data:     []byte("{\"foo\":\"bar\"}"),
 		Received: time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC),
 		Size:     17,
 	}
-	c := &Client{Basic: true}
+	c := &Client{VerbosityLevel: 1}
 
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
@@ -300,6 +317,25 @@ func TestPrintSubscriptionMessageBasic(t *testing.T) {
 	require.NoError(t, err)
 
 	outStr := string(output)
-	assert.Contains(t, outStr, "Message received")
-	assert.NotContains(t, outStr, "foo")
+	assert.Contains(t, outStr, "[0003 @ 2024-01-02T03:04:05.000000006Z]")
+	assert.Contains(t, outStr, "\"foo\": \"bar\"")
+}
+
+func TestPrintSubscriptionMessageRaw(t *testing.T) {
+	msg := wsstat.SubscriptionMessage{Data: []byte("raw"), Received: time.Now()}
+	c := &Client{Format: "raw"}
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+
+	require.NoError(t, c.printSubscriptionMessage(1, msg))
+
+	require.NoError(t, w.Close())
+	os.Stdout = stdout
+	output, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	assert.Equal(t, "raw\n", string(output))
 }
