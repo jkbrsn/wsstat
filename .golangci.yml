@@ -33,7 +33,7 @@ linters:
           exclude: [TEST]
           arguments:
             - max-lit-count: "4"
-              allow-strs: '""'
+              allow-strs: '"","auto"'
               allow-ints: "0,1,2"
               allow-floats: "0.0,0.,1.0,1.,2.0,2."
         - name: cognitive-complexity

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,7 +14,7 @@ type headerList []string
 func (h *headerList) Set(value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return fmt.Errorf("header must not be empty")
+		return errors.New("header must not be empty")
 	}
 	*h = append(*h, trimmed)
 	return nil
@@ -94,7 +95,7 @@ func (v *verbosityCounter) Set(value string) error {
 	}
 
 	if parsed < 0 {
-		return fmt.Errorf("verbosity must be non-negative")
+		return errors.New("verbosity must be non-negative")
 	}
 
 	v.count += parsed

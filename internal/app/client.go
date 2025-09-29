@@ -52,14 +52,14 @@ var (
 // based on the settings passed to the struct.
 type Client struct {
 	// Input
-	Count       int      // Number of interactions to perform; 0 means unlimited in subscription mode
+	Count       int      // Nr of interactions to perform; 0 means unlimited in subscription mode
 	Headers     []string // HTTP headers for connection establishment ("Key: Value")
 	RPCMethod   string   // JSON-RPC method (no params)
 	TextMessage string   // Text message
 
 	// Output
 	Format    string // Output formatting mode: "auto" or "raw"
-	ColorMode string // Color behaviour: "auto", "always", or "never"
+	ColorMode string // Color behavior: "auto", "always", or "never"
 
 	// Verbosity
 	Quiet          bool // suppress request/timing output
@@ -459,51 +459,9 @@ func (c *Client) PrintRequestDetails() error {
 
 	switch {
 	case c.VerbosityLevel >= 2:
-		fmt.Println(c.colorizeOrange("Target"))
-		fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), c.Result.URL.Hostname())
-		for _, ip := range c.Result.IPs {
-			fmt.Printf(printIndentedValueTemp, c.colorizeGreen("IP"), ip)
-		}
-		fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), c.Result.MessageCount)
-		fmt.Println()
-		if c.Result.TLSState != nil {
-			fmt.Println(c.colorizeOrange("TLS"))
-			fmt.Printf(printIndentedValueTemp,
-				c.colorizeGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
-			fmt.Printf(printIndentedValueTemp,
-				c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
-			for i, cert := range c.Result.TLSState.PeerCertificates {
-				fmt.Printf("  %s: %d\n", c.colorizeGreen("Certificate"), i+1)
-				fmt.Printf("    Subject: %s\n", cert.Subject)
-				fmt.Printf("    Issuer: %s\n", cert.Issuer)
-				fmt.Printf("    Not Before: %s\n", cert.NotBefore)
-				fmt.Printf("    Not After: %s\n", cert.NotAfter)
-			}
-			fmt.Println()
-		}
-		fmt.Println(c.colorizeOrange("Request headers"))
-		for key, values := range c.Result.RequestHeaders {
-			fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
-		}
-		fmt.Println(c.colorizeOrange("Response headers"))
-		for key, values := range c.Result.ResponseHeaders {
-			fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
-		}
+		c.printVVerbose()
 	case c.VerbosityLevel >= 1:
-		fmt.Printf(printValueTemp, c.colorizeOrange("Target"), c.Result.URL.Hostname())
-		for _, values := range c.Result.IPs {
-			fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
-		}
-		fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), c.Result.MessageCount)
-		for key, values := range c.Result.RequestHeaders {
-			if key == "Sec-WebSocket-Version" {
-				fmt.Printf(printValueTemp, c.colorizeOrange("WS version"), strings.Join(values, ", "))
-			}
-		}
-		if c.Result.TLSState != nil {
-			fmt.Printf(printValueTemp,
-				c.colorizeOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
-		}
+		c.printVerbose()
 	default:
 		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), c.Result.URL.Hostname())
 		if len(c.Result.IPs) > 0 {
@@ -512,6 +470,59 @@ func (c *Client) PrintRequestDetails() error {
 	}
 
 	return nil
+}
+
+// printVVerbose prints the request details with verbosity level 2.
+func (c *Client) printVVerbose() {
+	fmt.Println(c.colorizeOrange("Target"))
+	fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), c.Result.URL.Hostname())
+	for _, ip := range c.Result.IPs {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen("IP"), ip)
+	}
+	fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), c.Result.MessageCount)
+	fmt.Println()
+	if c.Result.TLSState != nil {
+		fmt.Println(c.colorizeOrange("TLS"))
+		fmt.Printf(printIndentedValueTemp,
+			c.colorizeGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+		fmt.Printf(printIndentedValueTemp,
+			c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
+		for i, cert := range c.Result.TLSState.PeerCertificates {
+			fmt.Printf("  %s: %d\n", c.colorizeGreen("Certificate"), i+1)
+			fmt.Printf("    Subject: %s\n", cert.Subject)
+			fmt.Printf("    Issuer: %s\n", cert.Issuer)
+			fmt.Printf("    Not Before: %s\n", cert.NotBefore)
+			fmt.Printf("    Not After: %s\n", cert.NotAfter)
+		}
+		fmt.Println()
+	}
+	fmt.Println(c.colorizeOrange("Request headers"))
+	for key, values := range c.Result.RequestHeaders {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+	}
+	fmt.Println(c.colorizeOrange("Response headers"))
+	for key, values := range c.Result.ResponseHeaders {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+	}
+}
+
+// printVerbose prints the request details with verbosity level 1.
+func (c *Client) printVerbose() {
+	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), c.Result.URL.Hostname())
+	for _, values := range c.Result.IPs {
+		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
+	}
+	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), c.Result.MessageCount)
+	for key, values := range c.Result.RequestHeaders {
+		if key == "Sec-WebSocket-Version" {
+			fmt.Printf(printValueTemp,
+				c.colorizeOrange("WS version"), strings.Join(values, ", "))
+		}
+	}
+	if c.Result.TLSState != nil {
+		fmt.Printf(printValueTemp,
+			c.colorizeOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
+	}
 }
 
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
@@ -607,7 +618,6 @@ func (c *Client) PrintResponse() {
 	} else if responseBytes, ok := c.Response.([]byte); ok {
 		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
 	}
-
 }
 
 // Validate validates the Client is ready for measurement; it checks that the client settings are

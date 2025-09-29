@@ -14,6 +14,8 @@ import (
 	"github.com/jkbrsn/wsstat/internal/app"
 )
 
+// revive:disable:line-length-limit allow flags
+
 var (
 	// Input
 	countFlag       = newTrackedIntFlag(1)
@@ -32,7 +34,7 @@ var (
 	showVersion = flag.Bool("version", false, "print the program version")
 	version     = "unknown"
 
-	// Connection behaviour
+	// Connection behavior
 	noTLS    = flag.Bool("no-tls", false, "assume ws:// when input URL lacks scheme (default wss://)")
 	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
 
@@ -99,6 +101,8 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
 	}
 }
+
+// revive:enable:line-length-limit
 
 func main() {
 	targetURL, err := parseValidateInput()
