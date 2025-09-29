@@ -109,6 +109,48 @@ For more options:
 
 ```sh
 wsstat -h
+
+Usage:  wsstat [options] <url>
+
+Measure WebSocket latency or stream subscription events.
+If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.
+
+Input (choose one):
+  -rpc-method string   JSON-RPC method name to send (id=1, jsonrpc=2.0)
+  -text string         text message to send
+
+Subscription:
+  -subscribe           stream events until interrupted
+  -subscribe-once      subscribe and exit after the first event
+  -count int           number of interactions to perform; 0 means unlimited when subscribing (default 1; defaults to 0 when subscribing)
+  -buffer int          subscription delivery buffer size (messages) (default 0)
+  -summary-interval    print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables
+
+Connection:
+  -H / -header string  HTTP header to include with the request (repeatable; format: Key: Value)
+  -no-tls              assume ws:// when input URL lacks scheme (default wss://)
+  -color string        color output: auto, always, or never (auto|always|never; default "auto")
+
+Output:
+  -q                   quiet all output but the response
+  -v                   increase verbosity; repeatable (e.g., -v -v) or use -v=N
+  -format string       output format: auto, json, or raw (default "auto")
+
+Verbosity:
+  default  minimal request info with summary timings
+  -v       adds target/TLS summaries and timing diagram
+  -vv      includes full TLS certificates and headers
+
+General:
+  -version             print the program version
+
+Examples:
+  wsstat wss://echo.example.com
+  wsstat -text "ping" wss://echo.example.com
+  wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws
+  wsstat -subscribe -count 1 wss://stream.example.com/feed
+  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed
+  wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
 ```
 
 ### Subscription Mode
@@ -121,10 +163,9 @@ wsstat -subscribe -text '{"method":"subscribe"}' wss://example.org/stream
 
 When `-subscribe` is supplied the client keeps the socket open, forwards each
 incoming frame to stdout, and periodically snapshots timing metrics. Use
-`-subscription-buffer` to adjust the per-subscription queue length and
-`-subscription-interval` (for example, `30s`) to print recurring summaries that
-include per-subscription message counts, byte totals, and mean inter-arrival
-latency.
+`-buffer` to adjust the per-subscription queue length and `-summary-interval`
+(for example, `30s`) to print recurring summaries that include per-subscription
+message counts, byte totals, and mean inter-arrival latency.
 
 Control how many interactions occur by setting `-count`. Non-subscription
 commands default to `-count 1`. When streaming (`-subscribe`), `-count 0`
@@ -140,12 +181,14 @@ dedicated helper `-subscribe-once`, both of which subscribe and exit after the
 first event:
 
 ```sh
-wsstat -subscribe -count 1 -json '{"method":"subscribe_ticker"}' wss://example.org/ws
+wsstat -subscribe -count 1 -text '{"method":"subscribe_ticker"}' wss://example.org/ws
 ```
 
 ```sh
-wsstat -subscribe-once -json '{"method":"subscribe_ticker"}' wss://example.org/ws
+wsstat -subscribe-once -text '{"method":"subscribe_ticker"}' wss://example.org/ws
 ```
+
+For machine-readable output of summaries, add `-format json`.
 
 ## wsstat Package
 

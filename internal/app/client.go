@@ -18,6 +18,13 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
+	"github.com/mattn/go-isatty"
+)
+
+const (
+	formatAuto = "auto"
+	formatRaw  = "raw"
+	formatJSON = "json"
 )
 
 var (
@@ -51,31 +58,107 @@ var (
 // based on the settings passed to the struct.
 type Client struct {
 	// Input
-	Count        int    // Number of interactions to perform; 0 means unlimited in subscription mode
-	InputHeaders string // Comma-separated headers for connection establishment
-	JSONMethod   string // A single JSON RPC method (no params)
-	TextMessage  string // A text message
+	Count       int      // Nr of interactions to perform; 0 means unlimited in subscription mode
+	Headers     []string // HTTP headers for connection establishment ("Key: Value")
+	RPCMethod   string   // JSON-RPC method (no params)
+	TextMessage string   // Text message
+
 	// Output
-	RawOutput   bool
-	ShowVersion bool
-	Version     string
-	// Protocol
-	Insecure bool
+	Format    string // Output formatting mode: "auto", "json", or "raw"
+	ColorMode string // Color behavior: "auto", "always", or "never"
+
 	// Verbosity
-	Basic   bool
-	Quiet   bool
-	Verbose bool
+	Quiet          bool // suppress request/timing output
+	VerbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
+
 	// Subscription mode
-	Subscribe            bool
-	SubscribeOnce        bool
-	SubscriptionBuffer   int
-	SubscriptionInterval time.Duration
+	Subscribe       bool
+	SubscribeOnce   bool
+	Buffer          int
+	SummaryInterval time.Duration
 
 	// The response of a MeasureLatency call. Is overwritten if the function is called again.
 	Response any
 
 	// The result of a MeasureLatency call. Is overwritten if the function is called again.
 	Result *wsstat.Result
+}
+
+// buildTimingSummary builds a timing summary.
+func (c *Client) buildTimingSummary(u *url.URL) timingSummaryJSON {
+	result := c.Result
+	mode := "single"
+	if c.Count > 1 || (result != nil && result.MessageCount > 1) {
+		mode = "mean"
+	}
+	summary := timingSummaryJSON{
+		Type:      "timing",
+		Mode:      mode,
+		Counts:    timingCountsJSON{Requested: c.Count},
+		Durations: timingDurationsJSON{},
+	}
+	if result != nil {
+		summary.Counts.Messages = result.MessageCount
+		summary.Target = buildTimingTarget(result, u)
+		summary.Durations.DNSLookup = msPtr(result.DNSLookup)
+		summary.Durations.TCPConnection = msPtr(result.TCPConnection)
+		summary.Durations.TLSHandshake = msPtr(result.TLSHandshake)
+		summary.Durations.WSHandshake = msPtr(result.WSHandshake)
+		summary.Durations.MessageRTT = msPtr(result.MessageRTT)
+		summary.Durations.Total = msPtr(result.TotalTime)
+		if timeline := buildTimingTimeline(result); timeline != nil {
+			summary.Timeline = timeline
+		}
+	}
+	return summary
+}
+
+// colorEnabled returns true if color output is enabled, based on both color mode and terminal
+// detection.
+func (c *Client) colorEnabled() bool {
+	switch c.ColorMode {
+	case "always":
+		return true
+	case "never":
+		return false
+	case "auto", "":
+	default:
+		return false
+	}
+
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
+		return false
+	}
+
+	fd := os.Stdout.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// colorizeOrange returns the text with orange color applied if color output is enabled.
+func (c *Client) colorizeOrange(text string) string {
+	if !c.colorEnabled() {
+		return text
+	}
+	return colorWSOrange(text)
+}
+
+// colorizeGreen returns the text with green color applied if color output is enabled.
+func (c *Client) colorizeGreen(text string) string {
+	if !c.colorEnabled() {
+		return text
+	}
+	return colorTeaGreen(text)
+}
+
+// handleSubscriptionTick handles a subscription tick.
+func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
+	if c.Result == nil {
+		return
+	}
+	c.Result = wsClient.ExtractResult()
+	if !c.Quiet {
+		c.printSubscriptionSummary(target)
+	}
 }
 
 // measureText runs the text-message latency measurement flow.
@@ -89,15 +172,85 @@ func (c *Client) measureText(target *url.URL, header http.Header) error {
 	return c.postProcessTextResponse()
 }
 
+// measureJSON runs the JSON-RPC latency measurement flow.
+func (c *Client) measureJSON(target *url.URL, header http.Header) error {
+	msg := struct {
+		Method     string `json:"method"`
+		ID         string `json:"id"`
+		RPCVersion string `json:"jsonrpc"`
+	}{
+		Method:     c.RPCMethod,
+		ID:         "1",
+		RPCVersion: "2.0",
+	}
+	msgs := buildRepeatedAny(msg, c.Count)
+	var err error
+	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
+	if err != nil {
+		return handleConnectionError(err, target.String())
+	}
+	return nil
+}
+
+// measurePing runs the ping latency measurement flow.
+func (c *Client) measurePing(target *url.URL, header http.Header) error {
+	var err error
+	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Count, header)
+	if err != nil {
+		return handleConnectionError(err, target.String())
+	}
+	return nil
+}
+
+// openSubscription opens a subscription to the target WebSocket server.
+func (c *Client) openSubscription(
+	ctx context.Context,
+	target *url.URL,
+) (*wsstat.WSStat, *wsstat.Subscription, error) {
+	header, err := parseHeaders(c.Headers)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	wsClient := wsstat.New()
+	if err := wsClient.Dial(target, header); err != nil {
+		wsClient.Close()
+		return nil, nil, handleConnectionError(err, target.String())
+	}
+
+	messageType, payload, err := c.subscriptionPayload()
+	if err != nil {
+		wsClient.Close()
+		return nil, nil, err
+	}
+
+	opts := wsstat.SubscriptionOptions{
+		MessageType: messageType,
+		Payload:     payload,
+	}
+	if c.Buffer > 0 {
+		opts.Buffer = c.Buffer
+	}
+
+	subscription, err := wsClient.Subscribe(ctx, opts)
+	if err != nil {
+		wsClient.Close()
+		return nil, nil, err
+	}
+
+	c.Result = wsClient.ExtractResult()
+	return wsClient, subscription, nil
+}
+
 // postProcessTextResponse keeps behavior identical to the original implementation while allowing
 // plain-text echoes:
 // - pick the first element if response is []string and non-empty
-// - if RawOutput is false and response is a JSON-RPC payload, decode into map[string]any
+// - if Format is not raw and response is a JSON-RPC payload, decode into map[string]any
 func (c *Client) postProcessTextResponse() error {
 	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
 		c.Response = responseArray[0]
 	}
-	if !c.RawOutput {
+	if c.Format != formatRaw {
 		responseStr, ok := c.Response.(string)
 		if !ok {
 			return nil
@@ -121,161 +274,220 @@ func (c *Client) postProcessTextResponse() error {
 	return nil
 }
 
-// measureJSON runs the JSON-RPC latency measurement flow.
-func (c *Client) measureJSON(target *url.URL, header http.Header) error {
-	msg := struct {
-		Method     string `json:"method"`
-		ID         string `json:"id"`
-		RPCVersion string `json:"jsonrpc"`
-	}{
-		Method:     c.JSONMethod,
-		ID:         "1",
-		RPCVersion: "2.0",
-	}
-	msgs := buildRepeatedAny(msg, c.Count)
-	var err error
-	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
+// printJSONLine prints a JSON line.
+func (*Client) printJSONLine(payload any) {
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return handleConnectionError(err, target.String())
+		fmt.Fprintf(os.Stderr, "failed to marshal JSON output: %v\n", err)
+		return
 	}
-	return nil
+	_, _ = os.Stdout.Write(append(data, '\n'))
 }
 
-// measurePing runs the ping latency measurement flow.
-func (c *Client) measurePing(target *url.URL, header http.Header) error {
-	var err error
-	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Count, header)
-	if err != nil {
-		return handleConnectionError(err, target.String())
-	}
-	return nil
-}
-
-// MeasureLatency measures the latency of the WebSocket connection, applying different methods
-// based on the flags passed to the program.
-func (c *Client) MeasureLatency(target *url.URL) error {
-	header, err := parseHeaders(c.InputHeaders)
-	if err != nil {
-		return err
+// printSubscriptionMessage prints a subscription message.
+func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
+	if c.Format == formatJSON {
+		c.printJSONLine(c.subscriptionMessageJSON(index, msg))
+		return nil
 	}
 
-	switch {
-	case c.TextMessage != "":
-		return c.measureText(target, header)
-	case c.JSONMethod != "":
-		return c.measureJSON(target, header)
-	default:
-		return c.measurePing(target, header)
+	payload := string(msg.Data)
+	if c.Quiet || c.Format == formatRaw {
+		fmt.Println(payload)
+		return nil
 	}
-}
 
-// StreamSubscription establishes a WebSocket connection and streams subscription events
-// until the provided context is canceled or the server closes the connection.
-func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
-	wsClient, subscription, err := c.openSubscription(ctx, target)
-	if err != nil {
-		return err
-	}
-	defer wsClient.Close()
-
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
-			subscription.Cancel()
-			<-subscription.Done()
-			return err
+	timestamp := msg.Received.Format(time.RFC3339Nano)
+	if c.VerbosityLevel >= 1 {
+		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
+		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+			fmt.Println(formatted)
+		} else {
+			fmt.Println(payload)
 		}
 		fmt.Println()
-		fmt.Println(colorWSOrange("Streaming subscription events"))
+		return nil
 	}
 
-	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+	line := payload
+	if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+		line = formatted
+	}
+	fmt.Printf("[%04d @ %s] %s\n", index, timestamp, line)
+	return nil
 }
 
-// StreamSubscriptionOnce establishes a subscription and exits after the first message.
-func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
-	originalCount := c.Count
-	c.Count = 1
-	defer func() { c.Count = originalCount }()
-
-	wsClient, subscription, err := c.openSubscription(ctx, target)
-	if err != nil {
-		return err
+// printSubscriptionSummary prints a subscription summary.
+func (c *Client) printSubscriptionSummary(target *url.URL) {
+	if c.Result == nil {
+		return
 	}
-	defer wsClient.Close()
 
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
-			subscription.Cancel()
-			<-subscription.Done()
-			return err
+	if c.Format == formatJSON {
+		c.printJSONLine(c.subscriptionSummaryJSON(target))
+		if c.VerbosityLevel >= 1 {
+			_ = c.PrintTimingResults(target)
 		}
+		return
 	}
 
 	fmt.Println()
-	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+	fmt.Println(c.colorizeOrange("Subscription summary"))
+	if c.Result.SubscriptionFirstEvent > 0 {
+		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
+	}
+	if c.Result.SubscriptionLastEvent > 0 {
+		fmt.Printf("  Last event latency: %s\n", formatDuration(c.Result.SubscriptionLastEvent))
+	}
+	fmt.Printf("  Total messages: %d\n", c.Result.MessageCount)
+
+	if len(c.Result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(c.Result.Subscriptions))
+		for id := range c.Result.Subscriptions {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			stats := c.Result.Subscriptions[id]
+			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
+			if stats.MeanInterArrival > 0 {
+				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
+			}
+			if stats.Error != nil {
+				fmt.Printf(" (error: %v)", stats.Error)
+			}
+			fmt.Println()
+		}
+	}
+
+	if c.VerbosityLevel >= 1 {
+		_ = c.PrintTimingResults(target)
+	}
 }
 
-func (c *Client) openSubscription(
-	ctx context.Context,
-	target *url.URL,
-) (*wsstat.WSStat, *wsstat.Subscription, error) {
-	header, err := parseHeaders(c.InputHeaders)
-	if err != nil {
-		return nil, nil, err
+// printTimingResultsBasic prints a concise timing summary used for verbosity level 0.
+func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
+	fmt.Println()
+	rttString := "Round-trip time"
+	if count > 1 {
+		rttString = "Mean round-trip time"
 	}
-
-	wsClient := wsstat.New()
-	if err := wsClient.Dial(target, header); err != nil {
-		wsClient.Close()
-		return nil, nil, handleConnectionError(err, target.String())
+	msgCountString := "message"
+	if result.MessageCount > 1 {
+		msgCountString = "messages"
 	}
-
-	messageType, payload, err := c.subscriptionPayload()
-	if err != nil {
-		wsClient.Close()
-		return nil, nil, err
-	}
-
-	opts := wsstat.SubscriptionOptions{
-		MessageType: messageType,
-		Payload:     payload,
-	}
-	if c.SubscriptionBuffer > 0 {
-		opts.Buffer = c.SubscriptionBuffer
-	}
-
-	subscription, err := wsClient.Subscribe(ctx, opts)
-	if err != nil {
-		wsClient.Close()
-		return nil, nil, err
-	}
-
-	c.Result = wsClient.ExtractResult()
-	return wsClient, subscription, nil
+	fmt.Printf(
+		"%s: %s (%d %s)\n",
+		rttString,
+		c.colorizeOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
+		result.MessageCount,
+		msgCountString)
+	fmt.Printf(
+		printValueTemp,
+		"Total time",
+		c.colorizeOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
+	fmt.Println()
 }
 
-// subscriptionPayload returns the payload to be sent to the server.
-func (c *Client) subscriptionPayload() (int, []byte, error) {
-	if c.TextMessage != "" {
-		return websocket.TextMessage, []byte(c.TextMessage), nil
+// printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
+// in a tiered fashion.
+func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
+	switch u.Scheme {
+	case "wss":
+		fmt.Fprintf(os.Stdout, wssPrintTemplate,
+			label,
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.TLSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.TLSHandshakeDone)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
+			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
+		)
+	case "ws":
+		fmt.Fprintf(os.Stdout, wsPrintTemplate,
+			label,
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
+			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
+		)
+	default:
+		fmt.Fprintf(os.Stdout, wsPrintTemplate,
+			label,
+			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
+			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
+			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
+			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
+			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
+			c.colorizeGreen(formatPadRight(result.TCPConnected)),
+			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
+			c.colorizeOrange(formatPadRight(result.TotalTime)),
+		)
 	}
-	if c.JSONMethod != "" {
-		msg := struct {
-			Method     string `json:"method"`
-			ID         string `json:"id"`
-			RPCVersion string `json:"jsonrpc"`
-		}{
-			Method:     c.JSONMethod,
-			ID:         "1",
-			RPCVersion: "2.0",
-		}
-		payload, err := json.Marshal(msg)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
-		}
-		return websocket.TextMessage, payload, nil
+	fmt.Println()
+}
+
+// printVerbose prints the request details with verbosity level 1.
+func (c *Client) printVerbose() {
+	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), c.Result.URL.Hostname())
+	for _, values := range c.Result.IPs {
+		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
 	}
-	return websocket.TextMessage, nil, nil
+	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), c.Result.MessageCount)
+	for key, values := range c.Result.RequestHeaders {
+		if key == "Sec-WebSocket-Version" {
+			fmt.Printf(printValueTemp,
+				c.colorizeOrange("WS version"), strings.Join(values, ", "))
+		}
+	}
+	if c.Result.TLSState != nil {
+		fmt.Printf(printValueTemp,
+			c.colorizeOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
+	}
+}
+
+// printVVerbose prints the request details with verbosity level 2.
+func (c *Client) printVVerbose() {
+	fmt.Println(c.colorizeOrange("Target"))
+	fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), c.Result.URL.Hostname())
+	for _, ip := range c.Result.IPs {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen("IP"), ip)
+	}
+	fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), c.Result.MessageCount)
+	fmt.Println()
+	if c.Result.TLSState != nil {
+		fmt.Println(c.colorizeOrange("TLS"))
+		fmt.Printf(printIndentedValueTemp,
+			c.colorizeGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+		fmt.Printf(printIndentedValueTemp,
+			c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
+		for i, cert := range c.Result.TLSState.PeerCertificates {
+			fmt.Printf("  %s: %d\n", c.colorizeGreen("Certificate"), i+1)
+			fmt.Printf("    Subject: %s\n", cert.Subject)
+			fmt.Printf("    Issuer: %s\n", cert.Issuer)
+			fmt.Printf("    Not Before: %s\n", cert.NotBefore)
+			fmt.Printf("    Not After: %s\n", cert.NotAfter)
+		}
+		fmt.Println()
+	}
+	fmt.Println(c.colorizeOrange("Request headers"))
+	for key, values := range c.Result.RequestHeaders {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+	}
+	fmt.Println(c.colorizeOrange("Response headers"))
+	for key, values := range c.Result.ResponseHeaders {
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+	}
 }
 
 // runSubscriptionLoop runs the subscription loop.
@@ -286,8 +498,8 @@ func (c *Client) runSubscriptionLoop(
 	target *url.URL,
 ) error {
 	var ticker *time.Ticker
-	if c.SubscriptionInterval > 0 {
-		ticker = time.NewTicker(c.SubscriptionInterval)
+	if c.SummaryInterval > 0 {
+		ticker = time.NewTicker(c.SummaryInterval)
 		defer ticker.Stop()
 	}
 
@@ -325,129 +537,112 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
-			fmt.Println()
+			if c.Format != formatJSON {
+				fmt.Println()
+			}
 		}
 	}
 }
 
-// handleSubscriptionTick handles a subscription tick.
-func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
-	if c.Result == nil {
-		return
+// subscriptionMessageJSON builds a subscription message.
+func (c *Client) subscriptionMessageJSON(
+	index int,
+	msg wsstat.SubscriptionMessage,
+) subscriptionMessageJSON {
+	payload, ok := parseJSONPayload(msg.Data)
+	if !ok {
+		payload = string(msg.Data)
 	}
-	c.Result = wsClient.ExtractResult()
+	output := subscriptionMessageJSON{
+		Type:    "subscription_message",
+		Payload: payload,
+	}
 	if !c.Quiet {
-		c.printSubscriptionSummary(target)
+		output.Index = index
+		output.Timestamp = msg.Received.Format(time.RFC3339Nano)
+		output.Size = msg.Size
+		output.MessageType = messageTypeLabel(msg.MessageType)
 	}
+	return output
 }
 
-// tickerC returns a channel that emits ticks from the provided ticker.
-func tickerC(t *time.Ticker) <-chan time.Time {
-	if t == nil {
-		return nil
+// subscriptionPayload returns the payload to be sent to the server.
+func (c *Client) subscriptionPayload() (int, []byte, error) {
+	if c.TextMessage != "" {
+		return websocket.TextMessage, []byte(c.TextMessage), nil
 	}
-	return t.C
-}
-
-// printSubscriptionMessage prints a subscription message.
-func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
-	payload := string(msg.Data)
-	if c.RawOutput || c.Quiet {
-		fmt.Println(payload)
-		return nil
-	}
-
-	timestamp := msg.Received.Format(time.RFC3339Nano)
-	if c.Basic {
-		fmt.Printf("[%04d @ %s] Message received\n", index, timestamp)
-		return nil
-	}
-
-	if c.Verbose {
-		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
-		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
-			fmt.Println(formatted)
-		} else {
-			fmt.Println(payload)
+	if c.RPCMethod != "" {
+		msg := struct {
+			Method     string `json:"method"`
+			ID         string `json:"id"`
+			RPCVersion string `json:"jsonrpc"`
+		}{
+			Method:     c.RPCMethod,
+			ID:         "1",
+			RPCVersion: "2.0",
 		}
-		fmt.Println()
-		return nil
+		payload, err := json.Marshal(msg)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
+		}
+		return websocket.TextMessage, payload, nil
 	}
-
-	line := payload
-	if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
-		line = formatted
-	}
-	fmt.Printf("[%s] %s\n", timestamp, line)
-	return nil
+	return websocket.TextMessage, nil, nil
 }
 
-// printSubscriptionSummary prints a subscription summary.
-func (c *Client) printSubscriptionSummary(target *url.URL) {
-	if c.Result == nil {
-		return
+// subscriptionSummaryJSON builds a subscription summary.
+func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSON {
+	result := c.Result
+	summary := subscriptionSummaryJSON{
+		Type:          "subscription_summary",
+		Target:        buildTimingTarget(result, target),
+		FirstEventMs:  msPtr(result.SubscriptionFirstEvent),
+		LastEventMs:   msPtr(result.SubscriptionLastEvent),
+		TotalMessages: result.MessageCount,
 	}
-
-	fmt.Println()
-	fmt.Println(colorWSOrange("Subscription summary"))
-	if c.Result.SubscriptionFirstEvent > 0 {
-		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
-	}
-	if c.Result.SubscriptionLastEvent > 0 {
-		fmt.Printf("  Last event latency: %s\n", formatDuration(c.Result.SubscriptionLastEvent))
-	}
-	fmt.Printf("  Total messages: %d\n", c.Result.MessageCount)
-
-	if len(c.Result.Subscriptions) > 0 {
-		ids := make([]string, 0, len(c.Result.Subscriptions))
-		for id := range c.Result.Subscriptions {
+	if len(result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(result.Subscriptions))
+		for id := range result.Subscriptions {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
+		entries := make([]subscriptionEntryJSON, 0, len(ids))
 		for _, id := range ids {
-			stats := c.Result.Subscriptions[id]
-			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
-			if stats.MeanInterArrival > 0 {
-				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
+			stats := result.Subscriptions[id]
+			entry := subscriptionEntryJSON{
+				ID:                 id,
+				Messages:           stats.MessageCount,
+				Bytes:              stats.ByteCount,
+				FirstEventMs:       msPtr(stats.FirstEvent),
+				LastEventMs:        msPtr(stats.LastEvent),
+				MeanInterArrivalMs: msPtr(stats.MeanInterArrival),
 			}
 			if stats.Error != nil {
-				fmt.Printf(" (error: %v)", stats.Error)
+				entry.Error = stats.Error.Error()
 			}
-			fmt.Println()
+			entries = append(entries, entry)
 		}
+		summary.Subscriptions = entries
 	}
-
-	if c.Verbose {
-		_ = c.PrintTimingResults(target)
-	}
+	return summary
 }
 
-// formatJSONIfPossible formats the JSON data if possible.
-func formatJSONIfPossible(data []byte) string {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
-		return ""
-	}
-	if trimmed[0] != '{' && trimmed[0] != '[' {
-		return ""
-	}
-	var anyJSON any
-	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
-		return ""
-	}
-	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
+// MeasureLatency measures the latency of the WebSocket connection, applying different methods
+// based on the flags passed to the program.
+func (c *Client) MeasureLatency(target *url.URL) error {
+	header, err := parseHeaders(c.Headers)
 	if err != nil {
-		return ""
+		return err
 	}
-	return string(pretty)
-}
 
-// formatDuration formats the duration.
-func formatDuration(d time.Duration) string {
-	if d <= 0 {
-		return "-"
+	switch {
+	case c.TextMessage != "":
+		return c.measureText(target, header)
+	case c.RPCMethod != "":
+		return c.measureJSON(target, header)
+	default:
+		return c.measurePing(target, header)
 	}
-	return fmt.Sprintf("%dms", d/time.Millisecond)
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
@@ -456,88 +651,25 @@ func (c *Client) PrintRequestDetails() error {
 	if c.Result == nil {
 		return errors.New("no results have been produced")
 	}
+	if c.Quiet {
+		return nil
+	}
+	if c.Format == formatJSON {
+		return nil
+	}
+
 	fmt.Println()
 
-	// Print basic output
-	if c.Basic {
-		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
+	switch {
+	case c.VerbosityLevel >= 2:
+		c.printVVerbose()
+	case c.VerbosityLevel >= 1:
+		c.printVerbose()
+	default:
+		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), c.Result.URL.Hostname())
 		if len(c.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
+			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), c.Result.IPs[0])
 		}
-		return nil
-	}
-
-	// Print verbose output
-	if c.Verbose {
-		fmt.Println(colorWSOrange("Target"))
-		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
-		// Loop in case there are multiple IPs with the target
-		for _, ip := range c.Result.IPs {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
-		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
-		fmt.Println()
-		if c.Result.TLSState != nil {
-			fmt.Println(colorWSOrange("TLS"))
-			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
-			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
-
-			// Print the certificate details
-			for i, cert := range c.Result.TLSState.PeerCertificates {
-				fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
-				fmt.Printf("    Subject: %s\n", cert.Subject)
-				fmt.Printf("    Issuer: %s\n", cert.Issuer)
-				fmt.Printf("    Not Before: %s\n", cert.NotBefore)
-				fmt.Printf("    Not After: %s\n", cert.NotAfter)
-			}
-			fmt.Println()
-		}
-		fmt.Println(colorWSOrange("Request headers"))
-		for key, values := range c.Result.RequestHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-		}
-		fmt.Println(colorWSOrange("Response headers"))
-		for key, values := range c.Result.ResponseHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-		}
-		return nil
-	}
-
-	// Print standard output
-	fmt.Printf(printValueTemp, colorWSOrange("Target"), c.Result.URL.Hostname())
-	for _, values := range c.Result.IPs {
-		fmt.Printf(printValueTemp, colorWSOrange("IP"), values)
-	}
-	fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), c.Result.MessageCount)
-	for key, values := range c.Result.RequestHeaders {
-		if key == "Sec-WebSocket-Version" {
-			fmt.Printf(printValueTemp, colorWSOrange("WS version"), strings.Join(values, ", "))
-		}
-	}
-	if c.Result.TLSState != nil {
-		fmt.Printf(printValueTemp,
-			colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
-	}
-
-	return nil
-}
-
-// PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *Client) PrintTimingResults(u *url.URL) error {
-	if c.Result == nil {
-		return errors.New("no results have been produced")
-	}
-
-	if c.Basic {
-		printTimingResultsBasic(c.Result, c.Count)
-	} else {
-		rttLabel := "Message RTT"
-		if c.Count > 1 || c.Result.MessageCount > 1 {
-			rttLabel = "Mean Message RTT"
-		}
-		printTimingResultsTiered(c.Result, u, rttLabel)
 	}
 
 	return nil
@@ -549,20 +681,28 @@ func (c *Client) PrintResponse() {
 		return
 	}
 
-	baseMessage := colorWSOrange("Response") + ": "
+	if c.Format == formatJSON {
+		c.printJSONLine(responseOutputJSON{
+			Type:      "response",
+			RPCMethod: c.RPCMethod,
+			Payload:   normalizeResponseForJSON(c.Response),
+		})
+		return
+	}
+
+	label := c.colorizeOrange("Response")
+	baseMessage := label + ": "
 
 	if c.Quiet {
 		baseMessage = ""
-	} else {
-		fmt.Println()
 	}
 
-	if c.RawOutput {
+	if c.Format == formatRaw {
 		// If raw output is requested, print the raw data before trying to assert any types
 		fmt.Printf("%s%v\n", baseMessage, c.Response)
 	} else if responseMap, ok := c.Response.(map[string]any); ok {
 		// If JSON in request, print response as JSON
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JSONMethod != "" {
+		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.RPCMethod != "" {
 			responseJSON, err := json.Marshal(responseMap)
 			if err != nil {
 				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
@@ -576,10 +716,85 @@ func (c *Client) PrintResponse() {
 	} else if responseBytes, ok := c.Response.([]byte); ok {
 		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
 	}
+}
+
+// PrintTimingResults prints the WebSocket statistics to the terminal.
+func (c *Client) PrintTimingResults(u *url.URL) error {
+	if c.Result == nil {
+		return errors.New("no results have been produced")
+	}
+
+	if c.Quiet {
+		return nil
+	}
+
+	if c.Format == formatJSON {
+		c.printJSONLine(c.buildTimingSummary(u))
+		return nil
+	}
+
+	switch {
+	case c.VerbosityLevel <= 0:
+		c.printTimingResultsBasic(c.Result, c.Count)
+	default:
+		rttLabel := "Message RTT"
+		if c.Count > 1 || c.Result.MessageCount > 1 {
+			rttLabel = "Mean Message RTT"
+		}
+		c.printTimingResultsTiered(c.Result, u, rttLabel)
+	}
+
+	return nil
+}
+
+// StreamSubscription establishes a WebSocket connection and streams subscription events
+// until the provided context is canceled or the server closes the connection.
+func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer wsClient.Close()
 
 	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+		if c.Format != formatJSON {
+			fmt.Println()
+			fmt.Println(c.colorizeOrange("Streaming subscription events"))
+		}
+	}
+
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+}
+
+// StreamSubscriptionOnce establishes a subscription and exits after the first message.
+func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
+	originalCount := c.Count
+	c.Count = 1
+	defer func() { c.Count = originalCount }()
+
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer wsClient.Close()
+
+	if !c.Quiet {
+		if err := c.PrintRequestDetails(); err != nil {
+			subscription.Cancel()
+			<-subscription.Done()
+			return err
+		}
+	}
+
+	if c.Format != formatJSON {
 		fmt.Println()
 	}
+	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
 }
 
 // Validate validates the Client is ready for measurement; it checks that the client settings are
@@ -589,8 +804,35 @@ func (c *Client) Validate() error {
 		return errors.New("count must be zero or greater")
 	}
 
-	if c.TextMessage != "" && c.JSONMethod != "" {
+	if c.TextMessage != "" && c.RPCMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
+	}
+
+	c.Format = strings.TrimSpace(strings.ToLower(c.Format))
+	if c.Format == "" {
+		c.Format = formatAuto
+	}
+	switch c.Format {
+	case formatAuto, formatRaw, formatJSON:
+		// valid
+	default:
+		return errors.New("format must be \"auto\", \"json\", or \"raw\"")
+	}
+
+	c.ColorMode = strings.TrimSpace(strings.ToLower(c.ColorMode))
+	if c.ColorMode == "" {
+		c.ColorMode = "auto"
+	}
+	if c.ColorMode != "auto" && c.ColorMode != "always" && c.ColorMode != "never" {
+		return errors.New("color must be \"auto\", \"always\", or \"never\"")
+	}
+
+	if c.Buffer < 0 {
+		return errors.New("buffer must be zero or greater")
+	}
+
+	if c.SummaryInterval < 0 {
+		return errors.New("summary-interval must be zero or greater")
 	}
 
 	if c.SubscribeOnce {
@@ -661,6 +903,14 @@ func formatPadRight(d time.Duration) string {
 	return fmt.Sprintf("%-8s", strconv.Itoa(int(d/time.Millisecond))+"ms")
 }
 
+// formatDuration formats the duration.
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%dms", d/time.Millisecond)
+}
+
 // handleConnectionError prints the error message and exits the program.
 func handleConnectionError(err error, address string) error {
 	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
@@ -669,91 +919,53 @@ func handleConnectionError(err error, address string) error {
 	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
 }
 
-// parseHeaders parses comma separated headers into an HTTP header.
-func parseHeaders(headers string) (http.Header, error) {
+func msPtr(d time.Duration) *int64 {
+	if d <= 0 {
+		return nil
+	}
+	ms := d.Milliseconds()
+	return &ms
+}
+
+func messageTypeLabel(messageType int) string {
+	switch messageType {
+	case websocket.TextMessage:
+		return "text"
+	case websocket.BinaryMessage:
+		return "binary"
+	case websocket.CloseMessage:
+		return "close"
+	case websocket.PingMessage:
+		return "ping"
+	case websocket.PongMessage:
+		return "pong"
+	default:
+		return strconv.Itoa(messageType)
+	}
+}
+
+// parseHeaders parses repeated header arguments into an HTTP header.
+func parseHeaders(pairs []string) (http.Header, error) {
 	header := http.Header{}
-	if headers != "" {
-		headerParts := strings.Split(headers, ",")
-		for _, part := range headerParts {
-			parts := strings.SplitN(part, ":", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid header format: %s", part)
-			}
-			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid header format: %s", pair)
 		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" {
+			return nil, fmt.Errorf("invalid header format: %s", pair)
+		}
+		header.Add(key, value)
 	}
 	return header, nil
 }
 
-// printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
-func printTimingResultsBasic(result *wsstat.Result, count int) {
-	fmt.Println()
-	rttString := "Round-trip time"
-	if count > 1 {
-		rttString = "Mean round-trip time"
+// tickerC returns a channel that emits ticks from the provided ticker.
+func tickerC(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
 	}
-	msgCountString := "message"
-	if result.MessageCount > 1 {
-		msgCountString = "messages"
-	}
-	fmt.Printf(
-		"%s: %s (%d %s)\n",
-		rttString,
-		colorWSOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
-		result.MessageCount,
-		msgCountString)
-	fmt.Printf(
-		printValueTemp,
-		"Total time",
-		colorWSOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
-	fmt.Println()
-}
-
-// printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
-// in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
-	fmt.Println()
-	switch u.Scheme {
-	case "wss":
-		fmt.Fprintf(os.Stdout, wssPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.TLSHandshake)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.TLSHandshakeDone)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
-	case "ws":
-		fmt.Fprintf(os.Stdout, wsPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
-	default:
-		fmt.Fprintf(os.Stdout, wsPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
-	}
-	fmt.Println()
+	return t.C
 }
