@@ -58,6 +58,10 @@ func init() {
 		fmt.Fprintln(os.Stderr, "If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.")
 		fmt.Fprintln(os.Stderr)
 
+		fmt.Fprintln(os.Stderr, "General:")
+		fmt.Fprintf(os.Stderr, "  -count int           %s (default 1; defaults to unlimited when subscribing)\n", flag.Lookup("count").Usage)
+		fmt.Fprintln(os.Stderr)
+
 		fmt.Fprintln(os.Stderr, "Input (choose one):")
 		fmt.Fprintf(os.Stderr, "  -rpc-method string   %s\n", flag.Lookup("rpc-method").Usage)
 		fmt.Fprintf(os.Stderr, "  -text string         %s\n", flag.Lookup("text").Usage)
@@ -66,7 +70,6 @@ func init() {
 		fmt.Fprintln(os.Stderr, "Subscription:")
 		fmt.Fprintf(os.Stderr, "  -subscribe           %s\n", flag.Lookup("subscribe").Usage)
 		fmt.Fprintf(os.Stderr, "  -subscribe-once      %s\n", flag.Lookup("subscribe-once").Usage)
-		fmt.Fprintf(os.Stderr, "  -count int           %s (default 1; defaults to 0 when subscribing)\n", flag.Lookup("count").Usage)
 		fmt.Fprintf(os.Stderr, "  -buffer int          %s (default %d)\n", flag.Lookup("buffer").Usage, *bufferSize)
 		fmt.Fprintf(os.Stderr, "  -summary-interval    %s\n", flag.Lookup("summary-interval").Usage)
 		fmt.Fprintln(os.Stderr)
@@ -88,7 +91,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -vv      includes full TLS certificates and headers")
 		fmt.Fprintln(os.Stderr)
 
-		fmt.Fprintln(os.Stderr, "General:")
+		fmt.Fprintln(os.Stderr, "Misc:")
 		fmt.Fprintf(os.Stderr, "  -version             %s\n", flag.Lookup("version").Usage)
 
 		fmt.Fprintln(os.Stderr)
