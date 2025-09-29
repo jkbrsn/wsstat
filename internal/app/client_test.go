@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -348,6 +349,12 @@ func TestClientValidate(t *testing.T) {
 		assert.Error(t, c.Validate())
 	})
 
+	t.Run("json format allowed", func(t *testing.T) {
+		c := &Client{Format: "json"}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, formatJSON, c.Format)
+	})
+
 	t.Run("negative buffer", func(t *testing.T) {
 		c := &Client{Buffer: -1}
 		assert.Error(t, c.Validate())
@@ -393,6 +400,153 @@ func TestPrintTimingResultsVerbosityLevels(t *testing.T) {
 		})
 		assert.Contains(t, output, "DNS Lookup    TCP Connection")
 	})
+}
+
+func TestPrintTimingResultsJSON(t *testing.T) {
+	client := &Client{
+		Format: formatJSON,
+		Count:  2,
+		Result: sampleTimingResult(t),
+	}
+	ctxURL := client.Result.URL
+	output := captureStdoutFrom(t, func() error {
+		return client.PrintTimingResults(ctxURL)
+	})
+	payload := decodeJSONLine(t, output)
+	assert.Equal(t, "timing", payload["type"])
+	assert.Equal(t, "mean", payload["mode"])
+	counts := asMap(t, payload["counts"])
+	assert.EqualValues(t, client.Count, counts["requested"])
+	assert.EqualValues(t, client.Result.MessageCount, counts["messages"])
+	durations := asMap(t, payload["durations_ms"])
+	assert.EqualValues(t, client.Result.MessageRTT.Milliseconds(), durations["message_rtt"])
+	assert.EqualValues(t, client.Result.TotalTime.Milliseconds(), durations["total"])
+	target := asMap(t, payload["target"])
+	assert.Equal(t, client.Result.URL.String(), target["url"])
+}
+
+func TestPrintResponseJSON(t *testing.T) {
+	t.Run("map payload", func(t *testing.T) {
+		client := &Client{
+			Format:    formatJSON,
+			RPCMethod: "eth_blockNumber",
+			Response:  map[string]any{"jsonrpc": "2.0", "result": "0x1"},
+		}
+		output := captureStdoutFrom(t, func() error {
+			client.PrintResponse()
+			return nil
+		})
+		payload := decodeJSONLine(t, output)
+		assert.Equal(t, "response", payload["type"])
+		assert.Equal(t, "eth_blockNumber", payload["rpc_method"])
+		response := asMap(t, payload["payload"])
+		assert.Equal(t, "0x1", response["result"])
+	})
+
+	t.Run("plain string payload", func(t *testing.T) {
+		client := &Client{
+			Format:   formatJSON,
+			Response: "hello world",
+		}
+		output := captureStdoutFrom(t, func() error {
+			client.PrintResponse()
+			return nil
+		})
+		payload := decodeJSONLine(t, output)
+		assert.Equal(t, "response", payload["type"])
+		assert.Equal(t, "hello world", payload["payload"])
+	})
+}
+
+func TestSubscriptionJSONOutput(t *testing.T) {
+	t.Run("message metadata", func(t *testing.T) {
+		client := &Client{Format: formatJSON}
+		msg := wsstat.SubscriptionMessage{
+			MessageType: websocket.TextMessage,
+			Data:        []byte(`{"foo":"bar"}`),
+			Received:    time.Unix(0, 0).UTC(),
+			Size:        len(`{"foo":"bar"}`),
+		}
+		output := captureStdoutFrom(t, func() error {
+			return client.printSubscriptionMessage(5, msg)
+		})
+		payload := decodeJSONLine(t, output)
+		assert.Equal(t, "subscription_message", payload["type"])
+		assert.EqualValues(t, 5, payload["index"])
+		assert.Equal(t, msg.Received.Format(time.RFC3339Nano), payload["timestamp"])
+		assert.EqualValues(t, msg.Size, payload["size"])
+		assert.Equal(t, "text", payload["message_type"])
+		inner := asMap(t, payload["payload"])
+		assert.Equal(t, "bar", inner["foo"])
+	})
+
+	t.Run("quiet omits metadata", func(t *testing.T) {
+		client := &Client{Format: formatJSON, Quiet: true}
+		msg := wsstat.SubscriptionMessage{Data: []byte("plain"), Received: time.Unix(0, 0).UTC()}
+		output := captureStdoutFrom(t, func() error {
+			return client.printSubscriptionMessage(1, msg)
+		})
+		payload := decodeJSONLine(t, output)
+		assert.Equal(t, "subscription_message", payload["type"])
+		assert.NotContains(t, payload, "index")
+		assert.Equal(t, "plain", payload["payload"])
+	})
+
+	t.Run("summary", func(t *testing.T) {
+		res := sampleResult(t)
+		res.MessageCount = 3
+		res.SubscriptionFirstEvent = 50 * time.Millisecond
+		res.SubscriptionLastEvent = 150 * time.Millisecond
+		res.Subscriptions = map[string]wsstat.SubscriptionStats{
+			"alpha": {
+				FirstEvent:       40 * time.Millisecond,
+				LastEvent:        140 * time.Millisecond,
+				MessageCount:     2,
+				ByteCount:        64,
+				MeanInterArrival: 20 * time.Millisecond,
+			},
+		}
+		client := &Client{Format: formatJSON, Result: res}
+		output := captureStdoutFrom(t, func() error {
+			client.printSubscriptionSummary(res.URL)
+			return nil
+		})
+		payload := decodeJSONLine(t, output)
+		assert.Equal(t, "subscription_summary", payload["type"])
+		assert.EqualValues(t, res.MessageCount, payload["total_messages"])
+		assert.EqualValues(t, res.SubscriptionFirstEvent.Milliseconds(), payload["first_event_ms"])
+		subs := asSlice(t, payload["subscriptions"])
+		require.Len(t, subs, 1)
+		entry := asMap(t, subs[0])
+		assert.Equal(t, "alpha", entry["id"])
+		assert.EqualValues(t, res.Subscriptions["alpha"].MessageCount, entry["messages"])
+		assert.EqualValues(t, res.Subscriptions["alpha"].ByteCount, entry["bytes"])
+		assert.EqualValues(t, res.Subscriptions["alpha"].MeanInterArrival.Milliseconds(),
+			entry["mean_inter_arrival_ms"])
+	})
+}
+
+func decodeJSONLine(t *testing.T, output string) map[string]any {
+	t.Helper()
+	trimmed := strings.TrimSpace(output)
+	require.NotEmpty(t, trimmed)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(trimmed), &payload))
+	return payload
+}
+
+func asMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	result, ok := value.(map[string]any)
+	require.Truef(t, ok, "expected map[string]any, got %T", value)
+	return result
+}
+
+func asSlice(t *testing.T, value any) []any {
+	t.Helper()
+	result, ok := value.([]any)
+	require.Truef(t, ok, "expected []any, got %T", value)
+	return result
 }
 
 func TestStreamSubscriptionRespectsCount(t *testing.T) {

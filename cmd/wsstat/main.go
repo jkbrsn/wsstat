@@ -28,7 +28,7 @@ var (
 	summaryInterval = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
 
 	// Output
-	formatOption = flag.String("format", "auto", "output format: auto or raw")
+	formatOption = flag.String("format", "auto", "output format: auto, json, or raw")
 
 	// General/meta
 	showVersion = flag.Bool("version", false, "print the program version")

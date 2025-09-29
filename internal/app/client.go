@@ -21,6 +21,12 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
+const (
+	formatAuto = "auto"
+	formatRaw  = "raw"
+	formatJSON = "json"
+)
+
 var (
 	// Templates for printing singular results
 	printValueTemp         = "%s: %s\n"
@@ -58,7 +64,7 @@ type Client struct {
 	TextMessage string   // Text message
 
 	// Output
-	Format    string // Output formatting mode: "auto" or "raw"
+	Format    string // Output formatting mode: "auto", "json", or "raw"
 	ColorMode string // Color behavior: "auto", "always", or "never"
 
 	// Verbosity
@@ -97,7 +103,7 @@ func (c *Client) postProcessTextResponse() error {
 	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
 		c.Response = responseArray[0]
 	}
-	if c.Format != "raw" {
+	if c.Format != formatRaw {
 		responseStr, ok := c.Response.(string)
 		if !ok {
 			return nil
@@ -184,8 +190,10 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 			<-subscription.Done()
 			return err
 		}
-		fmt.Println()
-		fmt.Println(c.colorizeOrange("Streaming subscription events"))
+		if c.Format != formatJSON {
+			fmt.Println()
+			fmt.Println(c.colorizeOrange("Streaming subscription events"))
+		}
 	}
 
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
@@ -211,7 +219,9 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 		}
 	}
 
-	fmt.Println()
+	if c.Format != formatJSON {
+		fmt.Println()
+	}
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
 }
 
@@ -325,7 +335,9 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
-			fmt.Println()
+			if c.Format != formatJSON {
+				fmt.Println()
+			}
 		}
 	}
 }
@@ -341,18 +353,15 @@ func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL
 	}
 }
 
-// tickerC returns a channel that emits ticks from the provided ticker.
-func tickerC(t *time.Ticker) <-chan time.Time {
-	if t == nil {
-		return nil
-	}
-	return t.C
-}
-
 // printSubscriptionMessage prints a subscription message.
 func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
+	if c.Format == formatJSON {
+		c.printJSONLine(c.subscriptionMessageJSON(index, msg))
+		return nil
+	}
+
 	payload := string(msg.Data)
-	if c.Quiet || c.Format == "raw" {
+	if c.Quiet || c.Format == formatRaw {
 		fmt.Println(payload)
 		return nil
 	}
@@ -380,6 +389,14 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 // printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL) {
 	if c.Result == nil {
+		return
+	}
+
+	if c.Format == formatJSON {
+		c.printJSONLine(c.subscriptionSummaryJSON(target))
+		if c.VerbosityLevel >= 1 {
+			_ = c.PrintTimingResults(target)
+		}
 		return
 	}
 
@@ -417,32 +434,102 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 	}
 }
 
-// formatJSONIfPossible formats the JSON data if possible.
-func formatJSONIfPossible(data []byte) string {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
-		return ""
-	}
-	if trimmed[0] != '{' && trimmed[0] != '[' {
-		return ""
-	}
-	var anyJSON any
-	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
-		return ""
-	}
-	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
+// printJSONLine prints a JSON line.
+func (*Client) printJSONLine(payload any) {
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return ""
+		fmt.Fprintf(os.Stderr, "failed to marshal JSON output: %v\n", err)
+		return
 	}
-	return string(pretty)
+	_, _ = os.Stdout.Write(append(data, '\n'))
 }
 
-// formatDuration formats the duration.
-func formatDuration(d time.Duration) string {
-	if d <= 0 {
-		return "-"
+// buildTimingSummary builds a timing summary.
+func (c *Client) buildTimingSummary(u *url.URL) timingSummaryJSON {
+	result := c.Result
+	mode := "single"
+	if c.Count > 1 || (result != nil && result.MessageCount > 1) {
+		mode = "mean"
 	}
-	return fmt.Sprintf("%dms", d/time.Millisecond)
+	summary := timingSummaryJSON{
+		Type:      "timing",
+		Mode:      mode,
+		Counts:    timingCountsJSON{Requested: c.Count},
+		Durations: timingDurationsJSON{},
+	}
+	if result != nil {
+		summary.Counts.Messages = result.MessageCount
+		summary.Target = buildTimingTarget(result, u)
+		summary.Durations.DNSLookup = msPtr(result.DNSLookup)
+		summary.Durations.TCPConnection = msPtr(result.TCPConnection)
+		summary.Durations.TLSHandshake = msPtr(result.TLSHandshake)
+		summary.Durations.WSHandshake = msPtr(result.WSHandshake)
+		summary.Durations.MessageRTT = msPtr(result.MessageRTT)
+		summary.Durations.Total = msPtr(result.TotalTime)
+		if timeline := buildTimingTimeline(result); timeline != nil {
+			summary.Timeline = timeline
+		}
+	}
+	return summary
+}
+
+// subscriptionSummaryJSON builds a subscription summary.
+func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSON {
+	result := c.Result
+	summary := subscriptionSummaryJSON{
+		Type:          "subscription_summary",
+		Target:        buildTimingTarget(result, target),
+		FirstEventMs:  msPtr(result.SubscriptionFirstEvent),
+		LastEventMs:   msPtr(result.SubscriptionLastEvent),
+		TotalMessages: result.MessageCount,
+	}
+	if len(result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(result.Subscriptions))
+		for id := range result.Subscriptions {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		entries := make([]subscriptionEntryJSON, 0, len(ids))
+		for _, id := range ids {
+			stats := result.Subscriptions[id]
+			entry := subscriptionEntryJSON{
+				ID:                 id,
+				Messages:           stats.MessageCount,
+				Bytes:              stats.ByteCount,
+				FirstEventMs:       msPtr(stats.FirstEvent),
+				LastEventMs:        msPtr(stats.LastEvent),
+				MeanInterArrivalMs: msPtr(stats.MeanInterArrival),
+			}
+			if stats.Error != nil {
+				entry.Error = stats.Error.Error()
+			}
+			entries = append(entries, entry)
+		}
+		summary.Subscriptions = entries
+	}
+	return summary
+}
+
+// subscriptionMessageJSON builds a subscription message.
+func (c *Client) subscriptionMessageJSON(
+	index int,
+	msg wsstat.SubscriptionMessage,
+) subscriptionMessageJSON {
+	payload, ok := parseJSONPayload(msg.Data)
+	if !ok {
+		payload = string(msg.Data)
+	}
+	output := subscriptionMessageJSON{
+		Type:    "subscription_message",
+		Payload: payload,
+	}
+	if !c.Quiet {
+		output.Index = index
+		output.Timestamp = msg.Received.Format(time.RFC3339Nano)
+		output.Size = msg.Size
+		output.MessageType = messageTypeLabel(msg.MessageType)
+	}
+	return output
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
@@ -452,6 +539,9 @@ func (c *Client) PrintRequestDetails() error {
 		return errors.New("no results have been produced")
 	}
 	if c.Quiet {
+		return nil
+	}
+	if c.Format == formatJSON {
 		return nil
 	}
 
@@ -572,6 +662,11 @@ func (c *Client) PrintTimingResults(u *url.URL) error {
 		return nil
 	}
 
+	if c.Format == formatJSON {
+		c.printJSONLine(c.buildTimingSummary(u))
+		return nil
+	}
+
 	switch {
 	case c.VerbosityLevel <= 0:
 		c.printTimingResultsBasic(c.Result, c.Count)
@@ -592,6 +687,15 @@ func (c *Client) PrintResponse() {
 		return
 	}
 
+	if c.Format == formatJSON {
+		c.printJSONLine(responseOutputJSON{
+			Type:      "response",
+			RPCMethod: c.RPCMethod,
+			Payload:   normalizeResponseForJSON(c.Response),
+		})
+		return
+	}
+
 	label := c.colorizeOrange("Response")
 	baseMessage := label + ": "
 
@@ -599,7 +703,7 @@ func (c *Client) PrintResponse() {
 		baseMessage = ""
 	}
 
-	if c.Format == "raw" {
+	if c.Format == formatRaw {
 		// If raw output is requested, print the raw data before trying to assert any types
 		fmt.Printf("%s%v\n", baseMessage, c.Response)
 	} else if responseMap, ok := c.Response.(map[string]any); ok {
@@ -633,10 +737,13 @@ func (c *Client) Validate() error {
 
 	c.Format = strings.TrimSpace(strings.ToLower(c.Format))
 	if c.Format == "" {
-		c.Format = "auto"
+		c.Format = formatAuto
 	}
-	if c.Format != "auto" && c.Format != "raw" {
-		return errors.New("format must be \"auto\" or \"raw\"")
+	switch c.Format {
+	case formatAuto, formatRaw, formatJSON:
+		// valid
+	default:
+		return errors.New("format must be \"auto\", \"json\", or \"raw\"")
 	}
 
 	c.ColorMode = strings.TrimSpace(strings.ToLower(c.ColorMode))
@@ -676,77 +783,6 @@ func (c *Client) Validate() error {
 		return errors.New("count must be greater than 0")
 	}
 	return nil
-}
-
-// buildRepeatedStrings returns a slice of length n where every element equals s.
-func buildRepeatedStrings(s string, n int) []string {
-	msgs := make([]string, n)
-	for i := range msgs {
-		msgs[i] = s
-	}
-	return msgs
-}
-
-// buildRepeatedAny returns a slice of length n where every element equals v.
-func buildRepeatedAny(v any, n int) []any {
-	msgs := make([]any, n)
-	for i := range msgs {
-		msgs[i] = v
-	}
-	return msgs
-}
-
-// colorWSOrange returns the text with a custom orange color.
-// The color is from the WS logo, #ff6600 is its hex code.
-func colorWSOrange(text string) string {
-	return customColor(255, 102, 0, text) //revive:disable:add-constant should allow
-}
-
-// colorTeaGreen returns the text with a custom tea green color.
-// The color has hex code #d3f9b5.
-func colorTeaGreen(text string) string {
-	return customColor(211, 249, 181, text) //revive:disable:add-constant should allow
-}
-
-// customColor returns the text with a custom RGB color.
-func customColor(r, g, b int, text string) string {
-	return fmt.Sprintf("\033[38;2;%d;%d;%dm%s\033[0m", r, g, b, text)
-}
-
-// formatPadLeft formats the duration to a string with padding on the left.
-func formatPadLeft(d time.Duration) string {
-	return fmt.Sprintf("%7dms", int(d/time.Millisecond))
-}
-
-// formatPadRight formats the duration to a string with padding on the right.
-func formatPadRight(d time.Duration) string {
-	return fmt.Sprintf("%-8s", strconv.Itoa(int(d/time.Millisecond))+"ms")
-}
-
-// handleConnectionError prints the error message and exits the program.
-func handleConnectionError(err error, address string) error {
-	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
-		return fmt.Errorf("error establishing secure WS connection to '%s': %v", address, err)
-	}
-	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
-}
-
-// parseHeaders parses repeated header arguments into an HTTP header.
-func parseHeaders(pairs []string) (http.Header, error) {
-	header := http.Header{}
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, ":", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid header format: %s", pair)
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key == "" {
-			return nil, fmt.Errorf("invalid header format: %s", pair)
-		}
-		header.Add(key, value)
-	}
-	return header, nil
 }
 
 // printTimingResultsBasic prints a concise timing summary used for verbosity level 0.
@@ -820,4 +856,116 @@ func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, lab
 		)
 	}
 	fmt.Println()
+}
+
+// buildRepeatedStrings returns a slice of length n where every element equals s.
+func buildRepeatedStrings(s string, n int) []string {
+	msgs := make([]string, n)
+	for i := range msgs {
+		msgs[i] = s
+	}
+	return msgs
+}
+
+// buildRepeatedAny returns a slice of length n where every element equals v.
+func buildRepeatedAny(v any, n int) []any {
+	msgs := make([]any, n)
+	for i := range msgs {
+		msgs[i] = v
+	}
+	return msgs
+}
+
+// colorWSOrange returns the text with a custom orange color.
+// The color is from the WS logo, #ff6600 is its hex code.
+func colorWSOrange(text string) string {
+	return customColor(255, 102, 0, text) //revive:disable:add-constant should allow
+}
+
+// colorTeaGreen returns the text with a custom tea green color.
+// The color has hex code #d3f9b5.
+func colorTeaGreen(text string) string {
+	return customColor(211, 249, 181, text) //revive:disable:add-constant should allow
+}
+
+// customColor returns the text with a custom RGB color.
+func customColor(r, g, b int, text string) string {
+	return fmt.Sprintf("\033[38;2;%d;%d;%dm%s\033[0m", r, g, b, text)
+}
+
+// formatPadLeft formats the duration to a string with padding on the left.
+func formatPadLeft(d time.Duration) string {
+	return fmt.Sprintf("%7dms", int(d/time.Millisecond))
+}
+
+// formatPadRight formats the duration to a string with padding on the right.
+func formatPadRight(d time.Duration) string {
+	return fmt.Sprintf("%-8s", strconv.Itoa(int(d/time.Millisecond))+"ms")
+}
+
+// formatDuration formats the duration.
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%dms", d/time.Millisecond)
+}
+
+// handleConnectionError prints the error message and exits the program.
+func handleConnectionError(err error, address string) error {
+	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
+		return fmt.Errorf("error establishing secure WS connection to '%s': %v", address, err)
+	}
+	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
+}
+
+func msPtr(d time.Duration) *int64 {
+	if d <= 0 {
+		return nil
+	}
+	ms := d.Milliseconds()
+	return &ms
+}
+
+func messageTypeLabel(messageType int) string {
+	switch messageType {
+	case websocket.TextMessage:
+		return "text"
+	case websocket.BinaryMessage:
+		return "binary"
+	case websocket.CloseMessage:
+		return "close"
+	case websocket.PingMessage:
+		return "ping"
+	case websocket.PongMessage:
+		return "pong"
+	default:
+		return strconv.Itoa(messageType)
+	}
+}
+
+// parseHeaders parses repeated header arguments into an HTTP header.
+func parseHeaders(pairs []string) (http.Header, error) {
+	header := http.Header{}
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid header format: %s", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" {
+			return nil, fmt.Errorf("invalid header format: %s", pair)
+		}
+		header.Add(key, value)
+	}
+	return header, nil
+}
+
+// tickerC returns a channel that emits ticks from the provided ticker.
+func tickerC(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
 }
