@@ -5,12 +5,16 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"net/url"
-	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
 )
 
-// JSON helpers
+const (
+	formatAuto = "auto"
+	formatRaw  = "raw"
+	formatJSON = "json"
+)
 
 type timingSummaryJSON struct {
 	Type      string              `json:"type"`
@@ -141,17 +145,16 @@ func buildTimingTimeline(result *wsstat.Result) *timingTimelineJSON {
 	return &timeline
 }
 
-// formatJSONIfPossible formats the JSON data if possible.
 func formatJSONIfPossible(data []byte) string {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
 		return ""
 	}
 	if trimmed[0] != '{' && trimmed[0] != '[' {
 		return ""
 	}
 	var anyJSON any
-	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
+	if err := json.Unmarshal(trimmed, &anyJSON); err != nil {
 		return ""
 	}
 	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
@@ -193,4 +196,21 @@ func parseJSONPayload(data []byte) (any, bool) {
 		return nil, false
 	}
 	return payload, true
+}
+
+func messageTypeLabel(messageType int) string {
+	switch messageType {
+	case websocket.TextMessage:
+		return "text"
+	case websocket.BinaryMessage:
+		return "binary"
+	case websocket.CloseMessage:
+		return "close"
+	case websocket.PingMessage:
+		return "ping"
+	case websocket.PongMessage:
+		return "pong"
+	default:
+		return ""
+	}
 }
