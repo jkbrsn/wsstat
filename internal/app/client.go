@@ -1,5 +1,5 @@
-// Package app measures utilizes the wsstat package to measure to construct a
-// client that measures the latency of a WebSocket connection.
+// Package app measures utilizes the wsstat package to measure the latency of a WebSocket
+// connection and print the results.
 package app
 
 import (
