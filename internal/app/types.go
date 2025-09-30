@@ -16,6 +16,12 @@ const (
 	formatJSON = "json"
 )
 
+// MeasurementResult holds the outcome of a WebSocket measurement operation
+type MeasurementResult struct {
+	Result   *wsstat.Result // Timing and connection details
+	Response any            // Response payload (type varies by message type)
+}
+
 type timingSummaryJSON struct {
 	Type      string              `json:"type"`
 	Mode      string              `json:"mode"`

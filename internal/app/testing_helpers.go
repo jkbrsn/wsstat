@@ -177,4 +177,3 @@ func asSlice(t *testing.T, value any) []any {
 	require.Truef(t, ok, "expected []any, got %T", value)
 	return result
 }
-

@@ -1433,76 +1433,77 @@ func main() {
 
 Use this checklist to track progress during implementation:
 
-### File Creation
-- [ ] Create `internal/app/measurement.go`
-- [ ] Create `internal/app/subscription.go`
-- [ ] Create `internal/app/output.go`
-- [ ] Create `internal/app/types.go`
-- [ ] Create `internal/app/formatting.go`
-- [ ] Create `internal/app/color/color.go`
-- [ ] Create `internal/app/testing_helpers.go`
-- [ ] Create `internal/app/client_measurement_test.go`
-- [ ] Create `internal/app/client_subscription_test.go`
-- [ ] Create `internal/app/client_output_test.go`
-- [ ] Create `internal/app/client_validation_test.go`
+### Phase 1: File Creation & Code Migration ✅ COMPLETE
+- [x] Create `internal/app/measurement.go`
+- [x] Create `internal/app/subscription.go`
+- [x] Create `internal/app/output.go`
+- [x] Create `internal/app/types.go`
+- [x] Create `internal/app/formatting.go`
+- [x] Create `internal/app/color/color.go`
+- [x] Create `internal/app/testing_helpers.go`
+- [x] Create `internal/app/client_measurement_test.go`
+- [x] Create `internal/app/client_subscription_test.go`
+- [x] Create `internal/app/client_output_test.go`
+- [x] Create `internal/app/client_validation_test.go`
+- [x] Move Client struct to `client.go` (fields now private - see Phase 2)
+- [x] Move measurement functions to `measurement.go`
+- [x] Move subscription functions to `subscription.go`
+- [x] Move output functions to `output.go`
+- [x] Move JSON types to `types.go`
+- [x] Move formatting helpers to `formatting.go`
+- [x] Move color functions to `color/color.go`
+- [x] Move test fixtures to `testing_helpers.go`
+- [x] Split test cases into appropriate test files
 
-### Code Migration
-- [ ] Move Client struct to `client.go` and make fields private
-- [ ] Move measurement functions to `measurement.go`
-- [ ] Move subscription functions to `subscription.go`
-- [ ] Move output functions to `output.go`
-- [ ] Move JSON types to `types.go`
-- [ ] Move formatting helpers to `formatting.go`
-- [ ] Move color functions to `color/color.go`
-- [ ] Move test fixtures to `testing_helpers.go`
-- [ ] Split test cases into appropriate test files
+### Phase 2: API Design Changes ✅ COMPLETE
+- [x] Add `MeasurementResult` type to `types.go`
+- [x] Make Client struct fields private
+- [x] Implement functional options in `client.go`
+- [x] Add `NewClient()` factory function
+- [x] Add accessor methods for Client fields
+- [x] Update `MeasureLatency` to accept context and return result
+- [x] Update all measurement functions to accept context
+- [x] Add context-aware wrappers to `wsstat/wrappers.go`
+- [ ] Update Print methods to accept `io.Writer` (deferred - not in original Phase 2 scope)
+- [x] Update Print methods to accept `MeasurementResult`
+- [x] Update `cmd/wsstat/main.go` to use new API (functional options + context)
 
-### API Changes
-- [ ] Add `MeasurementResult` type to `types.go`
-- [ ] Implement functional options in `client.go`
-- [ ] Add `NewClient()` factory function
-- [ ] Update `MeasureLatency` to accept context and return result
-- [ ] Update all measurement functions to accept context
-- [ ] Add context-aware wrappers to `wsstat/wrappers.go`
-- [ ] Update Print methods to accept `io.Writer`
-- [ ] Update Print methods to accept `MeasurementResult`
-
-### Error Handling
-- [ ] Update `printJSONLine` to return error
+### Phase 3: Error Handling (Not Started)
+- [ ] Update `printJSONLine` to return error (currently swallows errors)
 - [ ] Update `formatJSONIfPossible` to return error
-- [ ] Update all Print methods to return errors
+- [x] Update all Print methods to return errors (already done)
 - [ ] Update all callers to handle errors properly
 - [ ] Refactor `handleConnectionError` to use `errors.As`
 
-### Code Quality
-- [ ] Refactor `postProcessTextResponse` to pure functions
-- [ ] Move templates to method-local constants
+### Phase 3: Code Quality (Partially Done)
+- [x] Refactor `postProcessTextResponse` to pure functions
+- [ ] Move templates to method-local constants (currently package-level vars)
 - [ ] Replace `buildRepeatedStrings/Any` with generic `repeat`
-- [ ] Implement color package with RGB type
+- [x] Implement color package with RGB type
 - [ ] Add schema version to all JSON structs
 - [ ] Update all JSON builders to set schema version
 
-### Testing
+### Testing (Minimal Coverage)
 - [ ] Add tests for `measureText`
 - [ ] Add tests for `measureJSON`
 - [ ] Add tests for `measurePing`
-- [ ] Add tests for `processTextResponse`
+- [x] Add tests for `processTextResponse` (renamed from postProcessTextResponse)
 - [ ] Add tests for `tryDecodeJSONRPC`
 - [ ] Add comprehensive validation combination tests
 - [ ] Add tests for `openSubscription`
 - [ ] Add tests for `subscriptionPayload`
 - [ ] Add tests for color detection logic
 - [ ] Add tests for error handling paths
-- [ ] Update existing tests to use new API
+- [x] Update existing tests to use new API
 
 ### Integration
-- [ ] Update `cmd/wsstat/main.go` to use new API
+- [x] Update `cmd/wsstat/main.go` to use new API
 - [ ] Update any example code
-- [ ] Run `make lint` and fix issues
-- [ ] Run `make test` and ensure all pass
+- [x] Run `make lint` and fix issues
+- [x] Run `make test` and ensure all pass
 - [ ] Build and manually test CLI
 
-### Documentation
+### Documentation (Not Started)
 - [ ] Update function comments for exported functions
 - [ ] Update package comments
 - [ ] Document breaking changes

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,74 +12,123 @@ import (
 )
 
 // measureText runs the text-message latency measurement flow.
-func (c *Client) measureText(target *url.URL, header http.Header) error {
-	msgs := buildRepeatedStrings(c.TextMessage, c.Count)
-	var err error
-	c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
+func (c *Client) measureText(
+	ctx context.Context,
+	target *url.URL,
+	header http.Header,
+) (*MeasurementResult, error) {
+	msgs := buildRepeatedStrings(c.textMessage, c.count)
+
+	result, rawResponses, err := wsstat.MeasureLatencyBurstWithContext(ctx, target, msgs, header)
 	if err != nil {
-		return handleConnectionError(err, target.String())
+		return nil, handleConnectionError(err, target.String())
 	}
-	return c.postProcessTextResponse()
+
+	var rawResponse any = rawResponses
+	if len(rawResponses) > 0 {
+		rawResponse = rawResponses[0]
+	}
+
+	processedResponse, err := processTextResponse(rawResponse, c.format)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MeasurementResult{
+		Result:   result,
+		Response: processedResponse,
+	}, nil
 }
 
 // measureJSON runs the JSON-RPC latency measurement flow.
-func (c *Client) measureJSON(target *url.URL, header http.Header) error {
+func (c *Client) measureJSON(
+	ctx context.Context,
+	target *url.URL,
+	header http.Header,
+) (*MeasurementResult, error) {
 	msg := struct {
 		Method     string `json:"method"`
 		ID         string `json:"id"`
 		RPCVersion string `json:"jsonrpc"`
 	}{
-		Method:     c.RPCMethod,
+		Method:     c.rpcMethod,
 		ID:         "1",
 		RPCVersion: "2.0",
 	}
-	msgs := buildRepeatedAny(msg, c.Count)
-	var err error
-	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
+	msgs := buildRepeatedAny(msg, c.count)
+
+	result, responses, err := wsstat.MeasureLatencyJSONBurstWithContext(ctx, target, msgs, header)
 	if err != nil {
-		return handleConnectionError(err, target.String())
+		return nil, handleConnectionError(err, target.String())
 	}
-	return nil
+
+	var response any
+	if len(responses) > 0 {
+		response = responses[0]
+	}
+
+	return &MeasurementResult{
+		Result:   result,
+		Response: response,
+	}, nil
 }
 
 // measurePing runs the ping latency measurement flow.
-func (c *Client) measurePing(target *url.URL, header http.Header) error {
-	var err error
-	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Count, header)
+func (c *Client) measurePing(
+	ctx context.Context,
+	target *url.URL,
+	header http.Header,
+) (*MeasurementResult, error) {
+	result, err := wsstat.MeasureLatencyPingBurstWithContext(ctx, target, c.count, header)
 	if err != nil {
-		return handleConnectionError(err, target.String())
+		return nil, handleConnectionError(err, target.String())
 	}
-	return nil
+
+	return &MeasurementResult{
+		Result:   result,
+		Response: nil,
+	}, nil
 }
 
-// postProcessTextResponse keeps behavior identical to the original implementation while allowing
-// plain-text echoes:
-// - pick the first element if response is []string and non-empty
-// - if Format is not raw and response is a JSON-RPC payload, decode into map[string]any
-func (c *Client) postProcessTextResponse() error {
-	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
-		c.Response = responseArray[0]
+// processTextResponse transforms a raw text response based on format settings
+func processTextResponse(response any, format string) (any, error) {
+	processedResponse := response
+	if responseArray, ok := response.([]string); ok && len(responseArray) > 0 {
+		processedResponse = responseArray[0]
 	}
-	if c.Format != formatRaw {
-		responseStr, ok := c.Response.(string)
-		if !ok {
-			return nil
-		}
 
-		trimmed := strings.TrimSpace(responseStr)
-		if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
-			return nil
-		}
-
-		decodedMessage := make(map[string]any)
-		if err := json.Unmarshal([]byte(responseStr), &decodedMessage); err != nil {
-			return nil
-		}
-
-		if _, isJSONRPC := decodedMessage["jsonrpc"]; !isJSONRPC {
-			return nil
-		}
-		c.Response = decodedMessage
+	if format == formatRaw {
+		return processedResponse, nil
 	}
-	return nil
+
+	responseStr, ok := processedResponse.(string)
+	if !ok {
+		return processedResponse, nil
+	}
+
+	jsonResp, err := tryDecodeJSONRPC(responseStr)
+	if err != nil {
+		return processedResponse, nil
+	}
+
+	return jsonResp, nil
+}
+
+// tryDecodeJSONRPC attempts to parse a string as JSON-RPC
+func tryDecodeJSONRPC(s string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return nil, errors.New("not JSON")
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return nil, err
+	}
+
+	if _, isJSONRPC := decoded["jsonrpc"]; !isJSONRPC {
+		return nil, errors.New("not JSON-RPC")
+	}
+
+	return decoded, nil
 }

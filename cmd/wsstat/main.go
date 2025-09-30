@@ -117,20 +117,20 @@ func main() {
 
 	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
 
-	ws := app.Client{
-		Count:           effectiveCount,
-		Headers:         headerArguments.Values(),
-		RPCMethod:       *rpcMethod,
-		TextMessage:     *textMessage,
-		Format:          strings.ToLower(*formatOption),
-		ColorMode:       strings.ToLower(*colorArg),
-		Quiet:           *quiet,
-		VerbosityLevel:  verbosityLevel.Value(),
-		Subscribe:       *subscribe,
-		SubscribeOnce:   *subscribeOnce,
-		Buffer:          *bufferSize,
-		SummaryInterval: *summaryInterval,
-	}
+	ws := app.NewClient(
+		app.WithCount(effectiveCount),
+		app.WithHeaders(headerArguments.Values()),
+		app.WithRPCMethod(*rpcMethod),
+		app.WithTextMessage(*textMessage),
+		app.WithFormat(strings.ToLower(*formatOption)),
+		app.WithColorMode(strings.ToLower(*colorArg)),
+		app.WithQuiet(*quiet),
+		app.WithVerbosity(verbosityLevel.Value()),
+		app.WithSubscription(*subscribe),
+		app.WithSubscriptionOnce(*subscribeOnce),
+		app.WithBuffer(*bufferSize),
+		app.WithSummaryInterval(*summaryInterval),
+	)
 
 	err = ws.Validate()
 	if err != nil {
@@ -160,23 +160,26 @@ func main() {
 		return
 	}
 
-	err = ws.MeasureLatency(targetURL)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	result, err := ws.MeasureLatency(ctx, targetURL)
 	if err != nil {
 		fmt.Printf("Error measuring latency: %v\n", err)
 		os.Exit(1)
 	}
 
 	if !*quiet {
-		if err = ws.PrintRequestDetails(); err != nil {
+		if err = ws.PrintRequestDetails(result); err != nil {
 			fmt.Printf("Error printing request details: %v\n", err)
 			os.Exit(1)
 		}
 
-		if err = ws.PrintTimingResults(targetURL); err != nil {
+		if err = ws.PrintTimingResults(targetURL, result); err != nil {
 			fmt.Printf("Error printing timing results: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	ws.PrintResponse()
+	ws.PrintResponse(result)
 }

@@ -3,6 +3,7 @@
 package wsstat
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -175,4 +176,152 @@ func MeasureLatencyPingBurst(
 	ws.Close()
 
 	return ws.result, nil
+}
+
+// MeasureLatencyBurstWithContext measures latency with cancellation support
+func MeasureLatencyBurstWithContext(
+	ctx context.Context,
+	targetURL *url.URL,
+	msgs []string,
+	customHeaders http.Header,
+) (*Result, []string, error) {
+	ws := New()
+	defer ws.Close()
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
+		return nil, nil, err
+	}
+
+	type result struct {
+		responses []string
+		err       error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		responses := make([]string, 0, len(msgs))
+		for _, msg := range msgs {
+			ws.WriteMessage(websocket.TextMessage, []byte(msg))
+			_, p, err := ws.ReadMessage()
+			if err != nil {
+				resultCh <- result{err: fmt.Errorf("failed to read message: %w", err)}
+				return
+			}
+			responses = append(responses, string(p))
+		}
+		resultCh <- result{responses: responses}
+	}()
+
+	select {
+	case <-ctx.Done():
+		ws.Close()
+		return nil, nil, ctx.Err()
+	case r := <-resultCh:
+		if r.err != nil {
+			return nil, nil, r.err
+		}
+		ws.Close()
+		return ws.result, r.responses, nil
+	}
+}
+
+// MeasureLatencyJSONBurstWithContext measures latency with cancellation support
+func MeasureLatencyJSONBurstWithContext(
+	ctx context.Context,
+	targetURL *url.URL,
+	v []any,
+	customHeaders http.Header,
+) (*Result, []any, error) {
+	ws := New()
+	defer ws.Close()
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
+		return nil, nil, err
+	}
+
+	type result struct {
+		responses []any
+		err       error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		responses := make([]any, 0, len(v))
+		for _, msg := range v {
+			ws.WriteMessageJSON(msg)
+			resp, err := ws.ReadMessageJSON()
+			if err != nil {
+				resultCh <- result{err: fmt.Errorf("failed to read message: %w", err)}
+				return
+			}
+			responses = append(responses, resp)
+		}
+		resultCh <- result{responses: responses}
+	}()
+
+	select {
+	case <-ctx.Done():
+		ws.Close()
+		return nil, nil, ctx.Err()
+	case r := <-resultCh:
+		if r.err != nil {
+			return nil, nil, r.err
+		}
+		ws.Close()
+		return ws.result, r.responses, nil
+	}
+}
+
+// MeasureLatencyPingBurstWithContext measures latency with cancellation support
+func MeasureLatencyPingBurstWithContext(
+	ctx context.Context,
+	targetURL *url.URL,
+	pingCount int,
+	customHeaders http.Header,
+) (*Result, error) {
+	ws := New()
+	defer ws.Close()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := ws.Dial(targetURL, customHeaders); err != nil {
+		return nil, err
+	}
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		for range pingCount {
+			ws.WriteMessage(websocket.PingMessage, nil)
+		}
+		for range pingCount {
+			if err := ws.ReadPong(); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		ws.Close()
+		return nil, ctx.Err()
+	case err := <-errCh:
+		if err != nil {
+			return nil, err
+		}
+		ws.Close()
+		return ws.result, nil
+	}
 }

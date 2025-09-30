@@ -15,11 +15,11 @@ import (
 
 // handleSubscriptionTick handles a subscription tick.
 func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
-	if c.Result == nil {
+	if c.result == nil {
 		return
 	}
-	c.Result = wsClient.ExtractResult()
-	if !c.Quiet {
+	c.result = wsClient.ExtractResult()
+	if !c.quiet {
 		c.printSubscriptionSummary(target)
 	}
 }
@@ -29,7 +29,7 @@ func (c *Client) openSubscription(
 	ctx context.Context,
 	target *url.URL,
 ) (*wsstat.WSStat, *wsstat.Subscription, error) {
-	header, err := parseHeaders(c.Headers)
+	header, err := parseHeaders(c.headers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -50,8 +50,8 @@ func (c *Client) openSubscription(
 		MessageType: messageType,
 		Payload:     payload,
 	}
-	if c.Buffer > 0 {
-		opts.Buffer = c.Buffer
+	if c.buffer > 0 {
+		opts.Buffer = c.buffer
 	}
 
 	subscription, err := wsClient.Subscribe(ctx, opts)
@@ -60,7 +60,7 @@ func (c *Client) openSubscription(
 		return nil, nil, err
 	}
 
-	c.Result = wsClient.ExtractResult()
+	c.result = wsClient.ExtractResult()
 	return wsClient, subscription, nil
 }
 
@@ -72,13 +72,13 @@ func (c *Client) runSubscriptionLoop(
 	target *url.URL,
 ) error {
 	var ticker *time.Ticker
-	if c.SummaryInterval > 0 {
-		ticker = time.NewTicker(c.SummaryInterval)
+	if c.summaryInterval > 0 {
+		ticker = time.NewTicker(c.summaryInterval)
 		defer ticker.Stop()
 	}
 
 	messageIndex := 0
-	limit := c.Count
+	limit := c.count
 
 	for {
 		select {
@@ -99,7 +99,7 @@ func (c *Client) runSubscriptionLoop(
 				continue
 			}
 			messageIndex++
-			c.Result = wsClient.ExtractResult()
+			c.result = wsClient.ExtractResult()
 			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
-			if c.Format != formatJSON {
+			if c.format != formatJSON {
 				fmt.Println()
 			}
 		}
@@ -120,16 +120,16 @@ func (c *Client) runSubscriptionLoop(
 
 // subscriptionPayload returns the payload to be sent to the server.
 func (c *Client) subscriptionPayload() (int, []byte, error) {
-	if c.TextMessage != "" {
-		return websocket.TextMessage, []byte(c.TextMessage), nil
+	if c.textMessage != "" {
+		return websocket.TextMessage, []byte(c.textMessage), nil
 	}
-	if c.RPCMethod != "" {
+	if c.rpcMethod != "" {
 		msg := struct {
 			Method     string `json:"method"`
 			ID         string `json:"id"`
 			RPCVersion string `json:"jsonrpc"`
 		}{
-			Method:     c.RPCMethod,
+			Method:     c.rpcMethod,
 			ID:         "1",
 			RPCVersion: "2.0",
 		}
@@ -155,7 +155,7 @@ func (c *Client) subscriptionMessageJSON(
 		Type:    "subscription_message",
 		Payload: payload,
 	}
-	if !c.Quiet {
+	if !c.quiet {
 		output.Index = index
 		output.Timestamp = msg.Received.Format(time.RFC3339Nano)
 		output.Size = msg.Size
@@ -166,7 +166,7 @@ func (c *Client) subscriptionMessageJSON(
 
 // subscriptionSummaryJSON builds a subscription summary.
 func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSON {
-	result := c.Result
+	result := c.result
 	summary := subscriptionSummaryJSON{
 		Type:          "subscription_summary",
 		Target:        buildTimingTarget(result, target),
@@ -210,13 +210,13 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 	}
 	defer wsClient.Close()
 
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
+	if !c.quiet {
+		if err := c.PrintRequestDetails(nil); err != nil {
 			subscription.Cancel()
 			<-subscription.Done()
 			return err
 		}
-		if c.Format != formatJSON {
+		if c.format != formatJSON {
 			fmt.Println()
 			fmt.Println(c.colorizeOrange("Streaming subscription events"))
 		}
@@ -227,9 +227,9 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 
 // StreamSubscriptionOnce establishes a subscription and exits after the first message.
 func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
-	originalCount := c.Count
-	c.Count = 1
-	defer func() { c.Count = originalCount }()
+	originalCount := c.count
+	c.count = 1
+	defer func() { c.count = originalCount }()
 
 	wsClient, subscription, err := c.openSubscription(ctx, target)
 	if err != nil {
@@ -237,15 +237,15 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 	}
 	defer wsClient.Close()
 
-	if !c.Quiet {
-		if err := c.PrintRequestDetails(); err != nil {
+	if !c.quiet {
+		if err := c.PrintRequestDetails(nil); err != nil {
 			subscription.Cancel()
 			<-subscription.Done()
 			return err
 		}
 	}
 
-	if c.Format != formatJSON {
+	if c.format != formatJSON {
 		fmt.Println()
 	}
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)

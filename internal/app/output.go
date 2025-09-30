@@ -42,17 +42,16 @@ var (
 `
 )
 
-// buildTimingSummary builds a timing summary.
-func (c *Client) buildTimingSummary(u *url.URL) timingSummaryJSON {
-	result := c.Result
+// buildTimingSummaryFromResult builds a timing summary from a result.
+func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result) timingSummaryJSON {
 	mode := "single"
-	if c.Count > 1 || (result != nil && result.MessageCount > 1) {
+	if c.count > 1 || (result != nil && result.MessageCount > 1) {
 		mode = "mean"
 	}
 	summary := timingSummaryJSON{
 		Type:      "timing",
 		Mode:      mode,
-		Counts:    timingCountsJSON{Requested: c.Count},
+		Counts:    timingCountsJSON{Requested: c.count},
 		Durations: timingDurationsJSON{},
 	}
 	if result != nil {
@@ -74,7 +73,7 @@ func (c *Client) buildTimingSummary(u *url.URL) timingSummaryJSON {
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
 // detection.
 func (c *Client) colorEnabled() bool {
-	switch c.ColorMode {
+	switch c.colorMode {
 	case "always":
 		return true
 	case "never":
@@ -120,19 +119,19 @@ func (*Client) printJSONLine(payload any) {
 
 // printSubscriptionMessage prints a subscription message.
 func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
-	if c.Format == formatJSON {
+	if c.format == formatJSON {
 		c.printJSONLine(c.subscriptionMessageJSON(index, msg))
 		return nil
 	}
 
 	payload := string(msg.Data)
-	if c.Quiet || c.Format == formatRaw {
+	if c.quiet || c.format == formatRaw {
 		fmt.Println(payload)
 		return nil
 	}
 
 	timestamp := msg.Received.Format(time.RFC3339Nano)
-	if c.VerbosityLevel >= 1 {
+	if c.verbosityLevel >= 1 {
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
 		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
 			fmt.Println(formatted)
@@ -153,36 +152,36 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 
 // printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL) {
-	if c.Result == nil {
+	if c.result == nil {
 		return
 	}
 
-	if c.Format == formatJSON {
+	if c.format == formatJSON {
 		c.printJSONLine(c.subscriptionSummaryJSON(target))
-		if c.VerbosityLevel >= 1 {
-			_ = c.PrintTimingResults(target)
+		if c.verbosityLevel >= 1 {
+			_ = c.PrintTimingResults(target, nil)
 		}
 		return
 	}
 
 	fmt.Println()
 	fmt.Println(c.colorizeOrange("Subscription summary"))
-	if c.Result.SubscriptionFirstEvent > 0 {
-		fmt.Printf("  First event latency: %s\n", formatDuration(c.Result.SubscriptionFirstEvent))
+	if c.result.SubscriptionFirstEvent > 0 {
+		fmt.Printf("  First event latency: %s\n", formatDuration(c.result.SubscriptionFirstEvent))
 	}
-	if c.Result.SubscriptionLastEvent > 0 {
-		fmt.Printf("  Last event latency: %s\n", formatDuration(c.Result.SubscriptionLastEvent))
+	if c.result.SubscriptionLastEvent > 0 {
+		fmt.Printf("  Last event latency: %s\n", formatDuration(c.result.SubscriptionLastEvent))
 	}
-	fmt.Printf("  Total messages: %d\n", c.Result.MessageCount)
+	fmt.Printf("  Total messages: %d\n", c.result.MessageCount)
 
-	if len(c.Result.Subscriptions) > 0 {
-		ids := make([]string, 0, len(c.Result.Subscriptions))
-		for id := range c.Result.Subscriptions {
+	if len(c.result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(c.result.Subscriptions))
+		for id := range c.result.Subscriptions {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
 		for _, id := range ids {
-			stats := c.Result.Subscriptions[id]
+			stats := c.result.Subscriptions[id]
 			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
 			if stats.MeanInterArrival > 0 {
 				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
@@ -194,8 +193,8 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 		}
 	}
 
-	if c.VerbosityLevel >= 1 {
-		_ = c.PrintTimingResults(target)
+	if c.verbosityLevel >= 1 {
+		_ = c.PrintTimingResults(target, nil)
 	}
 }
 
@@ -270,40 +269,40 @@ func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, lab
 }
 
 // printVerbose prints the request details with verbosity level 1.
-func (c *Client) printVerbose() {
-	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), c.Result.URL.Hostname())
-	for _, values := range c.Result.IPs {
+func (c *Client) printVerbose(result *wsstat.Result) {
+	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), result.URL.Hostname())
+	for _, values := range result.IPs {
 		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
 	}
-	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), c.Result.MessageCount)
-	for key, values := range c.Result.RequestHeaders {
+	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), result.MessageCount)
+	for key, values := range result.RequestHeaders {
 		if key == "Sec-WebSocket-Version" {
 			fmt.Printf(printValueTemp,
 				c.colorizeOrange("WS version"), strings.Join(values, ", "))
 		}
 	}
-	if c.Result.TLSState != nil {
+	if result.TLSState != nil {
 		fmt.Printf(printValueTemp,
-			c.colorizeOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
+			c.colorizeOrange("TLS version"), tls.VersionName(result.TLSState.Version))
 	}
 }
 
 // printVVerbose prints the request details with verbosity level 2.
-func (c *Client) printVVerbose() {
+func (c *Client) printVVerbose(result *wsstat.Result) {
 	fmt.Println(c.colorizeOrange("Target"))
-	fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), c.Result.URL.Hostname())
-	for _, ip := range c.Result.IPs {
+	fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), result.URL.Hostname())
+	for _, ip := range result.IPs {
 		fmt.Printf(printIndentedValueTemp, c.colorizeGreen("IP"), ip)
 	}
-	fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), c.Result.MessageCount)
+	fmt.Printf("  %s: %d\n", c.colorizeGreen("Messages sent"), result.MessageCount)
 	fmt.Println()
-	if c.Result.TLSState != nil {
+	if result.TLSState != nil {
 		fmt.Println(c.colorizeOrange("TLS"))
 		fmt.Printf(printIndentedValueTemp,
-			c.colorizeGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
+			c.colorizeGreen("Version"), tls.VersionName(result.TLSState.Version))
 		fmt.Printf(printIndentedValueTemp,
-			c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
-		for i, cert := range c.Result.TLSState.PeerCertificates {
+			c.colorizeGreen("Cipher Suite"), tls.CipherSuiteName(result.TLSState.CipherSuite))
+		for i, cert := range result.TLSState.PeerCertificates {
 			fmt.Printf("  %s: %d\n", c.colorizeGreen("Certificate"), i+1)
 			fmt.Printf("    Subject: %s\n", cert.Subject)
 			fmt.Printf("    Issuer: %s\n", cert.Issuer)
@@ -313,39 +312,48 @@ func (c *Client) printVVerbose() {
 		fmt.Println()
 	}
 	fmt.Println(c.colorizeOrange("Request headers"))
-	for key, values := range c.Result.RequestHeaders {
+	for key, values := range result.RequestHeaders {
 		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
 	}
 	fmt.Println(c.colorizeOrange("Response headers"))
-	for key, values := range c.Result.ResponseHeaders {
+	for key, values := range result.ResponseHeaders {
 		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
 	}
 }
 
 // PrintRequestDetails prints the results of the Client, with verbosity based on the flags
 // passed to the program. If no results have been produced yet, the function errors.
-func (c *Client) PrintRequestDetails() error {
-	if c.Result == nil {
+func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
+	// Support old API for backward compatibility
+	effectiveResult := result
+	if effectiveResult == nil {
+		if c.result == nil {
+			return errors.New("no results have been produced")
+		}
+		effectiveResult = &MeasurementResult{Result: c.result, Response: c.response}
+	}
+
+	if effectiveResult.Result == nil {
 		return errors.New("no results have been produced")
 	}
-	if c.Quiet {
+	if c.quiet {
 		return nil
 	}
-	if c.Format == formatJSON {
+	if c.format == formatJSON {
 		return nil
 	}
 
 	fmt.Println()
 
 	switch {
-	case c.VerbosityLevel >= 2:
-		c.printVVerbose()
-	case c.VerbosityLevel >= 1:
-		c.printVerbose()
+	case c.verbosityLevel >= 2:
+		c.printVVerbose(effectiveResult.Result)
+	case c.verbosityLevel >= 1:
+		c.printVerbose(effectiveResult.Result)
 	default:
-		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), c.Result.URL.Hostname())
-		if len(c.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), c.Result.IPs[0])
+		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), effectiveResult.Result.URL.Hostname())
+		if len(effectiveResult.Result.IPs) > 0 {
+			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), effectiveResult.Result.IPs[0])
 		}
 	}
 
@@ -353,16 +361,22 @@ func (c *Client) PrintRequestDetails() error {
 }
 
 // PrintResponse prints the response to the terminal if there is one, otherwise does nothing.
-func (c *Client) PrintResponse() {
-	if c.Response == nil {
+func (c *Client) PrintResponse(result *MeasurementResult) {
+	// Support old API for backward compatibility
+	response := c.response
+	if result != nil && result.Response != nil {
+		response = result.Response
+	}
+
+	if response == nil {
 		return
 	}
 
-	if c.Format == formatJSON {
+	if c.format == formatJSON {
 		c.printJSONLine(responseOutputJSON{
 			Type:      "response",
-			RPCMethod: c.RPCMethod,
-			Payload:   normalizeResponseForJSON(c.Response),
+			RPCMethod: c.rpcMethod,
+			Payload:   normalizeResponseForJSON(response),
 		})
 		return
 	}
@@ -370,14 +384,14 @@ func (c *Client) PrintResponse() {
 	label := c.colorizeOrange("Response")
 	baseMessage := label + ": "
 
-	if c.Quiet {
+	if c.quiet {
 		baseMessage = ""
 	}
 
-	if c.Format == formatRaw {
-		fmt.Printf("%s%v\n", baseMessage, c.Response)
-	} else if responseMap, ok := c.Response.(map[string]any); ok {
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.RPCMethod != "" {
+	if c.format == formatRaw {
+		fmt.Printf("%s%v\n", baseMessage, response)
+	} else if responseMap, ok := response.(map[string]any); ok {
+		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.rpcMethod != "" {
 			responseJSON, err := json.Marshal(responseMap)
 			if err != nil {
 				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
@@ -386,37 +400,46 @@ func (c *Client) PrintResponse() {
 		} else {
 			fmt.Printf("%s%v\n", baseMessage, responseMap)
 		}
-	} else if responseArray, ok := c.Response.([]any); ok {
+	} else if responseArray, ok := response.([]any); ok {
 		fmt.Printf("%s%v\n", baseMessage, responseArray)
-	} else if responseBytes, ok := c.Response.([]byte); ok {
+	} else if responseBytes, ok := response.([]byte); ok {
 		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
 	}
 }
 
 // PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *Client) PrintTimingResults(u *url.URL) error {
-	if c.Result == nil {
+func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error {
+	// Support old API for backward compatibility
+	effectiveResult := result
+	if effectiveResult == nil {
+		if c.result == nil {
+			return errors.New("no results have been produced")
+		}
+		effectiveResult = &MeasurementResult{Result: c.result, Response: c.response}
+	}
+
+	if effectiveResult.Result == nil {
 		return errors.New("no results have been produced")
 	}
 
-	if c.Quiet {
+	if c.quiet {
 		return nil
 	}
 
-	if c.Format == formatJSON {
-		c.printJSONLine(c.buildTimingSummary(u))
+	if c.format == formatJSON {
+		c.printJSONLine(c.buildTimingSummaryFromResult(u, effectiveResult.Result))
 		return nil
 	}
 
 	switch {
-	case c.VerbosityLevel <= 0:
-		c.printTimingResultsBasic(c.Result, c.Count)
+	case c.verbosityLevel <= 0:
+		c.printTimingResultsBasic(effectiveResult.Result, c.count)
 	default:
 		rttLabel := "Message RTT"
-		if c.Count > 1 || c.Result.MessageCount > 1 {
+		if c.count > 1 || effectiveResult.Result.MessageCount > 1 {
 			rttLabel = "Mean Message RTT"
 		}
-		c.printTimingResultsTiered(c.Result, u, rttLabel)
+		c.printTimingResultsTiered(effectiveResult.Result, u, rttLabel)
 	}
 
 	return nil
