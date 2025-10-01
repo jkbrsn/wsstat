@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
 
 	"github.com/gorilla/websocket"
@@ -14,6 +16,9 @@ const (
 	formatAuto = "auto"
 	formatRaw  = "raw"
 	formatJSON = "json"
+
+	// JSONSchemaVersion is the schema version for JSON output
+	JSONSchemaVersion = "1.0"
 )
 
 // MeasurementResult holds the outcome of a WebSocket measurement operation
@@ -23,6 +28,7 @@ type MeasurementResult struct {
 }
 
 type timingSummaryJSON struct {
+	Schema    string              `json:"schema_version"`
 	Type      string              `json:"type"`
 	Mode      string              `json:"mode"`
 	Target    *timingTargetJSON   `json:"target,omitempty"`
@@ -68,12 +74,14 @@ type timingTimelineJSON struct {
 }
 
 type responseOutputJSON struct {
+	Schema    string `json:"schema_version"`
 	Type      string `json:"type"`
 	RPCMethod string `json:"rpc_method,omitempty"`
 	Payload   any    `json:"payload,omitempty"`
 }
 
 type subscriptionSummaryJSON struct {
+	Schema        string                  `json:"schema_version"`
 	Type          string                  `json:"type"`
 	Target        *timingTargetJSON       `json:"target,omitempty"`
 	FirstEventMs  *int64                  `json:"first_event_ms,omitempty"`
@@ -93,6 +101,7 @@ type subscriptionEntryJSON struct {
 }
 
 type subscriptionMessageJSON struct {
+	Schema      string `json:"schema_version"`
 	Type        string `json:"type"`
 	Index       int    `json:"index,omitempty"`
 	Timestamp   string `json:"timestamp,omitempty"`
@@ -151,23 +160,23 @@ func buildTimingTimeline(result *wsstat.Result) *timingTimelineJSON {
 	return &timeline
 }
 
-func formatJSONIfPossible(data []byte) string {
+func formatJSONIfPossible(data []byte) (string, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return ""
+		return "", errors.New("empty data")
 	}
 	if trimmed[0] != '{' && trimmed[0] != '[' {
-		return ""
+		return "", errors.New("not JSON")
 	}
 	var anyJSON any
 	if err := json.Unmarshal(trimmed, &anyJSON); err != nil {
-		return ""
+		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("failed to format JSON: %w", err)
 	}
-	return string(pretty)
+	return string(pretty), nil
 }
 
 func normalizeResponseForJSON(value any) any {

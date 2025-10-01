@@ -44,9 +44,9 @@ func TestFormatPadding(t *testing.T) {
 func TestHandleConnectionError(t *testing.T) {
 	tlsErr := errors.New("tls: first record does not look like a TLS handshake")
 	msg := handleConnectionError(tlsErr, "wss://example.com").Error()
-	assert.Contains(t, msg, "secure WS connection")
+	assert.Contains(t, msg, "secure WebSocket connection")
 
 	genErr := errors.New("something went wrong")
 	msg2 := handleConnectionError(genErr, "ws://example.com").Error()
-	assert.NotContains(t, msg2, "secure WS connection")
+	assert.NotContains(t, msg2, "secure WebSocket connection")
 }

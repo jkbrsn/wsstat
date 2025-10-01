@@ -1468,20 +1468,20 @@ Use this checklist to track progress during implementation:
 - [x] Update Print methods to accept `MeasurementResult`
 - [x] Update `cmd/wsstat/main.go` to use new API (functional options + context)
 
-### Phase 3: Error Handling (Not Started)
-- [ ] Update `printJSONLine` to return error (currently swallows errors)
-- [ ] Update `formatJSONIfPossible` to return error
+### Phase 3: Error Handling ✅ COMPLETE
+- [x] Update `printJSONLine` to return error (currently swallows errors)
+- [x] Update `formatJSONIfPossible` to return error
 - [x] Update all Print methods to return errors (already done)
-- [ ] Update all callers to handle errors properly
-- [ ] Refactor `handleConnectionError` to use `errors.As`
+- [x] Update all callers to handle errors properly
+- [x] Refactor `handleConnectionError` to use `errors.As`
 
-### Phase 3: Code Quality (Partially Done)
+### Phase 3: Code Quality ✅ COMPLETE
 - [x] Refactor `postProcessTextResponse` to pure functions
-- [ ] Move templates to method-local constants (currently package-level vars)
-- [ ] Replace `buildRepeatedStrings/Any` with generic `repeat`
+- [x] Move templates to method-local constants (currently package-level vars)
+- [x] Replace `buildRepeatedStrings/Any` with generic `repeat`
 - [x] Implement color package with RGB type
-- [ ] Add schema version to all JSON structs
-- [ ] Update all JSON builders to set schema version
+- [x] Add schema version to all JSON structs
+- [x] Update all JSON builders to set schema version
 
 ### Testing (Minimal Coverage)
 - [ ] Add tests for `measureText`

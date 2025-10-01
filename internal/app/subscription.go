@@ -152,6 +152,7 @@ func (c *Client) subscriptionMessageJSON(
 		payload = string(msg.Data)
 	}
 	output := subscriptionMessageJSON{
+		Schema:  JSONSchemaVersion,
 		Type:    "subscription_message",
 		Payload: payload,
 	}
@@ -168,6 +169,7 @@ func (c *Client) subscriptionMessageJSON(
 func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSON {
 	result := c.result
 	summary := subscriptionSummaryJSON{
+		Schema:        JSONSchemaVersion,
 		Type:          "subscription_summary",
 		Target:        buildTimingTarget(result, target),
 		FirstEventMs:  msPtr(result.SubscriptionFirstEvent),

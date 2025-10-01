@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -24,10 +26,19 @@ func formatDuration(d time.Duration) string {
 }
 
 func handleConnectionError(err error, address string) error {
-	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
-		return fmt.Errorf("error establishing secure WS connection to '%s': %v", address, err)
+	// Check for specific TLS errors first
+	var tlsErr *tls.RecordHeaderError
+	if errors.As(err, &tlsErr) {
+		return fmt.Errorf("TLS handshake failed connecting to '%s': %w", address, err)
 	}
-	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
+
+	// Fallback to string checking for specific messages
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "tls:") || strings.Contains(errMsg, "TLS") {
+		return fmt.Errorf("secure WebSocket connection failed to '%s': %w", address, err)
+	}
+
+	return fmt.Errorf("WebSocket connection failed to '%s': %w", address, err)
 }
 
 func msPtr(d time.Duration) *int64 {
@@ -62,18 +73,10 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 	return t.C
 }
 
-func buildRepeatedStrings(s string, n int) []string {
-	msgs := make([]string, n)
-	for i := range msgs {
-		msgs[i] = s
+func repeat[T any](value T, count int) []T {
+	result := make([]T, count)
+	for i := range result {
+		result[i] = value
 	}
-	return msgs
-}
-
-func buildRepeatedAny(v any, n int) []any {
-	msgs := make([]any, n)
-	for i := range msgs {
-		msgs[i] = v
-	}
-	return msgs
+	return result
 }

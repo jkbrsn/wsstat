@@ -17,30 +17,6 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-var (
-	printValueTemp         = "%s: %s\n"
-	printIndentedValueTemp = "  %s: %s\n"
-
-	wssPrintTemplate = `
-  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    %-17s
-|%s  |      %s  |     %s  |    %s  |   %s  |
-|           |                 |                |               |              |
-|  DNS lookup:%s        |                |               |              |
-|                 TCP connected:%s       |               |              |
-|                                       TLS done:%s      |              |
-|                                                        WS done:%s     |
--                                                                         Total:%s
-`
-	wsPrintTemplate = `
-  DNS Lookup    TCP Connection    WS Handshake    %-17s
-|%s  |      %s  |    %s  |  %s   |
-|           |                 |               |              |
-|  DNS lookup:%s        |               |              |
-|                 TCP connected:%s      |              |
-|                                       WS done:%s     |
--                                                        Total:%s
-`
-)
 
 // buildTimingSummaryFromResult builds a timing summary from a result.
 func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result) timingSummaryJSON {
@@ -49,6 +25,7 @@ func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result)
 		mode = "mean"
 	}
 	summary := timingSummaryJSON{
+		Schema:    JSONSchemaVersion,
 		Type:      "timing",
 		Mode:      mode,
 		Counts:    timingCountsJSON{Requested: c.count},
@@ -108,20 +85,21 @@ func (c *Client) colorizeGreen(text string) string {
 }
 
 // printJSONLine prints a JSON line.
-func (*Client) printJSONLine(payload any) {
+func (*Client) printJSONLine(payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to marshal JSON output: %v\n", err)
-		return
+		return fmt.Errorf("failed to marshal JSON output: %w", err)
 	}
-	_, _ = os.Stdout.Write(append(data, '\n'))
+	if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("failed to write JSON output: %w", err)
+	}
+	return nil
 }
 
 // printSubscriptionMessage prints a subscription message.
 func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
 	if c.format == formatJSON {
-		c.printJSONLine(c.subscriptionMessageJSON(index, msg))
-		return nil
+		return c.printJSONLine(c.subscriptionMessageJSON(index, msg))
 	}
 
 	payload := string(msg.Data)
@@ -133,7 +111,7 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	timestamp := msg.Received.Format(time.RFC3339Nano)
 	if c.verbosityLevel >= 1 {
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
-		if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+		if formatted, err := formatJSONIfPossible(msg.Data); err == nil {
 			fmt.Println(formatted)
 		} else {
 			fmt.Println(payload)
@@ -143,7 +121,7 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	}
 
 	line := payload
-	if formatted := formatJSONIfPossible(msg.Data); formatted != "" {
+	if formatted, err := formatJSONIfPossible(msg.Data); err == nil {
 		line = formatted
 	}
 	fmt.Printf("[%04d @ %s] %s\n", index, timestamp, line)
@@ -157,7 +135,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 	}
 
 	if c.format == formatJSON {
-		c.printJSONLine(c.subscriptionSummaryJSON(target))
+		_ = c.printJSONLine(c.subscriptionSummaryJSON(target))
 		if c.verbosityLevel >= 1 {
 			_ = c.PrintTimingResults(target, nil)
 		}
@@ -200,6 +178,8 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 
 // printTimingResultsBasic prints a concise timing summary used for verbosity level 0.
 func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
+	const printValueTemp = "%s: %s\n"
+
 	fmt.Println()
 	rttString := "Round-trip time"
 	if count > 1 {
@@ -225,6 +205,26 @@ func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
 // printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
 // in a tiered fashion.
 func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
+	const wssPrintTemplate = `
+  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    %-17s
+|%s  |      %s  |     %s  |    %s  |   %s  |
+|           |                 |                |               |              |
+|  DNS lookup:%s        |                |               |              |
+|                 TCP connected:%s       |               |              |
+|                                       TLS done:%s      |              |
+|                                                        WS done:%s     |
+-                                                                         Total:%s
+`
+	const wsPrintTemplate = `
+  DNS Lookup    TCP Connection    WS Handshake    %-17s
+|%s  |      %s  |    %s  |  %s   |
+|           |                 |               |              |
+|  DNS lookup:%s        |               |              |
+|                 TCP connected:%s      |              |
+|                                       WS done:%s     |
+-                                                        Total:%s
+`
+
 	switch u.Scheme {
 	case "wss":
 		fmt.Fprintf(os.Stdout, wssPrintTemplate,
@@ -270,6 +270,8 @@ func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, lab
 
 // printVerbose prints the request details with verbosity level 1.
 func (c *Client) printVerbose(result *wsstat.Result) {
+	const printValueTemp = "%s: %s\n"
+
 	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), result.URL.Hostname())
 	for _, values := range result.IPs {
 		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
@@ -289,6 +291,8 @@ func (c *Client) printVerbose(result *wsstat.Result) {
 
 // printVVerbose prints the request details with verbosity level 2.
 func (c *Client) printVVerbose(result *wsstat.Result) {
+	const printIndentedValueTemp = "  %s: %s\n"
+
 	fmt.Println(c.colorizeOrange("Target"))
 	fmt.Printf("  %s:  %s\n", c.colorizeGreen("URL"), result.URL.Hostname())
 	for _, ip := range result.IPs {
@@ -351,6 +355,7 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 	case c.verbosityLevel >= 1:
 		c.printVerbose(effectiveResult.Result)
 	default:
+		const printValueTemp = "%s: %s\n"
 		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), effectiveResult.Result.URL.Hostname())
 		if len(effectiveResult.Result.IPs) > 0 {
 			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), effectiveResult.Result.IPs[0])
@@ -373,7 +378,8 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 	}
 
 	if c.format == formatJSON {
-		c.printJSONLine(responseOutputJSON{
+		_ = c.printJSONLine(responseOutputJSON{
+			Schema:    JSONSchemaVersion,
 			Type:      "response",
 			RPCMethod: c.rpcMethod,
 			Payload:   normalizeResponseForJSON(response),
@@ -427,8 +433,7 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 	}
 
 	if c.format == formatJSON {
-		c.printJSONLine(c.buildTimingSummaryFromResult(u, effectiveResult.Result))
-		return nil
+		return c.printJSONLine(c.buildTimingSummaryFromResult(u, effectiveResult.Result))
 	}
 
 	switch {

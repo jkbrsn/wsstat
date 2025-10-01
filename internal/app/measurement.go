@@ -17,7 +17,7 @@ func (c *Client) measureText(
 	target *url.URL,
 	header http.Header,
 ) (*MeasurementResult, error) {
-	msgs := buildRepeatedStrings(c.textMessage, c.count)
+	msgs := repeat(c.textMessage, c.count)
 
 	result, rawResponses, err := wsstat.MeasureLatencyBurstWithContext(ctx, target, msgs, header)
 	if err != nil {
@@ -55,7 +55,7 @@ func (c *Client) measureJSON(
 		ID:         "1",
 		RPCVersion: "2.0",
 	}
-	msgs := buildRepeatedAny(msg, c.count)
+	msgs := repeat[any](msg, c.count)
 
 	result, responses, err := wsstat.MeasureLatencyJSONBurstWithContext(ctx, target, msgs, header)
 	if err != nil {
