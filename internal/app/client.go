@@ -1,5 +1,39 @@
-// Package app measures utilizes the wsstat package to measure the latency of a WebSocket
-// connection and print the results.
+// Package app provides a high-level client for measuring WebSocket latency and streaming
+// subscription events. It builds on the wsstat package with configuration management,
+// output formatting (terminal and JSON), and subscription handling.
+//
+// # Basic Usage
+//
+// Create a client with functional options and measure latency:
+//
+//	client := app.NewClient(
+//	    app.WithTextMessage("ping"),
+//	    app.WithCount(5),
+//	)
+//	if err := client.Validate(); err != nil {
+//	    log.Fatal(err)
+//	}
+//	ctx := context.Background()
+//	result, err := client.MeasureLatency(ctx, targetURL)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	client.PrintTimingResults(targetURL, result)
+//
+// # Subscription Mode
+//
+// Stream events from a WebSocket server:
+//
+//	client := app.NewClient(
+//	    app.WithSubscription(true),
+//	    app.WithCount(10),
+//	    app.WithTextMessage("subscribe"),
+//	)
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//	if err := client.StreamSubscription(ctx, targetURL); err != nil {
+//	    log.Fatal(err)
+//	}
 package app
 
 import (
@@ -12,8 +46,11 @@ import (
 	"github.com/jkbrsn/wsstat"
 )
 
-// Client measures the latency of a WebSocket connection, applying different methods
-// based on the settings passed to the struct.
+// Client measures the latency of a WebSocket connection and manages subscription streams.
+// Use NewClient with functional options to create and configure a Client.
+//
+// Fields are private; use accessor methods (Count(), Format(), etc.) to read configuration,
+// or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
 	count       int      // Nr of interactions to perform; 0 means unlimited in subscription mode
@@ -146,8 +183,15 @@ func (c *Client) Result() *wsstat.Result { return c.result }
 // Deprecated: Access response from MeasureLatency return value instead.
 func (c *Client) Response() any { return c.response }
 
-// MeasureLatency measures the latency of the WebSocket connection, applying different methods
-// based on the flags passed to the program.
+// MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages
+// based on client configuration. Returns timing results and the server response.
+//
+// The measurement method is determined by client settings:
+//   - If textMessage is set: sends text messages and measures echo latency
+//   - If rpcMethod is set: sends JSON-RPC requests and measures response latency
+//   - Otherwise: sends WebSocket ping frames and measures pong latency
+//
+// The context can be used to cancel the measurement operation.
 func (c *Client) MeasureLatency(
 	ctx context.Context,
 	target *url.URL,
@@ -178,8 +222,18 @@ func (c *Client) MeasureLatency(
 	return result, nil
 }
 
-// Validate validates the Client is ready for measurement; it checks that the client settings are
-// set to valid values.
+// Validate checks client configuration for validity and applies defaults.
+// It must be called after construction and before MeasureLatency or subscription methods.
+//
+// Validation includes:
+//   - Ensures count is non-negative
+//   - Verifies text and rpc-method are not both set (mutually exclusive)
+//   - Validates format is "auto", "json", or "raw"
+//   - Validates colorMode is "auto", "always", or "never"
+//   - Ensures buffer and summaryInterval are non-negative
+//   - Enforces subscribe-once requires count == 1
+//
+// This method also normalizes configuration (e.g., sets count=1 default in non-subscribe mode).
 func (c *Client) Validate() error {
 	if c.count < 0 {
 		return errors.New("count must be zero or greater")

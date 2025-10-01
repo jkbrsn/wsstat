@@ -325,8 +325,14 @@ func (c *Client) printVVerbose(result *wsstat.Result) {
 	}
 }
 
-// PrintRequestDetails prints the results of the Client, with verbosity based on the flags
-// passed to the program. If no results have been produced yet, the function errors.
+// PrintRequestDetails prints connection and request information to stdout.
+// Output verbosity is controlled by client configuration:
+//   - verbosity 0: URL and IP only
+//   - verbosity 1: adds target summary, message count, TLS version
+//   - verbosity 2+: adds full TLS details, certificates, and all headers
+//
+// In JSON format mode, this outputs nothing (details are in timing JSON).
+// Returns an error if no results are available.
 func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 	// Support old API for backward compatibility
 	effectiveResult := result
@@ -365,7 +371,13 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 	return nil
 }
 
-// PrintResponse prints the response to the terminal if there is one, otherwise does nothing.
+// PrintResponse prints the WebSocket server response to stdout.
+// Output format depends on client configuration:
+//   - JSON mode: outputs structured JSON with schema_version
+//   - raw mode: outputs response as-is without labels
+//   - auto mode: outputs with "Response:" label, formats JSON-RPC prettily
+//
+// Does nothing if result.Response is nil.
 func (c *Client) PrintResponse(result *MeasurementResult) {
 	// Support old API for backward compatibility
 	response := c.response
@@ -413,7 +425,13 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 	}
 }
 
-// PrintTimingResults prints the WebSocket statistics to the terminal.
+// PrintTimingResults prints connection timing statistics to stdout.
+// Output format depends on client configuration:
+//   - JSON mode: outputs structured timing JSON with schema_version
+//   - verbosity 0: outputs simple round-trip time and total
+//   - verbosity 1+: outputs detailed timing diagram showing all phases
+//
+// Returns an error if no results are available.
 func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error {
 	// Support old API for backward compatibility
 	effectiveResult := result

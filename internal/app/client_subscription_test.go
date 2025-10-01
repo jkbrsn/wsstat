@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -185,4 +186,101 @@ func TestPrintSubscriptionMessageRaw(t *testing.T) {
 		return c.printSubscriptionMessage(1, msg)
 	})
 	assert.Equal(t, "raw\n", output)
+}
+
+func TestOpenSubscription(t *testing.T) {
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
+
+	t.Run("successful connection", func(t *testing.T) {
+		client := NewClient(WithTextMessage("start"))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ws, sub, err := client.openSubscription(ctx, server.wsURL)
+		require.NoError(t, err)
+		require.NotNil(t, ws)
+		require.NotNil(t, sub)
+
+		assert.NotNil(t, client.result)
+
+		sub.Cancel()
+		<-sub.Done()
+		ws.Close()
+	})
+
+	t.Run("with custom headers", func(t *testing.T) {
+		client := NewClient(
+			WithTextMessage("start"),
+			WithHeaders([]string{"X-Custom: value"}),
+		)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ws, sub, err := client.openSubscription(ctx, server.wsURL)
+		require.NoError(t, err)
+		require.NotNil(t, ws)
+		require.NotNil(t, sub)
+
+		sub.Cancel()
+		<-sub.Done()
+		ws.Close()
+	})
+
+	t.Run("with buffer size", func(t *testing.T) {
+		client := NewClient(
+			WithTextMessage("start"),
+			WithBuffer(100),
+		)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ws, sub, err := client.openSubscription(ctx, server.wsURL)
+		require.NoError(t, err)
+		require.NotNil(t, ws)
+		require.NotNil(t, sub)
+
+		sub.Cancel()
+		<-sub.Done()
+		ws.Close()
+	})
+}
+
+func TestSubscriptionPayload(t *testing.T) {
+	t.Run("text message", func(t *testing.T) {
+		client := NewClient(WithTextMessage("hello"))
+		msgType, payload, err := client.subscriptionPayload()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, []byte("hello"), payload)
+	})
+
+	t.Run("JSON-RPC message", func(t *testing.T) {
+		client := NewClient(WithRPCMethod("test_method"))
+		msgType, payload, err := client.subscriptionPayload()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, msgType)
+
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(payload, &decoded))
+		assert.Equal(t, "test_method", decoded["method"])
+		assert.Equal(t, "1", decoded["id"])
+		assert.Equal(t, "2.0", decoded["jsonrpc"])
+	})
+
+	t.Run("empty payload", func(t *testing.T) {
+		client := NewClient()
+		msgType, payload, err := client.subscriptionPayload()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Nil(t, payload)
+	})
+
+	t.Run("text takes precedence over rpc", func(t *testing.T) {
+		client := &Client{textMessage: "text", rpcMethod: "method"}
+		msgType, payload, err := client.subscriptionPayload()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, []byte("text"), payload)
+	})
 }

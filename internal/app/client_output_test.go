@@ -54,6 +54,55 @@ func TestColorModeControlsOutput(t *testing.T) {
 	})
 }
 
+func TestColorEnabled(t *testing.T) {
+	t.Run("always mode", func(t *testing.T) {
+		client := &Client{colorMode: "always"}
+		assert.True(t, client.colorEnabled())
+	})
+
+	t.Run("never mode", func(t *testing.T) {
+		client := &Client{colorMode: "never"}
+		assert.False(t, client.colorEnabled())
+	})
+
+	t.Run("auto mode with NO_COLOR", func(t *testing.T) {
+		client := &Client{colorMode: "auto"}
+		prev, hadEnv := os.LookupEnv("NO_COLOR")
+		require.NoError(t, os.Setenv("NO_COLOR", "1"))
+		defer func() {
+			if hadEnv {
+				_ = os.Setenv("NO_COLOR", prev)
+			} else {
+				_ = os.Unsetenv("NO_COLOR")
+			}
+		}()
+		assert.False(t, client.colorEnabled())
+	})
+
+	t.Run("auto mode without NO_COLOR uses TTY detection", func(t *testing.T) {
+		client := &Client{colorMode: "auto"}
+		prev, hadEnv := os.LookupEnv("NO_COLOR")
+		if hadEnv {
+			require.NoError(t, os.Unsetenv("NO_COLOR"))
+			defer func() { _ = os.Setenv("NO_COLOR", prev) }()
+		}
+		// Result depends on whether stdout is a TTY - just check it doesn't panic
+		_ = client.colorEnabled()
+	})
+
+	t.Run("empty color mode defaults to auto behavior", func(t *testing.T) {
+		client := &Client{colorMode: ""}
+		// Should not panic and should return a boolean
+		result := client.colorEnabled()
+		assert.IsType(t, false, result)
+	})
+
+	t.Run("invalid color mode returns false", func(t *testing.T) {
+		client := &Client{colorMode: "invalid"}
+		assert.False(t, client.colorEnabled())
+	})
+}
+
 func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 	res := sampleResult(t)
 

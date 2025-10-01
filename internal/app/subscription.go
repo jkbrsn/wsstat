@@ -203,8 +203,14 @@ func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSO
 	return summary
 }
 
-// StreamSubscription establishes a WebSocket connection and streams subscription events
-// until the provided context is canceled or the server closes the connection.
+// StreamSubscription establishes a WebSocket connection and streams events from the server.
+// Events are printed as they arrive. The stream continues until:
+//   - The configured message count is reached (if count > 0), or
+//   - The context is canceled (if count == 0 for unlimited), or
+//   - The server closes the connection
+//
+// If summaryInterval is configured, periodic subscription summaries are printed.
+// Use context cancellation for graceful shutdown.
 func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error {
 	wsClient, subscription, err := c.openSubscription(ctx, target)
 	if err != nil {
@@ -227,7 +233,11 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
 }
 
-// StreamSubscriptionOnce establishes a subscription and exits after the first message.
+// StreamSubscriptionOnce establishes a WebSocket connection, receives exactly one event,
+// prints it, and exits. This is equivalent to StreamSubscription with count=1, but optimized
+// for the single-message case.
+//
+// Validation ensures count equals 1 when using this mode.
 func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) error {
 	originalCount := c.count
 	c.count = 1
