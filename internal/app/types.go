@@ -4,15 +4,31 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
-	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/wsstat"
 )
 
-// JSON helpers
+const (
+	formatAuto = "auto"
+	formatRaw  = "raw"
+	formatJSON = "json"
+
+	// JSONSchemaVersion is the schema version for JSON output
+	JSONSchemaVersion = "1.0"
+)
+
+// MeasurementResult holds the outcome of a WebSocket measurement operation
+type MeasurementResult struct {
+	Result   *wsstat.Result // Timing and connection details
+	Response any            // Response payload (type varies by message type)
+}
 
 type timingSummaryJSON struct {
+	Schema    string              `json:"schema_version"`
 	Type      string              `json:"type"`
 	Mode      string              `json:"mode"`
 	Target    *timingTargetJSON   `json:"target,omitempty"`
@@ -58,12 +74,14 @@ type timingTimelineJSON struct {
 }
 
 type responseOutputJSON struct {
+	Schema    string `json:"schema_version"`
 	Type      string `json:"type"`
 	RPCMethod string `json:"rpc_method,omitempty"`
 	Payload   any    `json:"payload,omitempty"`
 }
 
 type subscriptionSummaryJSON struct {
+	Schema        string                  `json:"schema_version"`
 	Type          string                  `json:"type"`
 	Target        *timingTargetJSON       `json:"target,omitempty"`
 	FirstEventMs  *int64                  `json:"first_event_ms,omitempty"`
@@ -83,6 +101,7 @@ type subscriptionEntryJSON struct {
 }
 
 type subscriptionMessageJSON struct {
+	Schema      string `json:"schema_version"`
 	Type        string `json:"type"`
 	Index       int    `json:"index,omitempty"`
 	Timestamp   string `json:"timestamp,omitempty"`
@@ -141,24 +160,23 @@ func buildTimingTimeline(result *wsstat.Result) *timingTimelineJSON {
 	return &timeline
 }
 
-// formatJSONIfPossible formats the JSON data if possible.
-func formatJSONIfPossible(data []byte) string {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
-		return ""
+func formatJSONIfPossible(data []byte) (string, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "", errors.New("empty data")
 	}
 	if trimmed[0] != '{' && trimmed[0] != '[' {
-		return ""
+		return "", errors.New("not JSON")
 	}
 	var anyJSON any
-	if err := json.Unmarshal([]byte(trimmed), &anyJSON); err != nil {
-		return ""
+	if err := json.Unmarshal(trimmed, &anyJSON); err != nil {
+		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("failed to format JSON: %w", err)
 	}
-	return string(pretty)
+	return string(pretty), nil
 }
 
 func normalizeResponseForJSON(value any) any {
@@ -193,4 +211,21 @@ func parseJSONPayload(data []byte) (any, bool) {
 		return nil, false
 	}
 	return payload, true
+}
+
+func messageTypeLabel(messageType int) string {
+	switch messageType {
+	case websocket.TextMessage:
+		return "text"
+	case websocket.BinaryMessage:
+		return "binary"
+	case websocket.CloseMessage:
+		return "close"
+	case websocket.PingMessage:
+		return "ping"
+	case websocket.PongMessage:
+		return "pong"
+	default:
+		return ""
+	}
 }
