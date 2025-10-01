@@ -129,37 +129,33 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 }
 
 // printSubscriptionSummary prints a subscription summary.
-func (c *Client) printSubscriptionSummary(target *url.URL) {
-	if c.result == nil {
-		return
-	}
-
+func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result) {
 	if c.format == formatJSON {
-		_ = c.printJSONLine(c.subscriptionSummaryJSON(target))
+		_ = c.printJSONLine(c.subscriptionSummaryJSON(target, result))
 		if c.verbosityLevel >= 1 {
-			_ = c.PrintTimingResults(target, nil)
+			_ = c.PrintTimingResults(target, &MeasurementResult{Result: result})
 		}
 		return
 	}
 
 	fmt.Println()
 	fmt.Println(c.colorizeOrange("Subscription summary"))
-	if c.result.SubscriptionFirstEvent > 0 {
-		fmt.Printf("  First event latency: %s\n", formatDuration(c.result.SubscriptionFirstEvent))
+	if result.SubscriptionFirstEvent > 0 {
+		fmt.Printf("  First event latency: %s\n", formatDuration(result.SubscriptionFirstEvent))
 	}
-	if c.result.SubscriptionLastEvent > 0 {
-		fmt.Printf("  Last event latency: %s\n", formatDuration(c.result.SubscriptionLastEvent))
+	if result.SubscriptionLastEvent > 0 {
+		fmt.Printf("  Last event latency: %s\n", formatDuration(result.SubscriptionLastEvent))
 	}
-	fmt.Printf("  Total messages: %d\n", c.result.MessageCount)
+	fmt.Printf("  Total messages: %d\n", result.MessageCount)
 
-	if len(c.result.Subscriptions) > 0 {
-		ids := make([]string, 0, len(c.result.Subscriptions))
-		for id := range c.result.Subscriptions {
+	if len(result.Subscriptions) > 0 {
+		ids := make([]string, 0, len(result.Subscriptions))
+		for id := range result.Subscriptions {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
 		for _, id := range ids {
-			stats := c.result.Subscriptions[id]
+			stats := result.Subscriptions[id]
 			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
 			if stats.MeanInterArrival > 0 {
 				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
@@ -172,7 +168,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL) {
 	}
 
 	if c.verbosityLevel >= 1 {
-		_ = c.PrintTimingResults(target, nil)
+		_ = c.PrintTimingResults(target, &MeasurementResult{Result: result})
 	}
 }
 
@@ -332,19 +328,10 @@ func (c *Client) printVVerbose(result *wsstat.Result) {
 //   - verbosity 2+: adds full TLS details, certificates, and all headers
 //
 // In JSON format mode, this outputs nothing (details are in timing JSON).
-// Returns an error if no results are available.
+// Returns an error if result is nil or contains no result data.
 func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
-	// Support old API for backward compatibility
-	effectiveResult := result
-	if effectiveResult == nil {
-		if c.result == nil {
-			return errors.New("no results have been produced")
-		}
-		effectiveResult = &MeasurementResult{Result: c.result, Response: c.response}
-	}
-
-	if effectiveResult.Result == nil {
-		return errors.New("no results have been produced")
+	if result == nil || result.Result == nil {
+		return errors.New("no results available")
 	}
 	if c.quiet {
 		return nil
@@ -357,14 +344,14 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 
 	switch {
 	case c.verbosityLevel >= 2:
-		c.printVVerbose(effectiveResult.Result)
+		c.printVVerbose(result.Result)
 	case c.verbosityLevel >= 1:
-		c.printVerbose(effectiveResult.Result)
+		c.printVerbose(result.Result)
 	default:
 		const printValueTemp = "%s: %s\n"
-		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), effectiveResult.Result.URL.Hostname())
-		if len(effectiveResult.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), effectiveResult.Result.IPs[0])
+		fmt.Printf(printValueTemp, c.colorizeGreen("URL"), result.Result.URL.Hostname())
+		if len(result.Result.IPs) > 0 {
+			fmt.Printf("%s:  %s\n", c.colorizeGreen("IP"), result.Result.IPs[0])
 		}
 	}
 
@@ -377,17 +364,13 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 //   - raw mode: outputs response as-is without labels
 //   - auto mode: outputs with "Response:" label, formats JSON-RPC prettily
 //
-// Does nothing if result.Response is nil.
+// Does nothing if result is nil or result.Response is nil.
 func (c *Client) PrintResponse(result *MeasurementResult) {
-	// Support old API for backward compatibility
-	response := c.response
-	if result != nil && result.Response != nil {
-		response = result.Response
-	}
-
-	if response == nil {
+	if result == nil || result.Response == nil {
 		return
 	}
+
+	response := result.Response
 
 	if c.format == formatJSON {
 		_ = c.printJSONLine(responseOutputJSON{
@@ -431,19 +414,10 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 //   - verbosity 0: outputs simple round-trip time and total
 //   - verbosity 1+: outputs detailed timing diagram showing all phases
 //
-// Returns an error if no results are available.
+// Returns an error if result is nil or contains no result data.
 func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error {
-	// Support old API for backward compatibility
-	effectiveResult := result
-	if effectiveResult == nil {
-		if c.result == nil {
-			return errors.New("no results have been produced")
-		}
-		effectiveResult = &MeasurementResult{Result: c.result, Response: c.response}
-	}
-
-	if effectiveResult.Result == nil {
-		return errors.New("no results have been produced")
+	if result == nil || result.Result == nil {
+		return errors.New("no results available")
 	}
 
 	if c.quiet {
@@ -451,18 +425,18 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 	}
 
 	if c.format == formatJSON {
-		return c.printJSONLine(c.buildTimingSummaryFromResult(u, effectiveResult.Result))
+		return c.printJSONLine(c.buildTimingSummaryFromResult(u, result.Result))
 	}
 
 	switch {
 	case c.verbosityLevel <= 0:
-		c.printTimingResultsBasic(effectiveResult.Result, c.count)
+		c.printTimingResultsBasic(result.Result, c.count)
 	default:
 		rttLabel := "Message RTT"
-		if c.count > 1 || effectiveResult.Result.MessageCount > 1 {
+		if c.count > 1 || result.Result.MessageCount > 1 {
 			rttLabel = "Mean Message RTT"
 		}
-		c.printTimingResultsTiered(effectiveResult.Result, u, rttLabel)
+		c.printTimingResultsTiered(result.Result, u, rttLabel)
 	}
 
 	return nil

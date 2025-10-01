@@ -15,12 +15,9 @@ import (
 
 // handleSubscriptionTick handles a subscription tick.
 func (c *Client) handleSubscriptionTick(wsClient *wsstat.WSStat, target *url.URL) {
-	if c.result == nil {
-		return
-	}
-	c.result = wsClient.ExtractResult()
+	result := wsClient.ExtractResult()
 	if !c.quiet {
-		c.printSubscriptionSummary(target)
+		c.printSubscriptionSummary(target, result)
 	}
 }
 
@@ -60,7 +57,6 @@ func (c *Client) openSubscription(
 		return nil, nil, err
 	}
 
-	c.result = wsClient.ExtractResult()
 	return wsClient, subscription, nil
 }
 
@@ -99,7 +95,6 @@ func (c *Client) runSubscriptionLoop(
 				continue
 			}
 			messageIndex++
-			c.result = wsClient.ExtractResult()
 			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
 				return err
 			}
@@ -166,8 +161,10 @@ func (c *Client) subscriptionMessageJSON(
 }
 
 // subscriptionSummaryJSON builds a subscription summary.
-func (c *Client) subscriptionSummaryJSON(target *url.URL) subscriptionSummaryJSON {
-	result := c.result
+func (*Client) subscriptionSummaryJSON(
+	target *url.URL,
+	result *wsstat.Result,
+) subscriptionSummaryJSON {
 	summary := subscriptionSummaryJSON{
 		Schema:        JSONSchemaVersion,
 		Type:          "subscription_summary",
@@ -219,7 +216,8 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 	defer wsClient.Close()
 
 	if !c.quiet {
-		if err := c.PrintRequestDetails(nil); err != nil {
+		result := wsClient.ExtractResult()
+		if err := c.PrintRequestDetails(&MeasurementResult{Result: result}); err != nil {
 			subscription.Cancel()
 			<-subscription.Done()
 			return err
@@ -250,7 +248,8 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 	defer wsClient.Close()
 
 	if !c.quiet {
-		if err := c.PrintRequestDetails(nil); err != nil {
+		result := wsClient.ExtractResult()
+		if err := c.PrintRequestDetails(&MeasurementResult{Result: result}); err != nil {
 			subscription.Cancel()
 			<-subscription.Done()
 			return err

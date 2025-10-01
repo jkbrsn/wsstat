@@ -18,25 +18,26 @@ func TestColorHelpers(t *testing.T) {
 
 func TestColorModeControlsOutput(t *testing.T) {
 	res := sampleResult(t)
+	result := &MeasurementResult{Result: res}
 
 	t.Run("never removes ANSI", func(t *testing.T) {
-		client := &Client{result: res, colorMode: "never"}
+		client := &Client{colorMode: "never"}
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintRequestDetails(nil)
+			return client.PrintRequestDetails(result)
 		})
 		assert.NotContains(t, output, "\u001b[")
 	})
 
 	t.Run("always forces ANSI", func(t *testing.T) {
-		client := &Client{result: res, colorMode: "always"}
+		client := &Client{colorMode: "always"}
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintRequestDetails(nil)
+			return client.PrintRequestDetails(result)
 		})
 		assert.Contains(t, output, "\u001b[38;2;")
 	})
 
 	t.Run("auto respects NO_COLOR", func(t *testing.T) {
-		client := &Client{result: res, colorMode: "auto"}
+		client := &Client{colorMode: "auto"}
 		prev, hadEnv := os.LookupEnv("NO_COLOR")
 		require.NoError(t, os.Setenv("NO_COLOR", "1"))
 		defer func() {
@@ -48,7 +49,7 @@ func TestColorModeControlsOutput(t *testing.T) {
 		}()
 
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintRequestDetails(nil)
+			return client.PrintRequestDetails(result)
 		})
 		assert.NotContains(t, output, "\u001b[")
 	})
@@ -105,11 +106,12 @@ func TestColorEnabled(t *testing.T) {
 
 func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 	res := sampleResult(t)
+	result := &MeasurementResult{Result: res}
 
 	t.Run("level0", func(t *testing.T) {
 		output := captureStdoutFrom(t, func() error {
-			client := &Client{result: res}
-			return client.PrintRequestDetails(nil)
+			client := &Client{}
+			return client.PrintRequestDetails(result)
 		})
 		assert.Contains(t, output, "URL")
 		assert.NotContains(t, output, "Target")
@@ -118,8 +120,8 @@ func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 
 	t.Run("level1", func(t *testing.T) {
 		output := captureStdoutFrom(t, func() error {
-			client := &Client{result: res, verbosityLevel: 1}
-			return client.PrintRequestDetails(nil)
+			client := &Client{verbosityLevel: 1}
+			return client.PrintRequestDetails(result)
 		})
 		assert.Contains(t, output, "Target")
 		assert.Contains(t, output, "Messages sent")
@@ -128,8 +130,8 @@ func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 
 	t.Run("level2", func(t *testing.T) {
 		output := captureStdoutFrom(t, func() error {
-			client := &Client{result: res, verbosityLevel: 2}
-			return client.PrintRequestDetails(nil)
+			client := &Client{verbosityLevel: 2}
+			return client.PrintRequestDetails(result)
 		})
 		assert.Contains(t, output, "Request headers")
 		assert.Contains(t, output, "Response headers")
@@ -140,54 +142,56 @@ func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 func TestPrintTimingResultsVerbosityLevels(t *testing.T) {
 	base := sampleTimingResult(t)
 	ctxURL := base.URL
+	result := &MeasurementResult{Result: base}
 
 	t.Run("level0", func(t *testing.T) {
-		client := &Client{result: base, count: 1}
+		client := &Client{count: 1}
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintTimingResults(ctxURL, nil)
+			return client.PrintTimingResults(ctxURL, result)
 		})
 		assert.Contains(t, output, "Round-trip time")
 		assert.NotContains(t, output, "DNS Lookup    TCP Connection")
 	})
 
 	t.Run("level1", func(t *testing.T) {
-		client := &Client{result: base, count: 1, verbosityLevel: 1}
+		client := &Client{count: 1, verbosityLevel: 1}
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintTimingResults(ctxURL, nil)
+			return client.PrintTimingResults(ctxURL, result)
 		})
 		assert.Contains(t, output, "DNS Lookup    TCP Connection")
 	})
 
 	t.Run("level2", func(t *testing.T) {
-		client := &Client{result: base, count: 1, verbosityLevel: 2}
+		client := &Client{count: 1, verbosityLevel: 2}
 		output := captureStdoutFrom(t, func() error {
-			return client.PrintTimingResults(ctxURL, nil)
+			return client.PrintTimingResults(ctxURL, result)
 		})
 		assert.Contains(t, output, "DNS Lookup    TCP Connection")
 	})
 }
 
 func TestPrintTimingResultsJSON(t *testing.T) {
+	base := sampleTimingResult(t)
 	client := &Client{
 		format: formatJSON,
 		count:  2,
-		result: sampleTimingResult(t),
 	}
-	ctxURL := client.result.URL
+	result := &MeasurementResult{Result: base}
+	ctxURL := base.URL
 	output := captureStdoutFrom(t, func() error {
-		return client.PrintTimingResults(ctxURL, nil)
+		return client.PrintTimingResults(ctxURL, result)
 	})
 	payload := decodeJSONLine(t, output)
 	assert.Equal(t, "timing", payload["type"])
 	assert.Equal(t, "mean", payload["mode"])
 	counts := asMap(t, payload["counts"])
 	assert.EqualValues(t, client.Count(), counts["requested"])
-	assert.EqualValues(t, client.result.MessageCount, counts["messages"])
+	assert.EqualValues(t, base.MessageCount, counts["messages"])
 	durations := asMap(t, payload["durations_ms"])
-	assert.EqualValues(t, client.result.MessageRTT.Milliseconds(), durations["message_rtt"])
-	assert.EqualValues(t, client.result.TotalTime.Milliseconds(), durations["total"])
+	assert.EqualValues(t, base.MessageRTT.Milliseconds(), durations["message_rtt"])
+	assert.EqualValues(t, base.TotalTime.Milliseconds(), durations["total"])
 	target := asMap(t, payload["target"])
-	assert.Equal(t, client.result.URL.String(), target["url"])
+	assert.Equal(t, base.URL.String(), target["url"])
 }
 
 func TestPrintResponseJSON(t *testing.T) {
@@ -195,10 +199,12 @@ func TestPrintResponseJSON(t *testing.T) {
 		client := &Client{
 			format:    formatJSON,
 			rpcMethod: "eth_blockNumber",
-			response:  map[string]any{"jsonrpc": "2.0", "result": "0x1"},
+		}
+		result := &MeasurementResult{
+			Response: map[string]any{"jsonrpc": "2.0", "result": "0x1"},
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(nil)
+			client.PrintResponse(result)
 			return nil
 		})
 		payload := decodeJSONLine(t, output)
@@ -210,11 +216,13 @@ func TestPrintResponseJSON(t *testing.T) {
 
 	t.Run("plain string payload", func(t *testing.T) {
 		client := &Client{
-			format:   formatJSON,
-			response: "hello world",
+			format: formatJSON,
+		}
+		result := &MeasurementResult{
+			Response: "hello world",
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(nil)
+			client.PrintResponse(result)
 			return nil
 		})
 		payload := decodeJSONLine(t, output)

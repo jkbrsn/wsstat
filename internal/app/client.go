@@ -42,8 +42,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/jkbrsn/wsstat"
 )
 
 // Client measures the latency of a WebSocket connection and manages subscription streams.
@@ -71,14 +69,6 @@ type Client struct {
 	subscribeOnce   bool
 	buffer          int
 	summaryInterval time.Duration
-
-	// Deprecated: Use MeasureLatency return value instead
-	// The response of a MeasureLatency call. Is overwritten if the function is called again.
-	response any
-
-	// Deprecated: Use MeasureLatency return value instead
-	// The result of a MeasureLatency call. Is overwritten if the function is called again.
-	result *wsstat.Result
 }
 
 // Option configures a Client.
@@ -175,14 +165,6 @@ func (c *Client) Quiet() bool { return c.quiet }
 // RPCMethod returns the configured RPC method.
 func (c *Client) RPCMethod() string { return c.rpcMethod }
 
-// Result returns the deprecated result field.
-// Deprecated: Access result from MeasureLatency return value instead.
-func (c *Client) Result() *wsstat.Result { return c.result }
-
-// Response returns the deprecated response field.
-// Deprecated: Access response from MeasureLatency return value instead.
-func (c *Client) Response() any { return c.response }
-
 // MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages
 // based on client configuration. Returns timing results and the server response.
 //
@@ -214,10 +196,6 @@ func (c *Client) MeasureLatency(
 	if err != nil {
 		return nil, err
 	}
-
-	// Keep deprecated fields populated for backward compatibility
-	c.result = result.Result
-	c.response = result.Response
 
 	return result, nil
 }

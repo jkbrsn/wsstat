@@ -60,9 +60,9 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 				MeanInterArrival: 20 * time.Millisecond,
 			},
 		}
-		client := &Client{format: formatJSON, result: res}
+		client := &Client{format: formatJSON}
 		output := captureStdoutFrom(t, func() error {
-			client.printSubscriptionSummary(res.URL)
+			client.printSubscriptionSummary(res.URL, res)
 			return nil
 		})
 		payload := decodeJSONLine(t, output)
@@ -106,8 +106,6 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	server.events <- "event-2"
 
 	require.NoError(t, <-errCh)
-	require.NotNil(t, c.result)
-	assert.Equal(t, 2, c.result.MessageCount)
 }
 
 func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
@@ -146,8 +144,6 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("subscription did not exit after cancellation")
 	}
-	require.NotNil(t, c.result)
-	assert.GreaterOrEqual(t, c.result.MessageCount, 2)
 }
 
 func TestPrintSubscriptionMessageLevels(t *testing.T) {
@@ -201,8 +197,6 @@ func TestOpenSubscription(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, ws)
 		require.NotNil(t, sub)
-
-		assert.NotNil(t, client.result)
 
 		sub.Cancel()
 		<-sub.Done()
