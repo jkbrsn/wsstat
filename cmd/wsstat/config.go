@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -36,8 +35,16 @@ func parseConfig() (*Config, error) {
 		return nil, errVersionRequested
 	}
 
-	if *quiet && verbosityLevel.Value() > 0 {
-		return nil, errors.New("-q cannot be combined with -v")
+	// Unify verbosity flags (highest wins)
+	verbosity := 0
+	if *v2 {
+		verbosity = 2
+	} else if *v1 {
+		verbosity = 1
+	}
+
+	if *quiet && verbosity > 0 {
+		return nil, errors.New("-q cannot be combined with -v or -vv")
 	}
 
 	if *textMessage != "" && *rpcMethod != "" {
@@ -76,7 +83,7 @@ func parseConfig() (*Config, error) {
 		Format:          strings.ToLower(*formatOption),
 		ColorMode:       strings.ToLower(*colorArg),
 		Quiet:           *quiet,
-		Verbosity:       verbosityLevel.Value(),
+		Verbosity:       verbosity,
 	}
 
 	return cfg, nil
@@ -113,41 +120,3 @@ func resolveCountValue(subscribe, subscribeOnce bool) int {
 
 // errVersionRequested is returned when -version flag is used.
 var errVersionRequested = errors.New("version requested")
-
-// preprocessVerbosityArgs rewrites os.Args so that shorthand -v/-vv translates to
-// canonical -v=N forms before flag parsing. This lets the default flag package
-// treat -v as a repeatable count.
-func preprocessVerbosityArgs() {
-	if len(os.Args) <= 1 {
-		return
-	}
-
-	filtered := make([]string, 0, len(os.Args)-1)
-	for _, arg := range os.Args[1:] {
-		switch {
-		case arg == "-v" || arg == "--verbose":
-			filtered = append(filtered, "-v=1")
-		case strings.HasPrefix(arg, "-v="):
-			filtered = append(filtered, arg)
-		case strings.HasPrefix(arg, "-vv") && isOnlyRune(arg[1:], 'v'):
-			filtered = append(filtered, fmt.Sprintf("-v=%d", len(arg)-1))
-		default:
-			filtered = append(filtered, arg)
-		}
-	}
-
-	os.Args = append([]string{os.Args[0]}, filtered...)
-}
-
-// isOnlyRune returns true if the string consists solely of the provided rune.
-func isOnlyRune(s string, r rune) bool {
-	if s == "" {
-		return false
-	}
-	for _, ch := range s {
-		if ch != r {
-			return false
-		}
-	}
-	return true
-}

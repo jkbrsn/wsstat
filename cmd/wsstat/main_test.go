@@ -28,15 +28,15 @@ func TestRunIntegration(t *testing.T) {
 		subscribeOnce = flag.Bool("subscribe-once", false, "")
 		bufferSize = flag.Int("buffer", 0, "")
 		summaryInterval = flag.Duration("summary-interval", 0, "")
+		v1 = flag.Bool("v", false, "")
+		v2 = flag.Bool("vv", false, "")
 
-		verbosityLevel = newVerbosityCounter()
 		countFlag = newTrackedIntFlag(1)
 		headerArguments = headerList{}
 
 		flag.Var(&countFlag, "count", "")
 		flag.Var(&headerArguments, "H", "")
 		flag.Var(&headerArguments, "header", "")
-		flag.Var(verbosityLevel, "v", "")
 	}
 
 	t.Run("version flag returns special error", func(t *testing.T) {

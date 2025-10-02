@@ -148,7 +148,8 @@ func TestParseConfig(t *testing.T) {
 	origSubscribe := *subscribe
 	origSubscribeOnce := *subscribeOnce
 	origBufferSize := *bufferSize
-	origVerbosityLevel := verbosityLevel.count
+	origV1 := *v1
+	origV2 := *v2
 	origCountFlag := countFlag
 	origHeaderArguments := headerArguments
 
@@ -164,7 +165,8 @@ func TestParseConfig(t *testing.T) {
 		*subscribe = origSubscribe
 		*subscribeOnce = origSubscribeOnce
 		*bufferSize = origBufferSize
-		verbosityLevel.count = origVerbosityLevel
+		*v1 = origV1
+		*v2 = origV2
 		countFlag = origCountFlag
 		headerArguments = origHeaderArguments
 	}()
@@ -184,8 +186,9 @@ func TestParseConfig(t *testing.T) {
 		subscribeOnce = flag.Bool("subscribe-once", false, "")
 		bufferSize = flag.Int("buffer", 0, "")
 		summaryInterval = flag.Duration("summary-interval", 0, "")
+		v1 = flag.Bool("v", false, "")
+		v2 = flag.Bool("vv", false, "")
 
-		verbosityLevel = newVerbosityCounter()
 		countFlag = newTrackedIntFlag(1)
 		headerArguments = headerList{}
 
@@ -193,7 +196,6 @@ func TestParseConfig(t *testing.T) {
 		flag.Var(&countFlag, "count", "")
 		flag.Var(&headerArguments, "H", "")
 		flag.Var(&headerArguments, "header", "")
-		flag.Var(verbosityLevel, "v", "")
 	}
 
 	tests := []struct {

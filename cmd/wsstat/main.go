@@ -66,17 +66,15 @@ var (
 	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
 
 	// Verbosity
-	quiet          = flag.Bool("q", false, "quiet all output but the response")
-	verbosityLevel = newVerbosityCounter()
+	quiet = flag.Bool("q", false, "quiet all output but the response")
+	v1    = flag.Bool("v", false, "increase verbosity (level 1)")
+	v2    = flag.Bool("vv", false, "increase verbosity (level 2)")
 )
 
 func init() {
-	preprocessVerbosityArgs()
-
 	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited when subscribing")
 	flag.Var(&headerArguments, "H", "HTTP header to include with the request (repeatable; format: Key: Value)")
 	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
-	flag.Var(verbosityLevel, "v", "increase verbosity; repeatable (e.g., -v -v) or use -v=N")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage:  wsstat [options] <url>")
@@ -110,6 +108,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "Output:")
 		fmt.Fprintf(os.Stderr, "  -q                   %s\n", flag.Lookup("q").Usage)
 		fmt.Fprintf(os.Stderr, "  -v                   %s\n", flag.Lookup("v").Usage)
+		fmt.Fprintf(os.Stderr, "  -vv                  %s\n", flag.Lookup("vv").Usage)
 		fmt.Fprintf(os.Stderr, "  -format string       %s (default %q)\n", flag.Lookup("format").Usage, *formatOption)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Verbosity:")
