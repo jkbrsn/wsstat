@@ -1,5 +1,33 @@
-// Package main parses CLI input for wsstat, validates it, and delegates to the
-// internal client implementation.
+// Package main implements the wsstat command-line tool for measuring WebSocket
+// connection latency and streaming subscription events.
+//
+// The CLI provides a simple interface to check WebSocket endpoint status,
+// measure connection timing (DNS, TCP, TLS, WebSocket handshake, and message RTT),
+// and stream long-lived subscription feeds.
+//
+// # Basic Usage
+//
+//	wsstat example.org
+//	wsstat -text "ping" wss://echo.example.com
+//	wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws
+//
+// # Subscription Mode
+//
+// For long-lived streaming endpoints, use -subscribe to keep the connection
+// open and forward incoming frames to stdout:
+//
+//	wsstat -subscribe -text '{"method":"subscribe"}' wss://stream.example.com
+//	wsstat -subscribe-once -text '{"method":"ticker"}' wss://api.example.com
+//
+// # Architecture
+//
+// The package is organized into:
+//   - main.go: Entry point, flag definitions, and usage text
+//   - config.go: Configuration parsing, validation, and URL handling
+//   - flags.go: Custom flag.Value implementations for headers, counts, and verbosity
+//
+// All business logic is delegated to the internal/app package, keeping cmd/wsstat
+// focused on CLI concerns (parsing, validation, help text, and error formatting).
 package main
 
 import (

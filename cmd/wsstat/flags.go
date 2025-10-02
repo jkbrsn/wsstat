@@ -16,6 +16,9 @@ func (h *headerList) Set(value string) error {
 	if trimmed == "" {
 		return errors.New("header must not be empty")
 	}
+	if !strings.Contains(trimmed, ":") {
+		return errors.New("header must be in 'Key: Value' format")
+	}
 	*h = append(*h, trimmed)
 	return nil
 }
