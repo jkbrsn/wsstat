@@ -17,7 +17,6 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-
 // buildTimingSummaryFromResult builds a timing summary from a result.
 func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result) timingSummaryJSON {
 	mode := "single"

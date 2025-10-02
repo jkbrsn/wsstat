@@ -10,7 +10,7 @@ import (
 // headerList is a flag.Value implementation that accumulates repeated -H / -header entries.
 type headerList []string
 
-// Set converts the string value to an integer and stores it.
+// Set appends the header value to the list.
 func (h *headerList) Set(value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

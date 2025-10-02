@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/jkbrsn/wsstat/internal/app"
@@ -108,78 +107,71 @@ func init() {
 // revive:enable:line-length-limit
 
 func main() {
-	targetURL, err := parseValidateInput()
-	if err != nil {
-		fmt.Printf("Error parsing input: %v\n\n", err)
-		flag.Usage()
+	if err := run(); err != nil {
+		if err == errVersionRequested {
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
 
-	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
+func run() error {
+	cfg, err := parseConfig()
+	if err != nil {
+		if err == errVersionRequested {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Error parsing input: %v\n\n", err)
+		flag.Usage()
+		return err
+	}
 
 	ws := app.NewClient(
-		app.WithCount(effectiveCount),
-		app.WithHeaders(headerArguments.Values()),
-		app.WithRPCMethod(*rpcMethod),
-		app.WithTextMessage(*textMessage),
-		app.WithFormat(strings.ToLower(*formatOption)),
-		app.WithColorMode(strings.ToLower(*colorArg)),
-		app.WithQuiet(*quiet),
-		app.WithVerbosity(verbosityLevel.Value()),
-		app.WithSubscription(*subscribe),
-		app.WithSubscriptionOnce(*subscribeOnce),
-		app.WithBuffer(*bufferSize),
-		app.WithSummaryInterval(*summaryInterval),
+		app.WithCount(cfg.Count),
+		app.WithHeaders(cfg.Headers),
+		app.WithRPCMethod(cfg.RPCMethod),
+		app.WithTextMessage(cfg.TextMessage),
+		app.WithFormat(cfg.Format),
+		app.WithColorMode(cfg.ColorMode),
+		app.WithQuiet(cfg.Quiet),
+		app.WithVerbosity(cfg.Verbosity),
+		app.WithSubscription(cfg.Subscribe),
+		app.WithSubscriptionOnce(cfg.SubscribeOnce),
+		app.WithBuffer(cfg.BufferSize),
+		app.WithSummaryInterval(cfg.SummaryInterval),
 	)
 
-	err = ws.Validate()
-	if err != nil {
-		fmt.Printf("Error in input settings: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *subscribeOnce {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		err = ws.StreamSubscriptionOnce(ctx, targetURL)
-		if err != nil {
-			fmt.Printf("Error streaming subscription once: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if *subscribe {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		err = ws.StreamSubscription(ctx, targetURL)
-		if err != nil {
-			fmt.Printf("Error streaming subscription: %v\n", err)
-			os.Exit(1)
-		}
-		return
+	if err := ws.Validate(); err != nil {
+		return fmt.Errorf("invalid settings: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	result, err := ws.MeasureLatency(ctx, targetURL)
-	if err != nil {
-		fmt.Printf("Error measuring latency: %v\n", err)
-		os.Exit(1)
+	if cfg.SubscribeOnce {
+		return ws.StreamSubscriptionOnce(ctx, cfg.TargetURL)
 	}
 
-	if !*quiet {
+	if cfg.Subscribe {
+		return ws.StreamSubscription(ctx, cfg.TargetURL)
+	}
+
+	result, err := ws.MeasureLatency(ctx, cfg.TargetURL)
+	if err != nil {
+		return fmt.Errorf("measuring latency: %w", err)
+	}
+
+	if !cfg.Quiet {
 		if err = ws.PrintRequestDetails(result); err != nil {
-			fmt.Printf("Error printing request details: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("printing request details: %w", err)
 		}
 
-		if err = ws.PrintTimingResults(targetURL, result); err != nil {
-			fmt.Printf("Error printing timing results: %v\n", err)
-			os.Exit(1)
+		if err = ws.PrintTimingResults(cfg.TargetURL, result); err != nil {
+			return fmt.Errorf("printing timing results: %w", err)
 		}
 	}
 
 	ws.PrintResponse(result)
+	return nil
 }
