@@ -1,5 +1,33 @@
-// Package main parses CLI input for wsstat, validates it, and delegates to the
-// internal client implementation.
+// Package main implements the wsstat command-line tool for measuring WebSocket
+// connection latency and streaming subscription events.
+//
+// The CLI provides a simple interface to check WebSocket endpoint status,
+// measure connection timing (DNS, TCP, TLS, WebSocket handshake, and message RTT),
+// and stream long-lived subscription feeds.
+//
+// # Basic Usage
+//
+//	wsstat example.org
+//	wsstat -text "ping" wss://echo.example.com
+//	wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws
+//
+// # Subscription Mode
+//
+// For long-lived streaming endpoints, use -subscribe to keep the connection
+// open and forward incoming frames to stdout:
+//
+//	wsstat -subscribe -text '{"method":"subscribe"}' wss://stream.example.com
+//	wsstat -subscribe-once -text '{"method":"ticker"}' wss://api.example.com
+//
+// # Architecture
+//
+// The package is organized into:
+//   - main.go: Entry point, flag definitions, and usage text
+//   - config.go: Configuration parsing, validation, and URL handling
+//   - flags.go: Custom flag.Value implementations for headers, counts, and verbosity
+//
+// All business logic is delegated to the internal/app package, keeping cmd/wsstat
+// focused on CLI concerns (parsing, validation, help text, and error formatting).
 package main
 
 import (
@@ -8,7 +36,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/jkbrsn/wsstat/internal/app"
@@ -39,17 +66,15 @@ var (
 	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
 
 	// Verbosity
-	quiet          = flag.Bool("q", false, "quiet all output but the response")
-	verbosityLevel = newVerbosityCounter()
+	quiet = flag.Bool("q", false, "quiet all output but the response")
+	v1    = flag.Bool("v", false, "increase verbosity (level 1)")
+	v2    = flag.Bool("vv", false, "increase verbosity (level 2)")
 )
 
 func init() {
-	preprocessVerbosityArgs()
-
 	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited when subscribing")
 	flag.Var(&headerArguments, "H", "HTTP header to include with the request (repeatable; format: Key: Value)")
 	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
-	flag.Var(verbosityLevel, "v", "increase verbosity; repeatable (e.g., -v -v) or use -v=N")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage:  wsstat [options] <url>")
@@ -83,6 +108,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "Output:")
 		fmt.Fprintf(os.Stderr, "  -q                   %s\n", flag.Lookup("q").Usage)
 		fmt.Fprintf(os.Stderr, "  -v                   %s\n", flag.Lookup("v").Usage)
+		fmt.Fprintf(os.Stderr, "  -vv                  %s\n", flag.Lookup("vv").Usage)
 		fmt.Fprintf(os.Stderr, "  -format string       %s (default %q)\n", flag.Lookup("format").Usage, *formatOption)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Verbosity:")
@@ -108,78 +134,71 @@ func init() {
 // revive:enable:line-length-limit
 
 func main() {
-	targetURL, err := parseValidateInput()
-	if err != nil {
-		fmt.Printf("Error parsing input: %v\n\n", err)
-		flag.Usage()
+	if err := run(); err != nil {
+		if err == errVersionRequested {
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
 
-	effectiveCount := resolveCountValue(*subscribe, *subscribeOnce)
+func run() error {
+	cfg, err := parseConfig()
+	if err != nil {
+		if err == errVersionRequested {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Error parsing input: %v\n\n", err)
+		flag.Usage()
+		return err
+	}
 
 	ws := app.NewClient(
-		app.WithCount(effectiveCount),
-		app.WithHeaders(headerArguments.Values()),
-		app.WithRPCMethod(*rpcMethod),
-		app.WithTextMessage(*textMessage),
-		app.WithFormat(strings.ToLower(*formatOption)),
-		app.WithColorMode(strings.ToLower(*colorArg)),
-		app.WithQuiet(*quiet),
-		app.WithVerbosity(verbosityLevel.Value()),
-		app.WithSubscription(*subscribe),
-		app.WithSubscriptionOnce(*subscribeOnce),
-		app.WithBuffer(*bufferSize),
-		app.WithSummaryInterval(*summaryInterval),
+		app.WithCount(cfg.Count),
+		app.WithHeaders(cfg.Headers),
+		app.WithRPCMethod(cfg.RPCMethod),
+		app.WithTextMessage(cfg.TextMessage),
+		app.WithFormat(cfg.Format),
+		app.WithColorMode(cfg.ColorMode),
+		app.WithQuiet(cfg.Quiet),
+		app.WithVerbosity(cfg.Verbosity),
+		app.WithSubscription(cfg.Subscribe),
+		app.WithSubscriptionOnce(cfg.SubscribeOnce),
+		app.WithBuffer(cfg.BufferSize),
+		app.WithSummaryInterval(cfg.SummaryInterval),
 	)
 
-	err = ws.Validate()
-	if err != nil {
-		fmt.Printf("Error in input settings: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *subscribeOnce {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		err = ws.StreamSubscriptionOnce(ctx, targetURL)
-		if err != nil {
-			fmt.Printf("Error streaming subscription once: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if *subscribe {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		err = ws.StreamSubscription(ctx, targetURL)
-		if err != nil {
-			fmt.Printf("Error streaming subscription: %v\n", err)
-			os.Exit(1)
-		}
-		return
+	if err := ws.Validate(); err != nil {
+		return fmt.Errorf("invalid settings: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	result, err := ws.MeasureLatency(ctx, targetURL)
-	if err != nil {
-		fmt.Printf("Error measuring latency: %v\n", err)
-		os.Exit(1)
+	if cfg.SubscribeOnce {
+		return ws.StreamSubscriptionOnce(ctx, cfg.TargetURL)
 	}
 
-	if !*quiet {
+	if cfg.Subscribe {
+		return ws.StreamSubscription(ctx, cfg.TargetURL)
+	}
+
+	result, err := ws.MeasureLatency(ctx, cfg.TargetURL)
+	if err != nil {
+		return fmt.Errorf("measuring latency: %w", err)
+	}
+
+	if !cfg.Quiet {
 		if err = ws.PrintRequestDetails(result); err != nil {
-			fmt.Printf("Error printing request details: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("printing request details: %w", err)
 		}
 
-		if err = ws.PrintTimingResults(targetURL, result); err != nil {
-			fmt.Printf("Error printing timing results: %v\n", err)
-			os.Exit(1)
+		if err = ws.PrintTimingResults(cfg.TargetURL, result); err != nil {
+			return fmt.Errorf("printing timing results: %w", err)
 		}
 	}
 
 	ws.PrintResponse(result)
+	return nil
 }

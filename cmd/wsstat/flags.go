@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -10,11 +9,14 @@ import (
 // headerList is a flag.Value implementation that accumulates repeated -H / -header entries.
 type headerList []string
 
-// Set converts the string value to an integer and stores it.
+// Set appends the header value to the list.
 func (h *headerList) Set(value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return errors.New("header must not be empty")
+	}
+	if !strings.Contains(trimmed, ":") {
+		return errors.New("header must be in 'Key: Value' format")
 	}
 	*h = append(*h, trimmed)
 	return nil
@@ -65,44 +67,4 @@ func (f *trackedIntFlag) WasSet() bool {
 // newTrackedIntFlag creates a new trackedIntFlag with the given default value.
 func newTrackedIntFlag(defaultValue int) trackedIntFlag {
 	return trackedIntFlag{value: defaultValue}
-}
-
-// verbosityCounter is a flag.Value implementation that tracks how many times -v was requested.
-type verbosityCounter struct {
-	count int
-}
-
-// newVerbosityCounter creates a new verbosityCounter.
-func newVerbosityCounter() *verbosityCounter {
-	return &verbosityCounter{}
-}
-
-// String returns the string representation of the flag value.
-func (v *verbosityCounter) String() string {
-	return strconv.Itoa(v.count)
-}
-
-// Set converts the string value to an integer and stores it.
-func (v *verbosityCounter) Set(value string) error {
-	if value == "" {
-		v.count++
-		return nil
-	}
-
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fmt.Errorf("invalid verbosity value %q: %w", value, err)
-	}
-
-	if parsed < 0 {
-		return errors.New("verbosity must be non-negative")
-	}
-
-	v.count += parsed
-	return nil
-}
-
-// Value returns the integer value of the flag.
-func (v *verbosityCounter) Value() int {
-	return v.count
 }
