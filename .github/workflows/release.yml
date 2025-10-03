@@ -1,0 +1,176 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Mark as pre-release?"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: 1.25.1
+  GOLANGCI_LINT_VERSION: v2.4.0
+
+jobs:
+  version-bump-check:
+    name: VERSION check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: VERSION bump check vs latest FINAL tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          raw=$(cat VERSION)
+          NEW_VERSION=${raw#v}  # normalized X.Y.Z
+
+          # semver X.Y.Z with optional -prerelease/+build on the *file*, but we only accept bare X.Y.Z for base version
+          if [[ ! "$NEW_VERSION" =~ ^[0-9]+(\.[0-9]+){2}([\-+][0-9A-Za-z\.-]+)?$ ]]; then
+            echo "::error::VERSION must be SemVer like 0.1.2 or 1.2.3-rc.1"
+            exit 1
+          fi
+
+          # latest FINAL tag: strictly vX.Y.Z (ignore all prereleases)
+          LATEST_FINAL_TAG=$(git tag --list 'v[0-9]*' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n1 || true)
+          LATEST_FINAL_TAG=${LATEST_FINAL_TAG:-v0.0.0}
+          OLD_FINAL_VERSION=${LATEST_FINAL_TAG#v}
+
+          echo "Latest FINAL tag: $LATEST_FINAL_TAG"
+          echo "VERSION file:     $NEW_VERSION"
+
+          # VERSION must be strictly > latest FINAL (ignores rcs)
+          if [[ "$(printf '%s\n' "$OLD_FINAL_VERSION" "$NEW_VERSION" | sort -V | tail -n1)" != "$NEW_VERSION" ]]; then
+            echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
+            exit 1
+          fi
+
+          echo "VERSION is newer than latest final: $OLD_FINAL_VERSION → $NEW_VERSION"
+
+  release:
+    name: Build, tag & release
+    needs: [version-bump-check]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: -v
+
+      - name: Run tests (-race)
+        shell: bash
+        run: go test -mod=readonly ./... -count=1 -race
+
+      - name: Build
+        shell: bash
+        run: make build
+
+      - name: Compute tag (final or next -rc.N)
+        id: compute_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRERELEASE="${{ github.event.inputs.prerelease }}"
+          raw=$(cat VERSION)
+          VERSION="${raw#v}"  # normalized base: X.Y.Z
+
+          # existence helpers
+          final_exists()   { git rev-parse "v${VERSION}" >/dev/null 2>&1; }
+          any_rc_tags()    { git tag --list "v${VERSION}-rc*" | grep -q .; }
+
+          # find next rc number (supports both -rc1 and -rc.1 historical patterns)
+          next_rc_tag() {
+            local base="$1"
+            local maxn
+            maxn=$(git tag --list "v${base}-rc*" \
+              | sed -E 's/^.*-rc\.?([0-9]+)$/\1/' \
+              | grep -E '^[0-9]+$' \
+              | sort -n | tail -n1 || true)
+            if [[ -z "${maxn:-}" ]]; then
+              echo "v${base}-rc.1"
+            else
+              echo "v${base}-rc.$((maxn+1))"
+            fi
+          }
+
+          # guard: do not allow prerelease/final if final already exists for this version
+          if final_exists; then
+            if [[ "$PRERELEASE" == "true" ]]; then
+              echo "::error::Cannot create prerelease: final tag v${VERSION} already exists"
+            else
+              echo "::error::Final tag v${VERSION} already exists; bump VERSION first"
+            fi
+            exit 1
+          fi
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            TAG="$(next_rc_tag "$VERSION")"
+            IS_PRE="true"
+          else
+            TAG="v${VERSION}"
+            IS_PRE="false"
+          fi
+
+          # final guard: avoid accidental retagging if somehow exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+
+          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"                >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE"   >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION"        >> "$GITHUB_ENV"
+
+          echo "Computed tag: $TAG (prerelease=$IS_PRE)"
+
+      - name: Create Git tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.compute_tag.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "chore(release): $TAG"
+          git push origin "$TAG"
+
+      - name: Generate changelog for the new tag
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --current --no-exec
+        env:
+          GITHUB_REPO:  ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Publish GitHub Release
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ steps.compute_tag.outputs.tag }}
+          name:       wsstat ${{ steps.compute_tag.outputs.tag }}
+          body:       ${{ steps.git-cliff.outputs.content }}
+          files:      ./bin/wsstat
+          prerelease: ${{ steps.compute_tag.outputs.is_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
