@@ -117,12 +117,14 @@ func (ws *WSStat) deliverSubscriptionMessage(
 	if state == nil {
 		return
 	}
+
+	now := message.Received
+	dropped := false
 	state.mu.Lock()
 	if state.closed {
 		state.mu.Unlock()
 		return
 	}
-	now := message.Received
 	if message.Err == nil {
 		if state.stats.firstEvent.IsZero() {
 			state.stats.firstEvent = now
@@ -140,6 +142,13 @@ func (ws *WSStat) deliverSubscriptionMessage(
 		}
 		state.stats.lastEvent = now
 	}
+	if state.buffer != nil {
+		select {
+		case state.buffer <- message:
+		default:
+			dropped = true
+		}
+	}
 	state.mu.Unlock()
 
 	if state.messages != nil {
@@ -151,9 +160,7 @@ func (ws *WSStat) deliverSubscriptionMessage(
 
 	ws.trackSubscriptionEvent(now)
 
-	select {
-	case state.buffer <- message:
-	default:
+	if dropped {
 		ws.log.Warn().Str("subscription", state.id).
 			Msg("subscription buffer full; dropping message")
 	}
