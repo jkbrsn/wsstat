@@ -159,8 +159,19 @@ jobs:
             git push origin "$TAG"
           fi
 
-      - name: Generate changelog for the new tag
-        id: git-cliff
+      - name: Find previous final tag (-rc.N excluded)
+        id: prev_final
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREV=$(git tag --list 'v[0-9]*' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n2 | head -n1 || true)
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog (RC)
+        id: git-cliff-rc
+        if: ${{ steps.compute_tag.outputs.is_prerelease == 'true' }}
         uses: orhun/git-cliff-action@v4
         with:
           args: --current --no-exec
@@ -168,16 +179,29 @@ jobs:
           GITHUB_REPO:  ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Generate changelog (final release)
+        id: git-cliff-final
+        if: ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}
+        uses: orhun/git-cliff-action@v4
+        with:
+          # If no previous final tag, this produces an empty range; optionally
+          # fall back to the root commit if you want *all* history instead.
+          args: "${{ steps.prev_final.outputs.prev }}..${{ steps.compute_tag.outputs.tag }} --no-exec"
+        env:
+          GITHUB_REPO:  ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Publish GitHub Release
-        id: gh_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name:   ${{ steps.compute_tag.outputs.tag }}
-          name:       wsstat ${{ steps.compute_tag.outputs.tag }}
-          body:       ${{ steps.git-cliff.outputs.content }}
-          files:      ./bin/wsstat
-          prerelease: ${{ steps.compute_tag.outputs.is_prerelease }}
-          overwrite_files: true  # rerun resilience
-          make_latest: ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}  # finals only
+          tag_name:         ${{ steps.compute_tag.outputs.tag }}
+          name:             wsstat ${{ steps.compute_tag.outputs.tag }}
+          body:             ${{ steps.compute_tag.outputs.is_prerelease == 'true'
+                              && steps.git-cliff-rc.outputs.content
+                              || steps.git-cliff-final.outputs.content }}
+          files:            ./bin/wsstat
+          prerelease:       ${{ steps.compute_tag.outputs.is_prerelease }}
+          overwrite_files:  true  # rerun resilience
+          make_latest:      ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}  # finals only
         env:
           GITHUB_TOKEN: ${{ github.token }}
