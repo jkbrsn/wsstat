@@ -177,7 +177,7 @@ jobs:
           body:       ${{ steps.git-cliff.outputs.content }}
           files:      ./bin/wsstat
           prerelease: ${{ steps.compute_tag.outputs.is_prerelease }}
-          allowUpdates: true                # rerun resilience
-          make_latest: ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}
+          overwrite_files: true  # rerun resilience
+          make_latest: ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}  # finals only
         env:
           GITHUB_TOKEN: ${{ github.token }}
