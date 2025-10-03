@@ -1,449 +1,272 @@
-// Package app measures utilizes the wsstat package to measure to construct a
-// client that measures the latency of a WebSocket connection.
+// Package app provides a high-level client for measuring WebSocket latency and streaming
+// subscription events. It builds on the wsstat package with configuration management,
+// output formatting (terminal and JSON), and subscription handling.
+//
+// # Basic Usage
+//
+// Create a client with functional options and measure latency:
+//
+//	client := app.NewClient(
+//	    app.WithTextMessage("ping"),
+//	    app.WithCount(5),
+//	)
+//	if err := client.Validate(); err != nil {
+//	    log.Fatal(err)
+//	}
+//	ctx := context.Background()
+//	result, err := client.MeasureLatency(ctx, targetURL)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	client.PrintTimingResults(targetURL, result)
+//
+// # Subscription Mode
+//
+// Stream events from a WebSocket server:
+//
+//	client := app.NewClient(
+//	    app.WithSubscription(true),
+//	    app.WithCount(10),
+//	    app.WithTextMessage("subscribe"),
+//	)
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//	if err := client.StreamSubscription(ctx, targetURL); err != nil {
+//	    log.Fatal(err)
+//	}
 package app
 
 import (
-	"crypto/tls"
-	"encoding/json"
+	"context"
 	"errors"
-	"fmt"
-	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jkbrsn/wsstat"
 )
 
-var (
-	// Templates for printing singular results
-	printValueTemp         = "%s: %s\n"
-	printIndentedValueTemp = "  %s: %s\n"
-
-	// Templates for printing tiered results
-	wssPrintTemplate = `
-  DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    %-17s
-|%s  |      %s  |     %s  |    %s  |   %s  |
-|           |                 |                |               |              |
-|  DNS lookup:%s        |                |               |              |
-|                 TCP connected:%s       |               |              |
-|                                       TLS done:%s      |              |
-|                                                        WS done:%s     |
--                                                                         Total:%s
-`
-	wsPrintTemplate = `
-  DNS Lookup    TCP Connection    WS Handshake    %-17s
-|%s  |      %s  |    %s  |  %s   |
-|           |                 |               |              |
-|  DNS lookup:%s        |               |              |
-|                 TCP connected:%s      |              |
-|                                       WS done:%s     |
--                                                        Total:%s
-`
-)
-
-// Client measures the latency of a WebSocket connection, applying different methods
-// based on the settings passed to the struct.
+// Client measures the latency of a WebSocket connection and manages subscription streams.
+// Use NewClient with functional options to create and configure a Client.
+//
+// Fields are private; use accessor methods (Count(), Format(), etc.) to read configuration,
+// or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
-	Burst        int    // Number of messages to send in a burst (if > 1)
-	InputHeaders string // Comma-separated headers for connection establishment
-	JSONMethod   string // A single JSON RPC method (no params)
-	TextMessage  string // A text message
+	count       int      // Nr of interactions to perform; 0 means unlimited in subscription mode
+	headers     []string // HTTP headers for connection establishment ("Key: Value")
+	rpcMethod   string   // JSON-RPC method (no params)
+	textMessage string   // Text message
+
 	// Output
-	RawOutput   bool
-	ShowVersion bool
-	Version     string
-	// Protocol
-	Insecure bool
+	format    string // Output formatting mode: "auto", "json", or "raw"
+	colorMode string // Color behavior: "auto", "always", or "never"
+
 	// Verbosity
-	Basic   bool
-	Quiet   bool
-	Verbose bool
+	quiet          bool // suppress request/timing output
+	verbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
 
-	// The response of a MeasureLatency call. Is overwritten if the function is called again.
-	Response any
-
-	// The result of a MeasureLatency call. Is overwritten if the function is called again.
-	Result *wsstat.Result
+	// Subscription mode
+	subscribe       bool
+	subscribeOnce   bool
+	buffer          int
+	summaryInterval time.Duration
 }
 
-// measureText runs the text-message latency measurement flow.
-func (c *Client) measureText(target *url.URL, header http.Header) error {
-	msgs := buildRepeatedStrings(c.TextMessage, c.Burst)
-	var err error
-	c.Result, c.Response, err = wsstat.MeasureLatencyBurst(target, msgs, header)
+// Option configures a Client.
+type Option func(*Client)
+
+// NewClient creates a new Client with the given options.
+func NewClient(opts ...Option) *Client {
+	c := &Client{
+		count:     1,
+		format:    formatAuto,
+		colorMode: "auto",
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// WithCount sets the number of measurement interactions.
+func WithCount(n int) Option {
+	return func(c *Client) { c.count = n }
+}
+
+// WithHeaders sets custom HTTP headers for the WebSocket handshake.
+func WithHeaders(headers []string) Option {
+	return func(c *Client) { c.headers = headers }
+}
+
+// WithRPCMethod configures JSON-RPC method to send.
+func WithRPCMethod(method string) Option {
+	return func(c *Client) { c.rpcMethod = method }
+}
+
+// WithTextMessage configures a text message to send.
+func WithTextMessage(msg string) Option {
+	return func(c *Client) { c.textMessage = msg }
+}
+
+// WithFormat sets the output format (auto, json, or raw).
+func WithFormat(format string) Option {
+	return func(c *Client) { c.format = format }
+}
+
+// WithColorMode sets color output behavior (auto, always, or never).
+func WithColorMode(mode string) Option {
+	return func(c *Client) { c.colorMode = mode }
+}
+
+// WithQuiet suppresses non-essential output.
+func WithQuiet(quiet bool) Option {
+	return func(c *Client) { c.quiet = quiet }
+}
+
+// WithVerbosity sets the verbosity level (0 = summary, 1 = extended, 2+ = full).
+func WithVerbosity(level int) Option {
+	return func(c *Client) { c.verbosityLevel = level }
+}
+
+// WithSubscription enables subscription mode.
+func WithSubscription(subscribe bool) Option {
+	return func(c *Client) { c.subscribe = subscribe }
+}
+
+// WithSubscriptionOnce enables one-shot subscription mode.
+func WithSubscriptionOnce(once bool) Option {
+	return func(c *Client) { c.subscribeOnce = once }
+}
+
+// WithBuffer sets the subscription delivery buffer size.
+func WithBuffer(size int) Option {
+	return func(c *Client) { c.buffer = size }
+}
+
+// WithSummaryInterval sets the subscription summary print interval.
+func WithSummaryInterval(interval time.Duration) Option {
+	return func(c *Client) { c.summaryInterval = interval }
+}
+
+// Count returns the configured interaction count.
+func (c *Client) Count() int { return c.count }
+
+// Format returns the configured output format.
+func (c *Client) Format() string { return c.format }
+
+// ColorMode returns the configured color mode.
+func (c *Client) ColorMode() string { return c.colorMode }
+
+// VerbosityLevel returns the configured verbosity level.
+func (c *Client) VerbosityLevel() int { return c.verbosityLevel }
+
+// Quiet returns whether quiet mode is enabled.
+func (c *Client) Quiet() bool { return c.quiet }
+
+// RPCMethod returns the configured RPC method.
+func (c *Client) RPCMethod() string { return c.rpcMethod }
+
+// MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages
+// based on client configuration. Returns timing results and the server response.
+//
+// The measurement method is determined by client settings:
+//   - If textMessage is set: sends text messages and measures echo latency
+//   - If rpcMethod is set: sends JSON-RPC requests and measures response latency
+//   - Otherwise: sends WebSocket ping frames and measures pong latency
+//
+// The context can be used to cancel the measurement operation.
+func (c *Client) MeasureLatency(
+	ctx context.Context,
+	target *url.URL,
+) (*MeasurementResult, error) {
+	header, err := parseHeaders(c.headers)
 	if err != nil {
-		return handleConnectionError(err, target.String())
-	}
-	return c.postProcessTextResponse()
-}
-
-// postProcessTextResponse keeps behavior identical to the original implementation while allowing
-// plain-text echoes:
-// - pick the first element if response is []string and non-empty
-// - if RawOutput is false and response is a JSON-RPC payload, decode into map[string]any
-func (c *Client) postProcessTextResponse() error {
-	if responseArray, ok := c.Response.([]string); ok && len(responseArray) > 0 {
-		c.Response = responseArray[0]
-	}
-	if !c.RawOutput {
-		responseStr, ok := c.Response.(string)
-		if !ok {
-			return nil
-		}
-
-		trimmed := strings.TrimSpace(responseStr)
-		if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
-			return nil
-		}
-
-		decodedMessage := make(map[string]any)
-		if err := json.Unmarshal([]byte(responseStr), &decodedMessage); err != nil {
-			return nil
-		}
-
-		if _, isJSONRPC := decodedMessage["jsonrpc"]; !isJSONRPC {
-			return nil
-		}
-		c.Response = decodedMessage
-	}
-	return nil
-}
-
-// measureJSON runs the JSON-RPC latency measurement flow.
-func (c *Client) measureJSON(target *url.URL, header http.Header) error {
-	msg := struct {
-		Method     string `json:"method"`
-		ID         string `json:"id"`
-		RPCVersion string `json:"jsonrpc"`
-	}{
-		Method:     c.JSONMethod,
-		ID:         "1",
-		RPCVersion: "2.0",
-	}
-	msgs := buildRepeatedAny(msg, c.Burst)
-	var err error
-	c.Result, c.Response, err = wsstat.MeasureLatencyJSONBurst(target, msgs, header)
-	if err != nil {
-		return handleConnectionError(err, target.String())
-	}
-	return nil
-}
-
-// measurePing runs the ping latency measurement flow.
-func (c *Client) measurePing(target *url.URL, header http.Header) error {
-	var err error
-	c.Result, err = wsstat.MeasureLatencyPingBurst(target, c.Burst, header)
-	if err != nil {
-		return handleConnectionError(err, target.String())
-	}
-	return nil
-}
-
-// MeasureLatency measures the latency of the WebSocket connection, applying different methods
-// based on the flags passed to the program.
-func (c *Client) MeasureLatency(target *url.URL) error {
-	header, err := parseHeaders(c.InputHeaders)
-	if err != nil {
-		return err
+		return nil, err
 	}
 
+	var result *MeasurementResult
 	switch {
-	case c.TextMessage != "":
-		return c.measureText(target, header)
-	case c.JSONMethod != "":
-		return c.measureJSON(target, header)
+	case c.textMessage != "":
+		result, err = c.measureText(ctx, target, header)
+	case c.rpcMethod != "":
+		result, err = c.measureJSON(ctx, target, header)
 	default:
-		return c.measurePing(target, header)
+		result, err = c.measurePing(ctx, target, header)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
-// PrintRequestDetails prints the results of the Client, with verbosity based on the flags
-// passed to the program. If no results have been produced yet, the function errors.
-func (c *Client) PrintRequestDetails() error {
-	if c.Result == nil {
-		return errors.New("no results have been produced")
-	}
-	fmt.Println()
-
-	// Print basic output
-	if c.Basic {
-		fmt.Printf(printValueTemp, colorTeaGreen("URL"), c.Result.URL.Hostname())
-		if len(c.Result.IPs) > 0 {
-			fmt.Printf("%s:  %s\n", colorTeaGreen("IP"), c.Result.IPs[0])
-		}
-		return nil
-	}
-
-	// Print verbose output
-	if c.Verbose {
-		fmt.Println(colorWSOrange("Target"))
-		fmt.Printf("  %s:  %s\n", colorTeaGreen("URL"), c.Result.URL.Hostname())
-		// Loop in case there are multiple IPs with the target
-		for _, ip := range c.Result.IPs {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen("IP"), ip)
-		}
-		fmt.Printf("  %s: %d\n", colorTeaGreen("Messages sent"), c.Result.MessageCount)
-		fmt.Println()
-		if c.Result.TLSState != nil {
-			fmt.Println(colorWSOrange("TLS"))
-			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Version"), tls.VersionName(c.Result.TLSState.Version))
-			fmt.Printf(printIndentedValueTemp,
-				colorTeaGreen("Cipher Suite"), tls.CipherSuiteName(c.Result.TLSState.CipherSuite))
-
-			// Print the certificate details
-			for i, cert := range c.Result.TLSState.PeerCertificates {
-				fmt.Printf("  %s: %d\n", colorTeaGreen("Certificate"), i+1)
-				fmt.Printf("    Subject: %s\n", cert.Subject)
-				fmt.Printf("    Issuer: %s\n", cert.Issuer)
-				fmt.Printf("    Not Before: %s\n", cert.NotBefore)
-				fmt.Printf("    Not After: %s\n", cert.NotAfter)
-			}
-			fmt.Println()
-		}
-		fmt.Println(colorWSOrange("Request headers"))
-		for key, values := range c.Result.RequestHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-		}
-		fmt.Println(colorWSOrange("Response headers"))
-		for key, values := range c.Result.ResponseHeaders {
-			fmt.Printf(printIndentedValueTemp, colorTeaGreen(key), strings.Join(values, ", "))
-		}
-		return nil
-	}
-
-	// Print standard output
-	fmt.Printf(printValueTemp, colorWSOrange("Target"), c.Result.URL.Hostname())
-	for _, values := range c.Result.IPs {
-		fmt.Printf(printValueTemp, colorWSOrange("IP"), values)
-	}
-	fmt.Printf("%s: %d\n", colorWSOrange("Messages sent:"), c.Result.MessageCount)
-	for key, values := range c.Result.RequestHeaders {
-		if key == "Sec-WebSocket-Version" {
-			fmt.Printf(printValueTemp, colorWSOrange("WS version"), strings.Join(values, ", "))
-		}
-	}
-	if c.Result.TLSState != nil {
-		fmt.Printf(printValueTemp,
-			colorWSOrange("TLS version"), tls.VersionName(c.Result.TLSState.Version))
-	}
-
-	return nil
-}
-
-// PrintTimingResults prints the WebSocket statistics to the terminal.
-func (c *Client) PrintTimingResults(u *url.URL) error {
-	if c.Result == nil {
-		return errors.New("no results have been produced")
-	}
-
-	if c.Basic {
-		printTimingResultsBasic(c.Result, c.Burst)
-	} else {
-		rttLabel := "Message RTT"
-		if c.Burst > 1 || c.Result.MessageCount > 1 {
-			rttLabel = "Mean Message RTT"
-		}
-		printTimingResultsTiered(c.Result, u, rttLabel)
-	}
-
-	return nil
-}
-
-// PrintResponse prints the response to the terminal if there is one, otherwise does nothing.
-func (c *Client) PrintResponse() {
-	if c.Response == nil {
-		return
-	}
-
-	baseMessage := colorWSOrange("Response") + ": "
-
-	if c.Quiet {
-		baseMessage = ""
-	} else {
-		fmt.Println()
-	}
-
-	if c.RawOutput {
-		// If raw output is requested, print the raw data before trying to assert any types
-		fmt.Printf("%s%v\n", baseMessage, c.Response)
-	} else if responseMap, ok := c.Response.(map[string]any); ok {
-		// If JSON in request, print response as JSON
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.JSONMethod != "" {
-			responseJSON, err := json.Marshal(responseMap)
-			if err != nil {
-				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
-			}
-			fmt.Printf("%s%s\n", baseMessage, responseJSON)
-		} else {
-			fmt.Printf("%s%v\n", baseMessage, responseMap)
-		}
-	} else if responseArray, ok := c.Response.([]any); ok {
-		fmt.Printf("%s%v\n", baseMessage, responseArray)
-	} else if responseBytes, ok := c.Response.([]byte); ok {
-		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
-	}
-
-	if !c.Quiet {
-		fmt.Println()
-	}
-}
-
-// Validate validates the Client is ready for measurement; it checks that the client settings are
-// set to valid values.
+// Validate checks client configuration for validity and applies defaults.
+// It must be called after construction and before MeasureLatency or subscription methods.
+//
+// Validation includes:
+//   - Ensures count is non-negative
+//   - Verifies text and rpc-method are not both set (mutually exclusive)
+//   - Validates format is "auto", "json", or "raw"
+//   - Validates colorMode is "auto", "always", or "never"
+//   - Ensures buffer and summaryInterval are non-negative
+//   - Enforces subscribe-once requires count == 1
+//
+// This method also normalizes configuration (e.g., sets count=1 default in non-subscribe mode).
 func (c *Client) Validate() error {
-	if c.Burst < 1 {
-		return errors.New("burst must be greater than 0")
+	if c.count < 0 {
+		return errors.New("count must be zero or greater")
 	}
 
-	if c.TextMessage != "" && c.JSONMethod != "" {
+	if c.textMessage != "" && c.rpcMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
 	}
-	return nil
-}
 
-// buildRepeatedStrings returns a slice of length n where every element equals s.
-func buildRepeatedStrings(s string, n int) []string {
-	msgs := make([]string, n)
-	for i := range msgs {
-		msgs[i] = s
+	c.format = strings.TrimSpace(strings.ToLower(c.format))
+	if c.format == "" {
+		c.format = formatAuto
 	}
-	return msgs
-}
-
-// buildRepeatedAny returns a slice of length n where every element equals v.
-func buildRepeatedAny(v any, n int) []any {
-	msgs := make([]any, n)
-	for i := range msgs {
-		msgs[i] = v
+	switch c.format {
+	case formatAuto, formatRaw, formatJSON:
+		// valid
+	default:
+		return errors.New("format must be \"auto\", \"json\", or \"raw\"")
 	}
-	return msgs
-}
 
-// colorWSOrange returns the text with a custom orange color.
-// The color is from the WS logo, #ff6600 is its hex code.
-func colorWSOrange(text string) string {
-	return customColor(255, 102, 0, text) //revive:disable:add-constant should allow
-}
-
-// colorTeaGreen returns the text with a custom tea green color.
-// The color has hex code #d3f9b5.
-func colorTeaGreen(text string) string {
-	return customColor(211, 249, 181, text) //revive:disable:add-constant should allow
-}
-
-// customColor returns the text with a custom RGB color.
-func customColor(r, g, b int, text string) string {
-	return fmt.Sprintf("\033[38;2;%d;%d;%dm%s\033[0m", r, g, b, text)
-}
-
-// formatPadLeft formats the duration to a string with padding on the left.
-func formatPadLeft(d time.Duration) string {
-	return fmt.Sprintf("%7dms", int(d/time.Millisecond))
-}
-
-// formatPadRight formats the duration to a string with padding on the right.
-func formatPadRight(d time.Duration) string {
-	return fmt.Sprintf("%-8s", strconv.Itoa(int(d/time.Millisecond))+"ms")
-}
-
-// handleConnectionError prints the error message and exits the program.
-func handleConnectionError(err error, address string) error {
-	if strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
-		return fmt.Errorf("error establishing secure WS connection to '%s': %v", address, err)
+	c.colorMode = strings.TrimSpace(strings.ToLower(c.colorMode))
+	if c.colorMode == "" {
+		c.colorMode = "auto"
 	}
-	return fmt.Errorf("error establishing WS connection to '%s': %v", address, err)
-}
+	if c.colorMode != "auto" && c.colorMode != "always" && c.colorMode != "never" {
+		return errors.New("color must be \"auto\", \"always\", or \"never\"")
+	}
 
-// parseHeaders parses comma separated headers into an HTTP header.
-func parseHeaders(headers string) (http.Header, error) {
-	header := http.Header{}
-	if headers != "" {
-		headerParts := strings.Split(headers, ",")
-		for _, part := range headerParts {
-			parts := strings.SplitN(part, ":", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid header format: %s", part)
-			}
-			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+	if c.buffer < 0 {
+		return errors.New("buffer must be zero or greater")
+	}
+
+	if c.summaryInterval < 0 {
+		return errors.New("summary-interval must be zero or greater")
+	}
+
+	if c.subscribeOnce {
+		c.subscribe = true
+		if c.count == 0 {
+			c.count = 1
+		}
+		if c.count != 1 {
+			return errors.New("count must equal 1 when subscribe-once is enabled")
 		}
 	}
-	return header, nil
-}
 
-// printTimingResultsBasic formats and prints only the most basic WebSocket statistics.
-func printTimingResultsBasic(result *wsstat.Result, burst int) {
-	fmt.Println()
-	rttString := "Round-trip time"
-	if burst > 1 {
-		rttString = "Mean round-trip time"
+	if c.subscribe {
+		return nil
 	}
-	msgCountString := "message"
-	if result.MessageCount > 1 {
-		msgCountString = "messages"
-	}
-	fmt.Printf(
-		"%s: %s (%d %s)\n",
-		rttString,
-		colorWSOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
-		result.MessageCount,
-		msgCountString)
-	fmt.Printf(
-		printValueTemp,
-		"Total time",
-		colorWSOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
-	fmt.Println()
-}
 
-// printTimingResultsTiered formats and prints the WebSocket statistics to the terminal
-// in a tiered fashion.
-func printTimingResultsTiered(result *wsstat.Result, u *url.URL, label string) {
-	fmt.Println()
-	switch u.Scheme {
-	case "wss":
-		fmt.Fprintf(os.Stdout, wssPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.TLSHandshake)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.TLSHandshakeDone)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
-	case "ws":
-		fmt.Fprintf(os.Stdout, wsPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			// formatPadRight(result.FirstMessageResponse), // Skipping due to ConnectionClose skip
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
-	default:
-		fmt.Fprintf(os.Stdout, wsPrintTemplate,
-			label,
-			colorTeaGreen(formatPadLeft(result.DNSLookup)),
-			colorTeaGreen(formatPadLeft(result.TCPConnection)),
-			colorTeaGreen(formatPadLeft(result.WSHandshake)),
-			colorTeaGreen(formatPadLeft(result.MessageRTT)),
-			colorTeaGreen(formatPadRight(result.DNSLookupDone)),
-			colorTeaGreen(formatPadRight(result.TCPConnected)),
-			colorTeaGreen(formatPadRight(result.WSHandshakeDone)),
-			colorWSOrange(formatPadRight(result.TotalTime)),
-		)
+	if c.count == 0 {
+		c.count = 1
 	}
-	fmt.Println()
+	if c.count < 1 {
+		return errors.New("count must be greater than 0")
+	}
+	return nil
 }
