@@ -218,10 +218,10 @@ func TestProcessTextResponse(t *testing.T) {
 	})
 }
 
-func TestTryDecodeJSONRPC(t *testing.T) {
+func TestDecodeAsJSONRPC(t *testing.T) {
 	t.Run("valid JSON-RPC", func(t *testing.T) {
 		input := `{"jsonrpc":"2.0","result":"ok","id":"1"}`
-		result, err := tryDecodeJSONRPC(input)
+		result, err := decodeAsJSONRPC(input)
 		require.NoError(t, err)
 		assert.Equal(t, "2.0", result["jsonrpc"])
 		assert.Equal(t, "ok", result["result"])
@@ -229,33 +229,33 @@ func TestTryDecodeJSONRPC(t *testing.T) {
 
 	t.Run("plain JSON without jsonrpc field", func(t *testing.T) {
 		input := `{"result":"ok"}`
-		_, err := tryDecodeJSONRPC(input)
+		_, err := decodeAsJSONRPC(input)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid JSON-RPC version")
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		input := `{invalid json`
-		_, err := tryDecodeJSONRPC(input)
+		_, err := decodeAsJSONRPC(input)
 		assert.Error(t, err)
 	})
 
 	t.Run("empty string", func(t *testing.T) {
-		_, err := tryDecodeJSONRPC("")
+		_, err := decodeAsJSONRPC("")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not JSON")
 	})
 
 	t.Run("plain text", func(t *testing.T) {
 		input := "not json at all"
-		_, err := tryDecodeJSONRPC(input)
+		_, err := decodeAsJSONRPC(input)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not JSON")
 	})
 
 	t.Run("whitespace trimming", func(t *testing.T) {
 		input := `  {"jsonrpc":"2.0","result":"ok"}  `
-		result, err := tryDecodeJSONRPC(input)
+		result, err := decodeAsJSONRPC(input)
 		require.NoError(t, err)
 		assert.Equal(t, "2.0", result["jsonrpc"])
 	})

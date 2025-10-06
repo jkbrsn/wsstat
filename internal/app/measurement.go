@@ -83,51 +83,63 @@ func (c *Client) measurePing(
 	}, nil
 }
 
-// processTextResponse transforms a raw text response based on format settings
+// processTextResponse transforms a raw text response based on the format setting.
+// Format rules:
+//   - formatRaw: returns the raw response string without parsing
+//   - other formats: attempts to parse response as JSON-RPC and return structured data
+//
+// The response may be a []string from burst measurements; if so, only the first
+// element is processed.
 func processTextResponse(response any, format string) (any, error) {
-	processedResponse := response
-	if responseArray, ok := response.([]string); ok && len(responseArray) > 0 {
-		processedResponse = responseArray[0]
-	}
+	// Extract first response from array if present
+	responseStr := extractFirstString(response)
 
+	// Raw format bypasses JSON-RPC parsing
 	if format == formatRaw {
-		return processedResponse, nil
+		return responseStr, nil
 	}
 
-	responseStr, ok := processedResponse.(string)
-	if !ok {
-		return processedResponse, nil
+	// Attempt JSON-RPC decode for structured formats
+	if str, ok := responseStr.(string); ok {
+		if decoded, err := decodeAsJSONRPC(str); err == nil {
+			return decoded, nil
+		}
 	}
 
-	jsonResp, err := tryDecodeJSONRPC(responseStr)
-	if err != nil {
-		return processedResponse, nil
-	}
-
-	return jsonResp, nil
+	// Fall back to raw response if JSON-RPC decode fails
+	return responseStr, nil
 }
 
-// tryDecodeJSONRPC attempts to parse a string as JSON-RPC using the jsonrpc library
-func tryDecodeJSONRPC(s string) (map[string]any, error) {
+// extractFirstString normalizes response arrays to a single value.
+// If response is []string with elements, returns the first element.
+// Otherwise returns the response unchanged.
+func extractFirstString(response any) any {
+	if arr, ok := response.([]string); ok && len(arr) > 0 {
+		return arr[0]
+	}
+	return response
+}
+
+// decodeAsJSONRPC parses a string as a JSON-RPC response.
+// Returns the decoded response as a map, or an error if:
+//   - the string is not valid JSON
+//   - the JSON is not a valid JSON-RPC 2.0 response
+func decodeAsJSONRPC(s string) (map[string]any, error) {
 	trimmed := strings.TrimSpace(s)
+
+	// Verify starts with JSON structure
 	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
 		return nil, errors.New("not JSON")
 	}
 
 	resp, err := jsonrpc.DecodeResponse([]byte(trimmed))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode JSON-RPC response: %w", err)
-	}
-
-	// Validate that it's a proper JSON-RPC response
-	if err := resp.Validate(); err != nil {
-		return nil, fmt.Errorf("not valid JSON-RPC: %w", err)
+		return nil, fmt.Errorf("decode failed: %w", err)
 	}
 
 	var decoded map[string]any
-	err = resp.Unmarshal(&decoded)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JSON-RPC response: %w", err)
+	if err := resp.Unmarshal(&decoded); err != nil {
+		return nil, fmt.Errorf("unmarshal failed: %w", err)
 	}
 
 	return decoded, nil
