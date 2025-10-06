@@ -199,7 +199,7 @@ func TestProcessTextResponse(t *testing.T) {
 		result, err := processTextResponse(payload, formatAuto)
 		require.NoError(t, err)
 		asMap, ok := result.(map[string]any)
-		require.True(t, ok, "expected JSON-RPC response to decode into a map")
+		assert.True(t, ok, "expected JSON-RPC response to decode into a map, got %T", result)
 		assert.Equal(t, "ok", asMap["result"])
 	})
 
@@ -231,7 +231,7 @@ func TestTryDecodeJSONRPC(t *testing.T) {
 		input := `{"result":"ok"}`
 		_, err := tryDecodeJSONRPC(input)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not JSON-RPC")
+		assert.Contains(t, err.Error(), "invalid JSON-RPC version")
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/jkbrsn/jsonrpc"
 	"github.com/jkbrsn/wsstat"
 )
 
@@ -119,16 +119,9 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 		return websocket.TextMessage, []byte(c.textMessage), nil
 	}
 	if c.rpcMethod != "" {
-		msg := struct {
-			Method     string `json:"method"`
-			ID         string `json:"id"`
-			RPCVersion string `json:"jsonrpc"`
-		}{
-			Method:     c.rpcMethod,
-			ID:         "1",
-			RPCVersion: "2.0",
-		}
-		payload, err := json.Marshal(msg)
+		// Create a JSON-RPC 2.0 request using the jsonrpc library
+		req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
+		payload, err := req.MarshalJSON()
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
 		}

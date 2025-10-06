@@ -2,12 +2,13 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/jkbrsn/jsonrpc"
 	"github.com/jkbrsn/wsstat"
 )
 
@@ -46,16 +47,8 @@ func (c *Client) measureJSON(
 	target *url.URL,
 	header http.Header,
 ) (*MeasurementResult, error) {
-	msg := struct {
-		Method     string `json:"method"`
-		ID         string `json:"id"`
-		RPCVersion string `json:"jsonrpc"`
-	}{
-		Method:     c.rpcMethod,
-		ID:         "1",
-		RPCVersion: "2.0",
-	}
-	msgs := repeat[any](msg, c.count)
+	req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
+	msgs := repeat[any](req, c.count)
 
 	result, responses, err := wsstat.MeasureLatencyJSONBurstWithContext(ctx, target, msgs, header)
 	if err != nil {
@@ -114,20 +107,27 @@ func processTextResponse(response any, format string) (any, error) {
 	return jsonResp, nil
 }
 
-// tryDecodeJSONRPC attempts to parse a string as JSON-RPC
+// tryDecodeJSONRPC attempts to parse a string as JSON-RPC using the jsonrpc library
 func tryDecodeJSONRPC(s string) (map[string]any, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
 		return nil, errors.New("not JSON")
 	}
 
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return nil, err
+	resp, err := jsonrpc.DecodeResponse([]byte(trimmed))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JSON-RPC response: %w", err)
 	}
 
-	if _, isJSONRPC := decoded["jsonrpc"]; !isJSONRPC {
-		return nil, errors.New("not JSON-RPC")
+	// Validate that it's a proper JSON-RPC response
+	if err := resp.Validate(); err != nil {
+		return nil, fmt.Errorf("not valid JSON-RPC: %w", err)
+	}
+
+	var decoded map[string]any
+	err = resp.Unmarshal(&decoded)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON-RPC response: %w", err)
 	}
 
 	return decoded, nil
