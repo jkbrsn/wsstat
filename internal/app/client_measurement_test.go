@@ -216,6 +216,15 @@ func TestProcessTextResponse(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
 	})
+
+	t.Run("json format parses like auto", func(t *testing.T) {
+		payload := `{"jsonrpc":"2.0","result":"ok"}`
+		result, err := processTextResponse(payload, formatJSON)
+		require.NoError(t, err)
+		asMap, ok := result.(map[string]any)
+		assert.True(t, ok, "expected JSON-RPC response to decode into a map, got %T", result)
+		assert.Equal(t, "ok", asMap["result"])
+	})
 }
 
 func TestDecodeAsJSONRPC(t *testing.T) {

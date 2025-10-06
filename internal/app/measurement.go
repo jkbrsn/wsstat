@@ -85,8 +85,10 @@ func (c *Client) measurePing(
 
 // processTextResponse transforms a raw text response based on the format setting.
 // Format rules:
-//   - formatRaw: returns the raw response string without parsing
-//   - other formats: attempts to parse response as JSON-RPC and return structured data
+//   - formatRaw: returns the raw response string without any parsing
+//   - formatAuto: attempts to parse as JSON-RPC; falls back to raw if not valid JSON-RPC
+//   - formatJSON: same as formatAuto (the format option controls output rendering,
+//     not response parsing; both auto and json modes parse JSON-RPC when possible)
 //
 // The response may be a []string from burst measurements; if so, only the first
 // element is processed.
@@ -94,20 +96,29 @@ func processTextResponse(response any, format string) (any, error) {
 	// Extract first response from array if present
 	responseStr := extractFirstString(response)
 
-	// Raw format bypasses JSON-RPC parsing
-	if format == formatRaw {
+	switch format {
+	case formatRaw:
+		// Raw format: return response without any parsing
+		return responseStr, nil
+
+	case formatAuto, formatJSON:
+		// Auto/JSON formats: attempt JSON-RPC parsing, fall back to raw
+		if str, ok := responseStr.(string); ok {
+			if decoded, err := decodeAsJSONRPC(str); err == nil {
+				return decoded, nil
+			}
+		}
+		return responseStr, nil
+
+	default:
+		// Unknown format: treat as auto (attempt parsing, fall back to raw)
+		if str, ok := responseStr.(string); ok {
+			if decoded, err := decodeAsJSONRPC(str); err == nil {
+				return decoded, nil
+			}
+		}
 		return responseStr, nil
 	}
-
-	// Attempt JSON-RPC decode for structured formats
-	if str, ok := responseStr.(string); ok {
-		if decoded, err := decodeAsJSONRPC(str); err == nil {
-			return decoded, nil
-		}
-	}
-
-	// Fall back to raw response if JSON-RPC decode fails
-	return responseStr, nil
 }
 
 // extractFirstString normalizes response arrays to a single value.
