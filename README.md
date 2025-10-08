@@ -7,7 +7,7 @@
 [godocs]: http://godoc.org/github.com/jkbrsn/wsstat
 [license]: /LICENSE
 
-This is a project that provides a way to measure the latency of a WebSocket connection. It implements the Go package [wsstat](https://github.com/jkbrsn/wsstat) and a CLI tool, also named `wsstat`.
+This project provides a way to stat a WebSocket connection; measure the latency and learn the transport details. It implements the Go package [wsstat][godocs] and a CLI tool, also named `wsstat`.
 
 ## wsstat CLI Client
 
