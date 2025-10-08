@@ -1,4 +1,8 @@
-# wsstat [![Go Documentation](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)][godocs]  [![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)][license]
+# wsstat
+
+[![Go Documentation](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)][godocs]
+[![Go Report Card](https://goreportcard.com/badge/github.com/jkbrsn/wsstat)](https://goreportcard.com/report/github.com/jkbrsn/wsstat)
+[![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)][license]
 
 [godocs]: http://godoc.org/github.com/jkbrsn/wsstat
 [license]: /LICENSE
