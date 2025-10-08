@@ -228,3 +228,7 @@ make test V=1 RACE=1  # test with optional flags
 # lint
 make lint
 ```
+
+## Contributing
+
+For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./TODO.md) to see if what you've got in mind is already in the works.
