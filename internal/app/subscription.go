@@ -119,7 +119,6 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 		return websocket.TextMessage, []byte(c.textMessage), nil
 	}
 	if c.rpcMethod != "" {
-		// Create a JSON-RPC 2.0 request using the jsonrpc library
 		req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
 		payload, err := req.MarshalJSON()
 		if err != nil {
