@@ -87,71 +87,7 @@ func init() {
 	flag.BoolVar(insecure, "k", false, "skip TLS certificate verification")
 	// TODO: Wire -k/--insecure through config.go to TLS config (tls.Config.InsecureSkipVerify)
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
-		fmt.Fprintln(os.Stderr, "Measure WebSocket latency and stream subscription performance")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "USAGE:")
-		fmt.Fprintln(os.Stderr, "  wsstat [options] <url>                  (measure latency)")
-		fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>       (stream subscription)")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Note: Flags without <type> are boolean switches. Flags with <type> require a value.")
-		fmt.Fprintln(os.Stderr, "If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "General:")
-		fmt.Fprintln(os.Stderr, "  -c, --count <int>              number of interactions [default: 1; unlimited when subscribing]")
-		fmt.Fprintln(os.Stderr, "      --version                  print program version and exit")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Input (choose one):")
-		fmt.Fprintln(os.Stderr, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
-		fmt.Fprintln(os.Stderr, "  -t, --text <string>            text message to send")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Subscription:")
-		fmt.Fprintln(os.Stderr, "  -s, --subscribe                stream events until interrupted")
-		fmt.Fprintln(os.Stderr, "      --subscribe-once           subscribe and exit after the first event")
-		fmt.Fprintln(os.Stderr, "  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]")
-		fmt.Fprintln(os.Stderr, "      --summary-interval <duration>")
-		fmt.Fprintln(os.Stderr, "                                 print subscription summaries every interval (e.g., 1s, 5m, 1h) [default: disabled]")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Connection:")
-		fmt.Fprintln(os.Stderr, "  -H, --header <string>          HTTP header to include with request (repeatable; format: \"Key: Value\")")
-		fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
-		fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
-		fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Output:")
-		fmt.Fprintln(os.Stderr, "  -q, --quiet                    suppress all output except response")
-		fmt.Fprintln(os.Stderr, "  -v, --verbose                  increase verbosity (level 1)")
-		fmt.Fprintln(os.Stderr, "  -vv                            increase verbosity (level 2)")
-		fmt.Fprintln(os.Stderr, "  -f, --format <string>          output format: auto, json, raw [default: auto]")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Verbosity Levels:")
-		fmt.Fprintln(os.Stderr, "  (default)                      minimal request info with summary timings")
-		fmt.Fprintln(os.Stderr, "  -v                             adds target/TLS summaries and timing diagram")
-		fmt.Fprintln(os.Stderr, "  -vv                            includes full TLS certificates and headers")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Security Notes:")
-		fmt.Fprintln(os.Stderr, "  -k, --insecure: Disables TLS certificate verification. Only use for testing or when")
-		fmt.Fprintln(os.Stderr, "                  connecting to endpoints with self-signed certificates. This makes")
-		fmt.Fprintln(os.Stderr, "                  your connection vulnerable to MITM attacks.")
-		fmt.Fprintln(os.Stderr)
-
-		fmt.Fprintln(os.Stderr, "Examples:")
-		fmt.Fprintln(os.Stderr, "  wsstat wss://echo.example.com")
-		fmt.Fprintln(os.Stderr, "  wsstat -text \"ping\" wss://echo.example.com")
-		fmt.Fprintln(os.Stderr, "  wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws")
-		fmt.Fprintln(os.Stderr, "  wsstat -subscribe -count 1 wss://stream.example.com/feed")
-		fmt.Fprintln(os.Stderr, "  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed")
-		fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
-		fmt.Fprintln(os.Stderr, "  wsstat -k wss://self-signed.example.com")
-	}
+	flag.Usage = printUsage
 }
 
 // revive:enable:line-length-limit
@@ -224,4 +160,70 @@ func run() error {
 
 	ws.PrintResponse(result)
 	return nil
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
+	fmt.Fprintln(os.Stderr, "Measure WebSocket latency and stream subscription performance")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "USAGE:")
+	fmt.Fprintln(os.Stderr, "  wsstat [options] <url>                  (measure latency)")
+	fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>       (stream subscription)")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Note: Flags without <type> are boolean switches. Flags with <type> require a value.")
+	fmt.Fprintln(os.Stderr, "If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "General:")
+	fmt.Fprintln(os.Stderr, "  -c, --count <int>              number of interactions [default: 1; unlimited when subscribing]")
+	fmt.Fprintln(os.Stderr, "      --version                  print program version and exit")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Input (choose one):")
+	fmt.Fprintln(os.Stderr, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
+	fmt.Fprintln(os.Stderr, "  -t, --text <string>            text message to send")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Subscription:")
+	fmt.Fprintln(os.Stderr, "  -s, --subscribe                stream events until interrupted")
+	fmt.Fprintln(os.Stderr, "      --subscribe-once           subscribe and exit after the first event")
+	fmt.Fprintln(os.Stderr, "  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]")
+	fmt.Fprintln(os.Stderr, "      --summary-interval <duration>")
+	fmt.Fprintln(os.Stderr, "                                 print subscription summaries every interval (e.g., 1s, 5m, 1h) [default: disabled]")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Connection:")
+	fmt.Fprintln(os.Stderr, "  -H, --header <string>          HTTP header to include with request (repeatable; format: \"Key: Value\")")
+	fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
+	fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
+	fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Output:")
+	fmt.Fprintln(os.Stderr, "  -q, --quiet                    suppress all output except response")
+	fmt.Fprintln(os.Stderr, "  -v, --verbose                  increase verbosity (level 1)")
+	fmt.Fprintln(os.Stderr, "  -vv                            increase verbosity (level 2)")
+	fmt.Fprintln(os.Stderr, "  -f, --format <string>          output format: auto, json, raw [default: auto]")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Verbosity Levels:")
+	fmt.Fprintln(os.Stderr, "  (default)                      minimal request info with summary timings")
+	fmt.Fprintln(os.Stderr, "  -v                             adds target/TLS summaries and timing diagram")
+	fmt.Fprintln(os.Stderr, "  -vv                            includes full TLS certificates and headers")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Security Notes:")
+	fmt.Fprintln(os.Stderr, "  -k, --insecure: Disables TLS certificate verification. Only use for testing or when")
+	fmt.Fprintln(os.Stderr, "                  connecting to endpoints with self-signed certificates. This makes")
+	fmt.Fprintln(os.Stderr, "                  your connection vulnerable to MITM attacks.")
+	fmt.Fprintln(os.Stderr)
+
+	fmt.Fprintln(os.Stderr, "Examples:")
+	fmt.Fprintln(os.Stderr, "  wsstat wss://echo.example.com")
+	fmt.Fprintln(os.Stderr, "  wsstat -text \"ping\" wss://echo.example.com")
+	fmt.Fprintln(os.Stderr, "  wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws")
+	fmt.Fprintln(os.Stderr, "  wsstat -subscribe -count 1 wss://stream.example.com/feed")
+	fmt.Fprintln(os.Stderr, "  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed")
+	fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
+	fmt.Fprintln(os.Stderr, "  wsstat -k wss://self-signed.example.com")
 }
