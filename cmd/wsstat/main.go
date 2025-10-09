@@ -72,9 +72,17 @@ var (
 )
 
 func init() {
+	// Double registration: short and long forms point to same variable
 	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited when subscribing")
+	flag.Var(&countFlag, "c", "number of interactions to perform; 0 means unlimited when subscribing")
 	flag.Var(&headerArguments, "H", "HTTP header to include with the request (repeatable; format: Key: Value)")
 	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
+	flag.StringVar(textMessage, "t", "", "text message to send")
+	flag.BoolVar(subscribe, "s", false, "stream events until interrupted")
+	flag.IntVar(bufferSize, "b", 0, "subscription delivery buffer size (messages)")
+	flag.StringVar(formatOption, "f", "auto", "output format: auto, json, or raw")
+	flag.BoolVar(quiet, "quiet", false, "quiet all output but the response")
+	flag.BoolVar(v1, "verbose", false, "increase verbosity (level 1)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
