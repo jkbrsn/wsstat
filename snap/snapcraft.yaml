@@ -1,9 +1,9 @@
 name: wsstat
 adopt-info: wsstat
 license: MIT
-summary: wsstat is a websocket endpoint monitoring tool
+summary: wsstat - a WebSocket endpoint monitoring tool
 description: |
-  wsstat provides a simple and easy to use tool to check the status and connection stats of a WebSocket endpoint.
+  wsstat provides a simple and easy way to check the connection stats of a WebSocket endpoint.
 
   Usage: wsstat wss://foo.example.com
 

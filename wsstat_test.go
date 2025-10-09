@@ -2,6 +2,7 @@ package wsstat
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
 	"net/url"
@@ -55,6 +56,130 @@ func TestNew(t *testing.T) {
 	assert.NotNil(t, ws.writeChan)
 	assert.NotNil(t, ws.ctx)
 	assert.NotNil(t, ws.cancel)
+}
+
+func TestWithTLSConfig(t *testing.T) {
+	t.Run("insecure skip verify is applied", func(t *testing.T) {
+		tlsConf := &tls.Config{
+			InsecureSkipVerify: true,
+		}
+		ws := New(WithTLSConfig(tlsConf))
+		defer ws.Close()
+
+		require.NotNil(t, ws.tlsConf)
+		assert.True(t, ws.tlsConf.InsecureSkipVerify)
+	})
+
+	t.Run("nil config uses defaults", func(t *testing.T) {
+		ws := New()
+		defer ws.Close()
+
+		assert.Nil(t, ws.tlsConf)
+	})
+
+	t.Run("custom server name", func(t *testing.T) {
+		tlsConf := &tls.Config{
+			ServerName: "custom.example.com",
+		}
+		ws := New(WithTLSConfig(tlsConf))
+		defer ws.Close()
+
+		require.NotNil(t, ws.tlsConf)
+		assert.Equal(t, "custom.example.com", ws.tlsConf.ServerName)
+	})
+}
+
+func TestWithTimeout(t *testing.T) {
+	t.Run("custom timeout is applied", func(t *testing.T) {
+		ws := New(WithTimeout(100 * time.Millisecond))
+		defer ws.Close()
+
+		assert.Equal(t, 100*time.Millisecond, ws.timeout)
+	})
+
+	t.Run("default timeout when not specified", func(t *testing.T) {
+		ws := New()
+		defer ws.Close()
+
+		assert.Equal(t, defaultTimeout, ws.timeout)
+	})
+
+	t.Run("zero timeout is allowed", func(t *testing.T) {
+		ws := New(WithTimeout(0))
+		defer ws.Close()
+
+		assert.Equal(t, time.Duration(0), ws.timeout)
+	})
+}
+
+func TestWithBufferSize(t *testing.T) {
+	t.Run("custom buffer size is applied", func(t *testing.T) {
+		ws := New(WithBufferSize(16))
+		defer ws.Close()
+
+		assert.Equal(t, 16, cap(ws.readChan))
+		assert.Equal(t, 16, cap(ws.writeChan))
+		assert.Equal(t, 16, cap(ws.pongChan))
+	})
+
+	t.Run("default buffer size", func(t *testing.T) {
+		ws := New()
+		defer ws.Close()
+
+		assert.Equal(t, defaultChanBufferSize, cap(ws.readChan))
+		assert.Equal(t, defaultChanBufferSize, cap(ws.writeChan))
+		assert.Equal(t, defaultChanBufferSize, cap(ws.pongChan))
+	})
+
+	t.Run("zero buffer size creates unbuffered channels", func(t *testing.T) {
+		ws := New(WithBufferSize(0))
+		defer ws.Close()
+
+		assert.Equal(t, 0, cap(ws.readChan))
+		assert.Equal(t, 0, cap(ws.writeChan))
+		assert.Equal(t, 0, cap(ws.pongChan))
+	})
+}
+
+func TestMultipleOptions(t *testing.T) {
+	t.Run("all options are applied together", func(t *testing.T) {
+		tlsConf := &tls.Config{InsecureSkipVerify: true}
+		ws := New(
+			WithTimeout(200*time.Millisecond),
+			WithTLSConfig(tlsConf),
+			WithBufferSize(32),
+		)
+		defer ws.Close()
+
+		assert.Equal(t, 200*time.Millisecond, ws.timeout)
+		require.NotNil(t, ws.tlsConf)
+		assert.True(t, ws.tlsConf.InsecureSkipVerify)
+		assert.Equal(t, 32, cap(ws.readChan))
+		assert.Equal(t, 32, cap(ws.writeChan))
+		assert.Equal(t, 32, cap(ws.pongChan))
+	})
+
+	t.Run("options order does not matter", func(t *testing.T) {
+		tlsConf := &tls.Config{ServerName: "test.example.com"}
+
+		ws1 := New(
+			WithBufferSize(10),
+			WithTimeout(50*time.Millisecond),
+			WithTLSConfig(tlsConf),
+		)
+		defer ws1.Close()
+
+		ws2 := New(
+			WithTLSConfig(tlsConf),
+			WithTimeout(50*time.Millisecond),
+			WithBufferSize(10),
+		)
+		defer ws2.Close()
+
+		assert.Equal(t, ws1.timeout, ws2.timeout)
+		assert.Equal(t, ws1.tlsConf.ServerName, ws2.tlsConf.ServerName)
+		assert.Equal(t, cap(ws1.readChan), cap(ws2.readChan))
+	})
 }
 
 func TestDial(t *testing.T) {

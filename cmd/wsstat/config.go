@@ -24,6 +24,7 @@ type Config struct {
 	ColorMode       string
 	Quiet           bool
 	Verbosity       int
+	Insecure        bool
 }
 
 // parseConfig parses command-line flags and returns a validated Config.
@@ -84,6 +85,7 @@ func parseConfig() (*Config, error) {
 		ColorMode:       strings.ToLower(*colorArg),
 		Quiet:           *quiet,
 		Verbosity:       verbosity,
+		Insecure:        *insecure,
 	}
 
 	return cfg, nil

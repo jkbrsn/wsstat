@@ -11,8 +11,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// TODO: replace zerolog.Nop() with optional function parameter for a logger
-
 // MeasureLatency is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
@@ -184,8 +182,9 @@ func MeasureLatencyBurstWithContext(
 	targetURL *url.URL,
 	msgs []string,
 	customHeaders http.Header,
+	opts ...Option,
 ) (*Result, []string, error) {
-	ws := New()
+	ws := New(opts...)
 	defer ws.Close()
 
 	if err := ctx.Err(); err != nil {
@@ -235,8 +234,9 @@ func MeasureLatencyJSONBurstWithContext(
 	targetURL *url.URL,
 	v []any,
 	customHeaders http.Header,
+	opts ...Option,
 ) (*Result, []any, error) {
-	ws := New()
+	ws := New(opts...)
 	defer ws.Close()
 
 	if err := ctx.Err(); err != nil {
@@ -286,8 +286,9 @@ func MeasureLatencyPingBurstWithContext(
 	targetURL *url.URL,
 	pingCount int,
 	customHeaders http.Header,
+	opts ...Option,
 ) (*Result, error) {
-	ws := New()
+	ws := New(opts...)
 	defer ws.Close()
 
 	if err := ctx.Err(); err != nil {

@@ -67,94 +67,101 @@ The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
 #### Binary
 
-##### Linux & macOS
+##### Linux
 
-Download the binary appropriate for your system from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases):
+Download the binary from the latest release (`amd64`) on [the release page](https://github.com/jkbrsn/wsstat/releases):
 
 ```sh
-wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat-<OS>-<ARCH>
+wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat
 ```
 
 Make the binary executable:
 
 ```sh
-chmod +x wsstat-<OS>-<ARCH>
+chmod +x wsstat
 ```
 
 Move the binary to a directory in your `PATH`:
 
 ```sh
-sudo mv wsstat-<OS>-<ARCH> /usr/local/bin/wsstat  # system-wide
-mv wsstat-<OS>-<ARCH> ~/bin/wsstat  # user-specific, ensure ~/bin is in your PATH
+sudo mv wsstat /usr/local/bin/wsstat  # system-wide
+mv wsstat ~/bin/wsstat  # user-specific, ensure ~/bin is in your PATH
 ```
 
-##### Windows
+##### macOS and Windows
 
-1. Download the `wsstat-windows-<ARCH>.exe` binary from the latest release on [the release page](https://github.com/jkbrsn/wsstat/releases).
-2. Place the binary in a directory of your choice and add the directory to your `PATH` environment variable.
-3. Rename the binary to `wsstat.exe` for convenience.
-4. You can now run `wsstat` from the command prompt or PowerShell.
+Currently not actively supported, but you may build and try it yourself:
+
+```sh
+git clone https://github.com/jkbrsn/wsstat.git
+cd wsstat
+make build-all
+
+# Binary ends up in ./bin/wsstat-<OS>-<ARCH>
+```
+
+Then for Windows:
+
+1. Place the binary in a directory of your choice and add the directory to your `PATH` environment variable.
+2. Rename the binary to `wsstat.exe` for convenience.
+3. You should now be able to run `wsstat` from the command prompt or PowerShell.
+
+For macOS:
+
+1. Make the binary executable: `chmod +x wsstat-darwin-<ARCH>`
+2. Move the binary to a directory in your `PATH`: `sudo mv wsstat-darwin-<ARCH> /usr/local/bin/wsstat`
 
 ### Usage
 
-Basic usage:
+All the options are available from the help output, have a look at `wsstat -h`:
 
 ```sh
-wsstat example.org
-```
+wsstat 2.0.0
+Measure latency on WebSocket connections
 
-With verbose output:
-
-```sh
-wsstat -v ws://example.local
-```
-
-For more options:
-
-```sh
-wsstat -h
-
-Usage:  wsstat [options] <url>
-
-Measure WebSocket latency or stream subscription events.
-If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.
-
-Input (choose one):
-  -rpc-method string   JSON-RPC method name to send (id=1, jsonrpc=2.0)
-  -text string         text message to send
-
-Subscription:
-  -subscribe           stream events until interrupted
-  -subscribe-once      subscribe and exit after the first event
-  -count int           number of interactions to perform; 0 means unlimited when subscribing (default 1; defaults to 0 when subscribing)
-  -buffer int          subscription delivery buffer size (messages) (default 0)
-  -summary-interval    print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables
-
-Connection:
-  -H / -header string  HTTP header to include with the request (repeatable; format: Key: Value)
-  -no-tls              assume ws:// when input URL lacks scheme (default wss://)
-  -color string        color output: auto, always, or never (auto|always|never; default "auto")
-
-Output:
-  -q                   quiet all output but the response
-  -v                   increase verbosity; repeatable (e.g., -v -v) or use -v=N
-  -format string       output format: auto, json, or raw (default "auto")
-
-Verbosity:
-  default  minimal request info with summary timings
-  -v       adds target/TLS summaries and timing diagram
-  -vv      includes full TLS certificates and headers
+USAGE:
+  wsstat [options] <url>
+  wsstat -subscribe [options] <url>
 
 General:
-  -version             print the program version
+  -c, --count <int>              number of interactions [default: 1; unlimited when subscribing]
+      --version                  print program version and exit
+
+Input (choose one):
+      --rpc-method <string>      JSON-RPC method name to send (with id=1, jsonrpc=2.0)
+  -t, --text <string>            text message to send
+
+Subscription:
+  -s, --subscribe                stream events until interrupted
+      --subscribe-once           subscribe and exit after the first event
+  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]
+      --summary-interval <duration>
+                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]
+
+Connection:
+  -H, --header <string>          HTTP header to include with request (repeatable; format: "Key: Value")
+  -k, --insecure                 skip TLS certificate verification (use with caution)
+      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]
+      --color <string>           color output mode: auto, always, never [default: auto]
+
+Output:
+  -q, --quiet                    suppress all output except response
+  -v, --verbose                  increase verbosity (level 1)
+  -vv                            increase verbosity (level 2)
+  -f, --format <string>          output format: auto, json, raw [default: auto]
+
+Verbosity Levels:
+  (default)                      minimal request info with summary timings
+  -v                             adds target/TLS summaries and timing diagram
+  -vv                            includes full TLS certificates and headers
 
 Examples:
   wsstat wss://echo.example.com
-  wsstat -text "ping" wss://echo.example.com
-  wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws
-  wsstat -subscribe -count 1 wss://stream.example.com/feed
-  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed
+  wsstat -t "ping" wss://echo.example.com
+  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
+  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed
   wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
+  wsstat --insecure -vv wss://self-signed.example.com
 ```
 
 ### Subscription Mode

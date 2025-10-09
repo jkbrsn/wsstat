@@ -38,10 +38,13 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/jkbrsn/wsstat"
 )
 
 // Client measures the latency of a WebSocket connection and manages subscription streams.
@@ -69,6 +72,9 @@ type Client struct {
 	subscribeOnce   bool
 	buffer          int
 	summaryInterval time.Duration
+
+	// TLS configuration
+	insecure bool // skip TLS certificate verification
 }
 
 // Option configures a Client.
@@ -147,6 +153,11 @@ func WithSummaryInterval(interval time.Duration) Option {
 	return func(c *Client) { c.summaryInterval = interval }
 }
 
+// WithInsecure configures whether to skip TLS certificate verification.
+func WithInsecure(insecure bool) Option {
+	return func(c *Client) { c.insecure = insecure }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -164,6 +175,18 @@ func (c *Client) Quiet() bool { return c.quiet }
 
 // RPCMethod returns the configured RPC method.
 func (c *Client) RPCMethod() string { return c.rpcMethod }
+
+// wsstatOptions builds wsstat options based on client configuration.
+func (c *Client) wsstatOptions() []wsstat.Option {
+	if c.insecure {
+		return []wsstat.Option{
+			wsstat.WithTLSConfig(&tls.Config{
+				InsecureSkipVerify: true,
+			}),
+		}
+	}
+	return nil
+}
 
 // MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages
 // based on client configuration. Returns timing results and the server response.
