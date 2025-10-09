@@ -11,8 +11,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// TODO: replace zerolog.Nop() with optional function parameter for a logger
-
 // MeasureLatency is a wrapper around a one-hit usage of the WSStat instance. It establishes a
 // WebSocket connection, sends a message, reads the response, and closes the connection.
 // Note: sets all times in the Result object.
