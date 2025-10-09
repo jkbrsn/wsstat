@@ -150,6 +150,7 @@ func TestParseConfig(t *testing.T) {
 	origBufferSize := *bufferSize
 	origV1 := *v1
 	origV2 := *v2
+	origInsecure := *insecure
 	origCountFlag := countFlag
 	origHeaderArguments := headerArguments
 
@@ -167,6 +168,7 @@ func TestParseConfig(t *testing.T) {
 		*bufferSize = origBufferSize
 		*v1 = origV1
 		*v2 = origV2
+		*insecure = origInsecure
 		countFlag = origCountFlag
 		headerArguments = origHeaderArguments
 	}()
@@ -188,6 +190,7 @@ func TestParseConfig(t *testing.T) {
 		summaryInterval = flag.Duration("summary-interval", 0, "")
 		v1 = flag.Bool("v", false, "")
 		v2 = flag.Bool("vv", false, "")
+		insecure = flag.Bool("insecure", false, "")
 
 		countFlag = newTrackedIntFlag(1)
 		headerArguments = headerList{}
@@ -196,6 +199,7 @@ func TestParseConfig(t *testing.T) {
 		flag.Var(&countFlag, "count", "")
 		flag.Var(&headerArguments, "H", "")
 		flag.Var(&headerArguments, "header", "")
+		flag.BoolVar(insecure, "k", false, "")
 	}
 
 	tests := []struct {
@@ -274,6 +278,27 @@ func TestParseConfig(t *testing.T) {
 			checkFunc: func(t *testing.T, cfg *Config) {
 				assert.True(t, cfg.Subscribe)
 				assert.Equal(t, 5, cfg.Count)
+			},
+		},
+		{
+			name: "insecure flag",
+			args: []string{"cmd", "-insecure", "example.com"},
+			checkFunc: func(t *testing.T, cfg *Config) {
+				assert.True(t, cfg.Insecure)
+			},
+		},
+		{
+			name: "insecure flag short form",
+			args: []string{"cmd", "-k", "example.com"},
+			checkFunc: func(t *testing.T, cfg *Config) {
+				assert.True(t, cfg.Insecure)
+			},
+		},
+		{
+			name: "insecure flag not set",
+			args: []string{"cmd", "example.com"},
+			checkFunc: func(t *testing.T, cfg *Config) {
+				assert.False(t, cfg.Insecure)
 			},
 		},
 	}

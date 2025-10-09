@@ -20,7 +20,8 @@ func (c *Client) measureText(
 ) (*MeasurementResult, error) {
 	msgs := repeat(c.textMessage, c.count)
 
-	result, rawResponses, err := wsstat.MeasureLatencyBurstWithContext(ctx, target, msgs, header)
+	result, rawResponses, err := wsstat.MeasureLatencyBurstWithContext(
+		ctx, target, msgs, header, c.wsstatOptions()...)
 	if err != nil {
 		return nil, handleConnectionError(err, target.String())
 	}
@@ -50,7 +51,8 @@ func (c *Client) measureJSON(
 	req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
 	msgs := repeat[any](req, c.count)
 
-	result, responses, err := wsstat.MeasureLatencyJSONBurstWithContext(ctx, target, msgs, header)
+	result, responses, err := wsstat.MeasureLatencyJSONBurstWithContext(
+		ctx, target, msgs, header, c.wsstatOptions()...)
 	if err != nil {
 		return nil, handleConnectionError(err, target.String())
 	}
@@ -72,7 +74,8 @@ func (c *Client) measurePing(
 	target *url.URL,
 	header http.Header,
 ) (*MeasurementResult, error) {
-	result, err := wsstat.MeasureLatencyPingBurstWithContext(ctx, target, c.count, header)
+	result, err := wsstat.MeasureLatencyPingBurstWithContext(
+		ctx, target, c.count, header, c.wsstatOptions()...)
 	if err != nil {
 		return nil, handleConnectionError(err, target.String())
 	}

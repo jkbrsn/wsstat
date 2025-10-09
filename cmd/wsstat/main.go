@@ -85,7 +85,6 @@ func init() {
 	flag.BoolVar(quiet, "quiet", false, "quiet all output but the response")
 	flag.BoolVar(v1, "verbose", false, "increase verbosity (level 1)")
 	flag.BoolVar(insecure, "k", false, "skip TLS certificate verification")
-	// TODO: Wire -k/--insecure through config.go to TLS config (tls.Config.InsecureSkipVerify)
 
 	flag.Usage = printUsage
 }
@@ -124,6 +123,7 @@ func run() error {
 		app.WithSubscriptionOnce(cfg.SubscribeOnce),
 		app.WithBuffer(cfg.BufferSize),
 		app.WithSummaryInterval(cfg.SummaryInterval),
+		app.WithInsecure(cfg.Insecure),
 	)
 
 	if err := ws.Validate(); err != nil {
