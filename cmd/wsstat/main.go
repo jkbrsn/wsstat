@@ -137,7 +137,12 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  -vv                            includes full TLS certificates and headers")
 		fmt.Fprintln(os.Stderr)
 
+		fmt.Fprintln(os.Stderr, "Security Notes:")
+		fmt.Fprintln(os.Stderr, "  -k, --insecure: Disables TLS certificate verification. Only use for testing or when")
+		fmt.Fprintln(os.Stderr, "                  connecting to endpoints with self-signed certificates. This makes")
+		fmt.Fprintln(os.Stderr, "                  your connection vulnerable to MITM attacks.")
 		fmt.Fprintln(os.Stderr)
+
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  wsstat wss://echo.example.com")
 		fmt.Fprintln(os.Stderr, "  wsstat -text \"ping\" wss://echo.example.com")
@@ -145,6 +150,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, "  wsstat -subscribe -count 1 wss://stream.example.com/feed")
 		fmt.Fprintln(os.Stderr, "  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed")
 		fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
+		fmt.Fprintln(os.Stderr, "  wsstat -k wss://self-signed.example.com")
 	}
 }
 
