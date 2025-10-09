@@ -62,6 +62,7 @@ var (
 	version     = "unknown"
 
 	// Connection behavior
+	insecure = flag.Bool("insecure", false, "skip TLS certificate verification")
 	noTLS    = flag.Bool("no-tls", false, "assume ws:// when input URL lacks scheme (default wss://)")
 	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
 
@@ -83,6 +84,8 @@ func init() {
 	flag.StringVar(formatOption, "f", "auto", "output format: auto, json, or raw")
 	flag.BoolVar(quiet, "quiet", false, "quiet all output but the response")
 	flag.BoolVar(v1, "verbose", false, "increase verbosity (level 1)")
+	flag.BoolVar(insecure, "k", false, "skip TLS certificate verification")
+	// TODO: Wire -k/--insecure through config.go to TLS config (tls.Config.InsecureSkipVerify)
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
@@ -116,6 +119,7 @@ func init() {
 
 		fmt.Fprintln(os.Stderr, "Connection:")
 		fmt.Fprintln(os.Stderr, "  -H, --header <string>          HTTP header to include with request (repeatable; format: \"Key: Value\")")
+		fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 		fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
 		fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
 		fmt.Fprintln(os.Stderr)
