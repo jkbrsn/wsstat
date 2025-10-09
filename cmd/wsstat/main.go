@@ -77,9 +77,14 @@ func init() {
 	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
 
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage:  wsstat [options] <url>")
+		fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
+		fmt.Fprintln(os.Stderr, "Measure WebSocket latency and stream subscription performance")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Measure WebSocket latency or stream subscription events.")
+		fmt.Fprintln(os.Stderr, "USAGE:")
+		fmt.Fprintln(os.Stderr, "  wsstat [options] <url>                  (measure latency)")
+		fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>       (stream subscription)")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Note: Flags without <type> are boolean switches. Flags with <type> require a value.")
 		fmt.Fprintln(os.Stderr, "If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.")
 		fmt.Fprintln(os.Stderr)
 
