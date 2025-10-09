@@ -90,8 +90,6 @@ func init() {
 	flag.Usage = printUsage
 }
 
-// revive:enable:line-length-limit
-
 func main() {
 	if err := run(); err != nil {
 		if err == errVersionRequested {
@@ -164,14 +162,11 @@ func run() error {
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
-	fmt.Fprintln(os.Stderr, "Measure WebSocket latency and stream subscription performance")
+	fmt.Fprintln(os.Stderr, "Measure latency on WebSocket connections")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "USAGE:")
-	fmt.Fprintln(os.Stderr, "  wsstat [options] <url>                  (measure latency)")
-	fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>       (stream subscription)")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "Note: Flags without <type> are boolean switches. Flags with <type> require a value.")
-	fmt.Fprintln(os.Stderr, "If the URL omits a scheme, wsstat assumes wss:// unless -no-tls is provided.")
+	fmt.Fprintln(os.Stderr, "  wsstat [options] <url>")
+	fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>")
 	fmt.Fprintln(os.Stderr)
 
 	fmt.Fprintln(os.Stderr, "General:")
@@ -180,7 +175,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr)
 
 	fmt.Fprintln(os.Stderr, "Input (choose one):")
-	fmt.Fprintln(os.Stderr, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
+	fmt.Fprintln(os.Stderr, "      --rpc-method <string>      JSON-RPC method name to send (with id=1, jsonrpc=2.0)")
 	fmt.Fprintln(os.Stderr, "  -t, --text <string>            text message to send")
 	fmt.Fprintln(os.Stderr)
 
@@ -189,7 +184,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "      --subscribe-once           subscribe and exit after the first event")
 	fmt.Fprintln(os.Stderr, "  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]")
 	fmt.Fprintln(os.Stderr, "      --summary-interval <duration>")
-	fmt.Fprintln(os.Stderr, "                                 print subscription summaries every interval (e.g., 1s, 5m, 1h) [default: disabled]")
+	fmt.Fprintln(os.Stderr, "                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]")
 	fmt.Fprintln(os.Stderr)
 
 	fmt.Fprintln(os.Stderr, "Connection:")
@@ -212,18 +207,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -vv                            includes full TLS certificates and headers")
 	fmt.Fprintln(os.Stderr)
 
-	fmt.Fprintln(os.Stderr, "Security Notes:")
-	fmt.Fprintln(os.Stderr, "  -k, --insecure: Disables TLS certificate verification. Only use for testing or when")
-	fmt.Fprintln(os.Stderr, "                  connecting to endpoints with self-signed certificates. This makes")
-	fmt.Fprintln(os.Stderr, "                  your connection vulnerable to MITM attacks.")
-	fmt.Fprintln(os.Stderr)
-
 	fmt.Fprintln(os.Stderr, "Examples:")
 	fmt.Fprintln(os.Stderr, "  wsstat wss://echo.example.com")
-	fmt.Fprintln(os.Stderr, "  wsstat -text \"ping\" wss://echo.example.com")
-	fmt.Fprintln(os.Stderr, "  wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws")
-	fmt.Fprintln(os.Stderr, "  wsstat -subscribe -count 1 wss://stream.example.com/feed")
-	fmt.Fprintln(os.Stderr, "  wsstat -subscribe -summary-interval 5s wss://stream.example.com/feed")
+	fmt.Fprintln(os.Stderr, "  wsstat -t \"ping\" wss://echo.example.com")
+	fmt.Fprintln(os.Stderr, "  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws")
+	fmt.Fprintln(os.Stderr, "  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
-	fmt.Fprintln(os.Stderr, "  wsstat -k wss://self-signed.example.com")
+	fmt.Fprintln(os.Stderr, "  wsstat --insecure -vv wss://self-signed.example.com")
 }
