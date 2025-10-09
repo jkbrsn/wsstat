@@ -112,9 +112,9 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  -format string       %s (default %q)\n", flag.Lookup("format").Usage, *formatOption)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Verbosity:")
-		fmt.Fprintln(os.Stderr, "  default  minimal request info with summary timings")
-		fmt.Fprintln(os.Stderr, "  -v       adds target/TLS summaries and timing diagram")
-		fmt.Fprintln(os.Stderr, "  -vv      includes full TLS certificates and headers")
+		fmt.Fprintln(os.Stderr, "  default              minimal request info with summary timings")
+		fmt.Fprintln(os.Stderr, "  -v                   adds target/TLS summaries and timing diagram")
+		fmt.Fprintln(os.Stderr, "  -vv                  includes full TLS certificates and headers")
 		fmt.Fprintln(os.Stderr)
 
 		fmt.Fprintln(os.Stderr, "Misc:")
