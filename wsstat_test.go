@@ -3,6 +3,7 @@ package wsstat
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -504,6 +505,301 @@ func TestReadAfterClose(t *testing.T) {
 	err = ws.ReadPong()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pong channel closed")
+}
+
+func TestResultFormat(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	_, err := ws.OneHitMessage(websocket.TextMessage, []byte("test"))
+	require.NoError(t, err)
+	ws.Close()
+
+	result := ws.ExtractResult()
+
+	t.Run("compact format with %s", func(t *testing.T) {
+		output := fmt.Sprintf("%s", result)
+		assert.Contains(t, output, "DNSLookup:")
+		assert.Contains(t, output, "TCPConnection:")
+		assert.Contains(t, output, "WSHandshake:")
+		assert.Contains(t, output, "MessageRTT:")
+		assert.Contains(t, output, "TotalTime:")
+		assert.Contains(t, output, "ms")
+		// Should be comma-separated
+		assert.Contains(t, output, ", ")
+	})
+
+	t.Run("compact format with %v", func(t *testing.T) {
+		output := fmt.Sprintf("%v", result)
+		assert.Contains(t, output, "DNSLookup:")
+		assert.Contains(t, output, "ms")
+	})
+
+	t.Run("verbose format with %+v", func(t *testing.T) {
+		output := fmt.Sprintf("%+v", result)
+		// URL section
+		assert.Contains(t, output, "URL")
+		assert.Contains(t, output, "Scheme:")
+		assert.Contains(t, output, "Host:")
+		assert.Contains(t, output, "Port:")
+		// IP section
+		assert.Contains(t, output, "IP")
+		// Headers section
+		assert.Contains(t, output, "Request headers")
+		assert.Contains(t, output, "Response headers")
+		// Durations section
+		assert.Contains(t, output, "DNS lookup:")
+		assert.Contains(t, output, "TCP connection:")
+		assert.Contains(t, output, "WS handshake:")
+		assert.Contains(t, output, "Total:")
+		// Should be multi-line
+		lines := strings.Split(output, "\n")
+		assert.Greater(t, len(lines), 10, "verbose format should have multiple lines")
+	})
+
+	t.Run("hostPort helper", func(t *testing.T) {
+		wsURL, _ := url.Parse("ws://example.com/path")
+		host, port := hostPort(wsURL)
+		assert.Equal(t, "example.com", host)
+		assert.Equal(t, "80", port)
+
+		wssURL, _ := url.Parse("wss://example.com:9000/path")
+		host, port = hostPort(wssURL)
+		assert.Equal(t, "example.com", host)
+		assert.Equal(t, "9000", port)
+	})
+}
+
+func TestResultFormatWithZeroValues(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+
+	// Dial but close immediately
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	ws.Close()
+	result := ws.ExtractResult()
+
+	// After close, TotalTime should be set
+	t.Run("has valid TotalTime after close", func(t *testing.T) {
+		output := fmt.Sprintf("%s", result)
+		assert.Greater(t, result.TotalTime, time.Duration(0))
+		assert.NotContains(t, output, "TotalTime: - ms")
+	})
+}
+
+func TestSubscriptionByteCount(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: websocket.TextMessage,
+		Payload:     []byte("byte-count-test"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "byte-count-test", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscription message")
+	}
+
+	require.Eventually(t, func() bool {
+		return sub.ByteCount() >= uint64(len("byte-count-test"))
+	}, time.Second, 10*time.Millisecond)
+
+	assert.EqualValues(t, len("byte-count-test"), sub.ByteCount())
+
+	sub.Cancel()
+	<-sub.Done()
+}
+
+func TestSubscriptionUnsubscribe(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: websocket.TextMessage,
+		Payload:     []byte("unsubscribe-test"),
+	})
+	require.NoError(t, err)
+
+	// Consume the echo
+	select {
+	case <-sub.Updates():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out")
+	}
+
+	// Test Unsubscribe (alias for Cancel)
+	sub.Unsubscribe()
+
+	select {
+	case <-sub.Done():
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not close after unsubscribe")
+	}
+}
+
+func TestMeasureLatencyBurstWithContext(t *testing.T) {
+	t.Run("completes normally without cancellation", func(t *testing.T) {
+		ctx := context.Background()
+		result, _, err := MeasureLatencyBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			[]string{"test1", "test2", "test3"},
+			http.Header{},
+		)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, 3, result.MessageCount)
+		assert.Greater(t, result.MessageRTT, time.Duration(0))
+	})
+
+	t.Run("cancels during execution", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Cancel after a very short delay
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+
+		// Create large batch to ensure cancellation happens mid-execution
+		msgs := make([]string, 1000)
+		for i := range msgs {
+			msgs[i] = "test"
+		}
+
+		_, _, err := MeasureLatencyBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			msgs,
+			http.Header{},
+		)
+		// Either context canceled or succeeded before cancel
+		if err != nil {
+			assert.Contains(t, err.Error(), "context canceled")
+		}
+	})
+
+	t.Run("context already canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		_, _, err := MeasureLatencyBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			[]string{"test1", "test2"},
+			http.Header{},
+		)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "context canceled")
+	})
+}
+
+func TestMeasureLatencyJSONBurstWithContext(t *testing.T) {
+	t.Run("completes normally without cancellation", func(t *testing.T) {
+		ctx := context.Background()
+		messages := []any{
+			map[string]string{"test": "value1"},
+			map[string]string{"test": "value2"},
+			map[string]string{"test": "value3"},
+		}
+		result, _, err := MeasureLatencyJSONBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			messages,
+			http.Header{},
+		)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, 3, result.MessageCount)
+		assert.Greater(t, result.MessageRTT, time.Duration(0))
+	})
+
+	t.Run("cancels during execution", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+
+		messages := make([]any, 1000)
+		for i := range messages {
+			messages[i] = map[string]string{"test": "value"}
+		}
+
+		_, _, err := MeasureLatencyJSONBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			messages,
+			http.Header{},
+		)
+		// Either context canceled or succeeded before cancel
+		if err != nil {
+			assert.Contains(t, err.Error(), "context canceled")
+		}
+	})
+}
+
+func TestMeasureLatencyPingBurstWithContext(t *testing.T) {
+	t.Run("completes normally without cancellation", func(t *testing.T) {
+		ctx := context.Background()
+		result, err := MeasureLatencyPingBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			3,
+			http.Header{},
+		)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, 3, result.MessageCount)
+		assert.Greater(t, result.MessageRTT, time.Duration(0))
+	})
+
+	t.Run("cancels during execution", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+
+		_, err := MeasureLatencyPingBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			1000,
+			http.Header{},
+		)
+		// Either context canceled or succeeded before cancel
+		if err != nil {
+			assert.Contains(t, err.Error(), "context canceled")
+		}
+	})
+
+	t.Run("context deadline exceeded", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		_, err := MeasureLatencyPingBurstWithContext(
+			ctx,
+			echoServerAddrWs,
+			1000,
+			http.Header{},
+		)
+		// Either timeout or succeeded before timeout
+		if err != nil {
+			assert.True(t,
+				strings.Contains(err.Error(), "context") ||
+					strings.Contains(err.Error(), "deadline"),
+			)
+		}
+	})
 }
 
 // Helpers
