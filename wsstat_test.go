@@ -504,7 +504,7 @@ func TestReadAfterClose(t *testing.T) {
 
 	err = ws.ReadPong()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pong channel closed")
+	assert.Contains(t, err.Error(), "context canceled")
 }
 
 func TestResultFormat(t *testing.T) {

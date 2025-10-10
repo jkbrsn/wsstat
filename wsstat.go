@@ -439,9 +439,13 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 // ReadPong reads a pong message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadPong() error {
-	_, ok := <-ws.pongChan
-	if !ok {
-		return errors.New("pong channel closed")
+	select {
+	case <-ws.ctx.Done():
+		return ws.ctx.Err()
+	case _, ok := <-ws.pongChan:
+		if !ok {
+			return errors.New("pong channel closed")
+		}
 	}
 
 	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
@@ -519,9 +523,8 @@ func (ws *WSStat) Close() {
 			ws.log.Warn().Msg("Timeout closing WSStat pumps")
 		}
 
-		// Close the pump channels
+		// Close pump channels that signal read/write shutdown
 		close(ws.readChan)
-		close(ws.pongChan)
 		close(ws.writeChan)
 	})
 }
