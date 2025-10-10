@@ -425,6 +425,45 @@ type WSStat struct {
 	tlsConf *tls.Config
 }
 
+// New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
+// use options. If not provided, package defaults are used for compatibility.
+func New(opts ...Option) *WSStat {
+	// Start with package defaults for back-compat
+	cfg := options{
+		bufferSize: defaultChanBufferSize,
+		timeout:    defaultTimeout,
+		tlsConfig:  nil,
+		logger:     zerolog.Nop(),
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	result := &Result{}
+	timings := &wsTimings{}
+	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ws := &WSStat{
+		log:                       cfg.logger.With().Str("pkg", "wsstat").Logger(),
+		dialer:                    dialer,
+		timings:                   timings,
+		result:                    result,
+		ctx:                       ctx,
+		cancel:                    cancel,
+		readChan:                  make(chan *wsRead, cfg.bufferSize),
+		pongChan:                  make(chan bool, cfg.bufferSize),
+		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
+		timeout:                   cfg.timeout,
+		tlsConf:                   cfg.tlsConfig,
+		subscriptions:             make(map[string]*subscriptionState),
+		subscriptionArchive:       make(map[string]SubscriptionStats),
+		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
+	}
+
+	return ws
+}
+
 // wsRead holds the data read from the WebSocket connection.
 type wsRead struct {
 	data        []byte
@@ -1307,42 +1346,3 @@ func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout =
 
 // WithTLSConfig sets the TLS configuration for the connection.
 func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
-
-// New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
-// use options. If not provided, package defaults are used for compatibility.
-func New(opts ...Option) *WSStat {
-	// Start with package defaults for back-compat
-	cfg := options{
-		bufferSize: defaultChanBufferSize,
-		timeout:    defaultTimeout,
-		tlsConfig:  nil,
-		logger:     zerolog.Nop(),
-	}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-
-	result := &Result{}
-	timings := &wsTimings{}
-	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	ws := &WSStat{
-		log:                       cfg.logger.With().Str("pkg", "wsstat").Logger(),
-		dialer:                    dialer,
-		timings:                   timings,
-		result:                    result,
-		ctx:                       ctx,
-		cancel:                    cancel,
-		readChan:                  make(chan *wsRead, cfg.bufferSize),
-		pongChan:                  make(chan bool, cfg.bufferSize),
-		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
-		timeout:                   cfg.timeout,
-		tlsConf:                   cfg.tlsConfig,
-		subscriptions:             make(map[string]*subscriptionState),
-		subscriptionArchive:       make(map[string]SubscriptionStats),
-		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
-	}
-
-	return ws
-}
