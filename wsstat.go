@@ -3,21 +3,16 @@
 package wsstat
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -31,368 +26,7 @@ const (
 	defaultChanBufferSize = 8
 	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
 	defaultSubscriptionBufferSize = 32
-	subscriptionIDPrefix          = "subscription-"
 )
-
-// CertificateDetails holds details regarding a certificate.
-type CertificateDetails struct {
-	CommonName         string
-	Issuer             string
-	NotBefore          time.Time
-	NotAfter           time.Time
-	PublicKeyAlgorithm x509.PublicKeyAlgorithm
-	SignatureAlgorithm x509.SignatureAlgorithm
-	DNSNames           []string
-	IPAddresses        []net.IP
-	URIs               []*url.URL
-}
-
-// Result holds durations of each phase of a WebSocket connection, cumulative durations over
-// the connection timeline, and other relevant connection details.
-type Result struct {
-	IPs             []string             // IP addresses of the WebSocket connection
-	URL             *url.URL             // URL of the WebSocket connection
-	RequestHeaders  http.Header          // Headers of the initial request
-	ResponseHeaders http.Header          // Headers of the response
-	TLSState        *tls.ConnectionState // State of the TLS connection
-	MessageCount    int                  // Number of messages sent and received
-
-	// Subscription statistics captured when long-lived streams are active.
-	Subscriptions          map[string]SubscriptionStats // Metrics by subscription ID
-	SubscriptionFirstEvent time.Duration                // Time until first subscription event
-	SubscriptionLastEvent  time.Duration                // Time until last subscription event
-
-	// Duration of each phase of the connection
-	DNSLookup     time.Duration // Time to resolve DNS
-	TCPConnection time.Duration // TCP connection establishment time
-	TLSHandshake  time.Duration // Time to perform TLS handshake
-	WSHandshake   time.Duration // Time to perform WebSocket handshake
-	MessageRTT    time.Duration // Time to send message and receive response
-
-	// Cumulative durations over the connection timeline
-	DNSLookupDone        time.Duration // Time to resolve DNS (might be redundant with DNSLookup)
-	TCPConnected         time.Duration // Time until the TCP connection is established
-	TLSHandshakeDone     time.Duration // Time until the TLS handshake is completed
-	WSHandshakeDone      time.Duration // Time until the WS handshake is completed
-	FirstMessageResponse time.Duration // Time until the first message is received
-	TotalTime            time.Duration // Total time from opening to closing the connection
-}
-
-// activeSubscriptions returns a snapshot of the active subscriptions.
-func (ws *WSStat) activeSubscriptions() []*subscriptionState {
-	ws.subscriptionMu.RLock()
-	defer ws.subscriptionMu.RUnlock()
-
-	if len(ws.subscriptions) == 0 {
-		return nil
-	}
-
-	states := make([]*subscriptionState, 0, len(ws.subscriptions))
-	for _, state := range ws.subscriptions {
-		states = append(states, state)
-	}
-	return states
-}
-
-// trackSubscriptionEvent tracks the first and last events of a subscription.
-func (ws *WSStat) trackSubscriptionEvent(ts time.Time) {
-	if ts.IsZero() {
-		return
-	}
-	ws.subscriptionMu.Lock()
-	defer ws.subscriptionMu.Unlock()
-	if ws.subscriptionFirstEvent.IsZero() || ts.Before(ws.subscriptionFirstEvent) {
-		ws.subscriptionFirstEvent = ts
-	}
-	if ts.After(ws.subscriptionLastEvent) {
-		ws.subscriptionLastEvent = ts
-	}
-}
-
-// deliverSubscriptionMessage delivers a message to a subscription.
-func (ws *WSStat) deliverSubscriptionMessage(
-	state *subscriptionState,
-	message SubscriptionMessage,
-) {
-	if state == nil {
-		return
-	}
-
-	now := message.Received
-	dropped := false
-	state.mu.Lock()
-	if state.closed {
-		state.mu.Unlock()
-		return
-	}
-	if message.Err == nil {
-		if state.stats.firstEvent.IsZero() {
-			state.stats.firstEvent = now
-		}
-		if !state.stats.lastArrival.IsZero() {
-			state.stats.totalInterArrival += now.Sub(state.stats.lastArrival)
-		}
-		state.stats.lastArrival = now
-		state.stats.lastEvent = now
-		state.stats.messageCount++
-		state.stats.byteCount += uint64(message.Size)
-	} else {
-		if state.stats.firstEvent.IsZero() {
-			state.stats.firstEvent = now
-		}
-		state.stats.lastEvent = now
-	}
-	if state.buffer != nil {
-		select {
-		case state.buffer <- message:
-		default:
-			dropped = true
-		}
-	}
-	state.mu.Unlock()
-
-	if state.messages != nil {
-		atomic.AddUint64(state.messages, 1)
-	}
-	if state.bytes != nil {
-		atomic.AddUint64(state.bytes, uint64(message.Size))
-	}
-
-	ws.trackSubscriptionEvent(now)
-
-	if dropped {
-		ws.log.Warn().Str("subscription", state.id).
-			Msg("subscription buffer full; dropping message")
-	}
-}
-
-// finalizeSubscription finalizes a subscription upon its completion or cancellation.
-func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error) {
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	if state.closed {
-		state.mu.Unlock()
-		return
-	}
-	state.closed = true
-	if finalErr != nil {
-		state.stats.finalErr = finalErr
-	}
-	metricsCopy := state.stats
-	var msgCount, byteCount uint64
-	if state.messages != nil {
-		msgCount = atomic.LoadUint64(state.messages)
-	}
-	if state.bytes != nil {
-		byteCount = atomic.LoadUint64(state.bytes)
-	}
-	buffer := state.buffer
-	done := state.done
-	state.mu.Unlock()
-
-	if buffer != nil {
-		close(buffer)
-	}
-	if done != nil {
-		close(done)
-	}
-	if state.cancel != nil {
-		state.cancel()
-	}
-	subStats := SubscriptionStats{
-		FirstEvent:       ws.durationSinceDial(metricsCopy.firstEvent),
-		LastEvent:        ws.durationSinceDial(metricsCopy.lastEvent),
-		MessageCount:     msgCount,
-		ByteCount:        byteCount,
-		MeanInterArrival: 0,
-		Error:            metricsCopy.finalErr,
-	}
-	if metricsCopy.messageCount > 1 {
-		subStats.MeanInterArrival =
-			metricsCopy.totalInterArrival / time.Duration(metricsCopy.messageCount-1)
-	}
-	ws.removeSubscription(state.id, &subStats)
-}
-
-// dispatchIncoming dispatches an incoming frame to the appropriate subscription.
-func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
-	states := ws.activeSubscriptions()
-	if len(states) == 0 {
-		return false
-	}
-
-	receivedAt := time.Now()
-
-	if read.err != nil {
-		for _, state := range states {
-			envelope := SubscriptionMessage{
-				MessageType: read.messageType,
-				Received:    receivedAt,
-				Err:         read.err,
-			}
-			ws.deliverSubscriptionMessage(state, envelope)
-			ws.finalizeSubscription(state, read.err)
-		}
-		return true
-	}
-
-	deliverAll := len(states) == 1
-	claimed := false
-	for _, state := range states {
-		if state == nil {
-			continue
-		}
-		if err := state.ctx.Err(); err != nil {
-			ws.finalizeSubscription(state, err)
-			continue
-		}
-
-		decoded := any(nil)
-		var decodeErr error
-		if state.decoder != nil {
-			decoded, decodeErr = state.decoder(read.messageType, read.data)
-		}
-
-		match := false
-		if state.matcher != nil {
-			match = state.matcher(read.messageType, read.data, decoded)
-		} else if deliverAll {
-			match = true
-		}
-
-		if !match && decodeErr == nil {
-			continue
-		}
-
-		payload := append([]byte(nil), read.data...)
-		envelope := SubscriptionMessage{
-			MessageType: read.messageType,
-			Data:        payload,
-			Decoded:     decoded,
-			Received:    receivedAt,
-			Err:         decodeErr,
-			Size:        len(payload),
-		}
-		ws.deliverSubscriptionMessage(state, envelope)
-		claimed = true
-	}
-
-	return claimed
-}
-
-// watchSubscription watches a subscription for its completion or cancellation.
-func (ws *WSStat) watchSubscription(state *subscriptionState) {
-	if state == nil {
-		return
-	}
-	<-state.ctx.Done()
-	err := state.ctx.Err()
-	if errors.Is(err, context.Canceled) {
-		err = nil
-	}
-	ws.finalizeSubscription(state, err)
-}
-
-// newSubscriptionID generates a new subscription ID.
-func (ws *WSStat) newSubscriptionID() string {
-	val := atomic.AddUint64(&ws.nextSubscriptionID, 1)
-	return fmt.Sprintf("%s%d", subscriptionIDPrefix, val)
-}
-
-// registerSubscription registers a subscription.
-func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
-	ws.subscriptionMu.Lock()
-	defer ws.subscriptionMu.Unlock()
-
-	if ws.subscriptions == nil {
-		ws.subscriptions = make(map[string]*subscriptionState)
-	}
-	ws.subscriptions[state.id] = state
-	if ws.subscriptionArchive == nil {
-		ws.subscriptionArchive = make(map[string]SubscriptionStats)
-	}
-	delete(ws.subscriptionArchive, state.id)
-
-	if state.messages == nil {
-		state.messages = new(uint64)
-	}
-	if state.bytes == nil {
-		state.bytes = new(uint64)
-	}
-
-	sub := &Subscription{
-		ID:       state.id,
-		cancel:   state.cancel,
-		done:     state.done,
-		messages: state.messages,
-		bytes:    state.bytes,
-		updates:  state.buffer,
-	}
-
-	return sub
-}
-
-// removeSubscription removes a subscription by ID.
-func (ws *WSStat) removeSubscription(id string, stats *SubscriptionStats) {
-	ws.subscriptionMu.Lock()
-	defer ws.subscriptionMu.Unlock()
-
-	if ws.subscriptions != nil {
-		delete(ws.subscriptions, id)
-	}
-	if stats != nil {
-		if ws.subscriptionArchive == nil {
-			ws.subscriptionArchive = make(map[string]SubscriptionStats)
-		}
-		ws.subscriptionArchive[id] = *stats
-	}
-}
-
-// snapshotSubscriptionStats snapshots the subscription stats.
-func (ws *WSStat) snapshotSubscriptionStats() (
-	stats map[string]SubscriptionStats,
-	firstEvent time.Time,
-	lastEvent time.Time,
-) {
-	ws.subscriptionMu.RLock()
-	defer ws.subscriptionMu.RUnlock()
-
-	size := len(ws.subscriptions) + len(ws.subscriptionArchive)
-	if size == 0 {
-		return nil, time.Time{}, time.Time{}
-	}
-
-	snap := make(map[string]SubscriptionStats, size)
-	for id, state := range ws.subscriptions {
-		state.mu.Lock()
-		s := state.stats
-		var msgCount, byteCount uint64
-		if state.messages != nil {
-			msgCount = atomic.LoadUint64(state.messages)
-		}
-		if state.bytes != nil {
-			byteCount = atomic.LoadUint64(state.bytes)
-		}
-		stats := SubscriptionStats{
-			FirstEvent:       ws.durationSinceDial(s.firstEvent),
-			LastEvent:        ws.durationSinceDial(s.lastEvent),
-			MessageCount:     msgCount,
-			ByteCount:        byteCount,
-			MeanInterArrival: 0,
-			Error:            s.finalErr,
-		}
-		if s.messageCount > 1 {
-			stats.MeanInterArrival = s.totalInterArrival / time.Duration(s.messageCount-1)
-		}
-		state.mu.Unlock()
-		snap[id] = stats
-	}
-	maps.Copy(snap, ws.subscriptionArchive)
-
-	return snap, ws.subscriptionFirstEvent, ws.subscriptionLastEvent
-}
 
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
@@ -618,69 +252,6 @@ func (ws *WSStat) writePump() {
 	}
 }
 
-// Close closes the WebSocket connection and cleans up the WSStat instance.
-// Sets result times: CloseDone
-func (ws *WSStat) Close() {
-	ws.closeOnce.Do(func() {
-		// Cancel the context
-		ws.cancel()
-
-		for _, state := range ws.activeSubscriptions() {
-			ws.finalizeSubscription(state, context.Canceled)
-		}
-
-		// If the connection is not already closed, close it gracefully
-		if ws.conn != nil {
-			// Set read deadline to stop reading messages
-			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
-				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
-			}
-
-			// Send close frame
-			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
-			deadline := time.Now().Add(time.Second)
-			if err := ws.conn.WriteControl(
-				websocket.CloseMessage,
-				formattedCloseMessage,
-				deadline,
-			); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				ws.log.Debug().Err(err).Msg("Failed to write close message")
-			}
-
-			if err := ws.conn.Close(); err != nil {
-				ws.log.Debug().Err(err).Msg("Failed to close connection")
-			}
-			ws.conn = nil
-		}
-
-		// Calculate timings and set result
-		ws.timings.closeDone = time.Now()
-		ws.calculateResult()
-
-		// Wait for pumps to finish
-		pumpsTimeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		done := make(chan struct{})
-		go func() {
-			ws.wgPumps.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			// All goroutines finished
-		case <-pumpsTimeoutCtx.Done():
-			ws.log.Warn().Msg("Timeout closing WSStat pumps")
-		}
-
-		// Close the pump channels
-		close(ws.readChan)
-		close(ws.pongChan)
-		close(ws.writeChan)
-	})
-}
-
 // Dial establishes a new WebSocket connection using the custom dialer defined in this package.
 // If required, specify custom headers to merge with the default headers.
 // Sets times: dialStart, wsHandshakeDone
@@ -757,19 +328,23 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	return nil
 }
 
-// ExtractResult calculate the current results and returns a copy of the Result object.
-func (ws *WSStat) ExtractResult() *Result {
-	ws.calculateResult()
+// WriteMessage sends a message through the WebSocket connection.
+// Sets time: MessageWrites
+func (ws *WSStat) WriteMessage(messageType int, data []byte) {
+	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
+	ws.writeChan <- &wsWrite{data: data, messageType: messageType}
+}
 
-	resultCopy := *ws.result
-	if ws.result.Subscriptions != nil {
-		clone := make(map[string]SubscriptionStats, len(ws.result.Subscriptions))
-		for id, stats := range ws.result.Subscriptions {
-			clone[id] = stats
-		}
-		resultCopy.Subscriptions = clone
+// WriteMessageJSON sends a message through the WebSocket connection.
+// Sets time: MessageWrites
+func (ws *WSStat) WriteMessageJSON(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
+		return
 	}
-	return &resultCopy
+	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
+	ws.writeChan <- &wsWrite{data: b, messageType: websocket.TextMessage}
 }
 
 // OneHitMessage sends a single message through the WebSocket connection, and waits for
@@ -811,118 +386,6 @@ func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
 func (ws *WSStat) PingPong() error {
 	ws.WriteMessage(websocket.PingMessage, nil)
 	return ws.ReadPong()
-}
-
-// Subscribe registers a long-lived listener using the supplied options and context.
-// The returned Subscription can be used to consume streamed frames until cancellation.
-func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Subscription, error) {
-	if ws.conn == nil {
-		return nil, errors.New("websocket connection is not established")
-	}
-
-	if opts.MessageType == 0 {
-		opts.MessageType = websocket.TextMessage
-	}
-
-	bufferSize := opts.Buffer
-	if bufferSize <= 0 {
-		bufferSize = ws.defaultSubscriptionBuffer
-	}
-
-	parentCtx := ws.ctx
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-	combinedCtx, cancel := context.WithCancel(parentCtx)
-	done := make(chan struct{})
-
-	state := &subscriptionState{
-		options: opts,
-		matcher: opts.matcher,
-		decoder: opts.decoder,
-		buffer:  make(chan SubscriptionMessage, bufferSize),
-		done:    done,
-		cancel:  cancel,
-		ctx:     combinedCtx,
-	}
-
-	if opts.ID != "" {
-		state.id = opts.ID
-	} else {
-		state.id = ws.newSubscriptionID()
-	}
-
-	// Ensure caller-provided context cancels the subscription if terminated early.
-	if ctx != nil {
-		go func(c context.Context, cancel func()) {
-			select {
-			case <-c.Done():
-				cancel()
-			case <-done:
-			}
-		}(ctx, cancel)
-	}
-
-	sub := ws.registerSubscription(state)
-	go ws.watchSubscription(state)
-
-	// Send initial subscription request if payload is provided.
-	if len(opts.Payload) > 0 {
-		ws.WriteMessage(opts.MessageType, opts.Payload)
-	}
-
-	return sub, nil
-}
-
-// SubscribeOnce registers a subscription and waits for the first delivered message before
-// canceling the subscription. The returned message is a snapshot of the first delivery.
-func (ws *WSStat) SubscribeOnce(
-	ctx context.Context,
-	opts SubscriptionOptions,
-) (SubscriptionMessage, error) {
-	sub, err := ws.Subscribe(ctx, opts)
-	if err != nil {
-		return SubscriptionMessage{}, err
-	}
-
-	updates := sub.Updates()
-	done := sub.Done()
-	var ctxDone <-chan struct{}
-	if ctx != nil {
-		ctxDone = ctx.Done()
-	}
-
-	for {
-		select {
-		case msg, ok := <-updates:
-			if !ok {
-				select {
-				case <-done:
-				default:
-				}
-				return SubscriptionMessage{},
-					errors.New("subscription closed before delivering a message")
-			}
-			if msg.Err != nil {
-				sub.Cancel()
-				<-done
-				return SubscriptionMessage{}, msg.Err
-			}
-			sub.Cancel()
-			<-done
-			return msg, nil
-		case <-done:
-			return SubscriptionMessage{},
-				errors.New("subscription closed before delivering a message")
-		case <-ctxDone:
-			sub.Cancel()
-			<-done
-			if ctx.Err() != nil {
-				return SubscriptionMessage{}, ctx.Err()
-			}
-			return SubscriptionMessage{}, context.Canceled
-		}
-	}
 }
 
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
@@ -985,215 +448,89 @@ func (ws *WSStat) ReadPong() error {
 	return nil
 }
 
-// WriteMessage sends a message through the WebSocket connection.
-// Sets time: MessageWrites
-func (ws *WSStat) WriteMessage(messageType int, data []byte) {
-	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.writeChan <- &wsWrite{data: data, messageType: messageType}
-}
+// ExtractResult calculate the current results and returns a copy of the Result object.
+func (ws *WSStat) ExtractResult() *Result {
+	ws.calculateResult()
 
-// WriteMessageJSON sends a message through the WebSocket connection.
-// Sets time: MessageWrites
-func (ws *WSStat) WriteMessageJSON(v any) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
-		return
-	}
-	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.writeChan <- &wsWrite{data: b, messageType: websocket.TextMessage}
-}
-
-// durations returns a map of the time.Duration members of Result.
-func (r *Result) durations() map[string]time.Duration {
-	return map[string]time.Duration{
-		"DNSLookup":     r.DNSLookup,
-		"TCPConnection": r.TCPConnection,
-		"TLSHandshake":  r.TLSHandshake,
-		"WSHandshake":   r.WSHandshake,
-		"MessageRTT":    r.MessageRTT,
-
-		"DNSLookupDone":        r.DNSLookupDone,
-		"TCPConnected":         r.TCPConnected,
-		"TLSHandshakeDone":     r.TLSHandshakeDone,
-		"WSHandshakeDone":      r.WSHandshakeDone,
-		"FirstMessageResponse": r.FirstMessageResponse,
-		"TotalTime":            r.TotalTime,
-	}
-}
-
-// formatCompact prints the single-line comma-separated view used by %s, %q, and %v without '+'.
-func (r *Result) formatCompact(s fmt.State) {
-	d := r.durations()
-	// Stable, readable order for single-line output
-	order := []string{
-		"DNSLookup", "TCPConnection", "TLSHandshake", "WSHandshake", "MessageRTT",
-		"DNSLookupDone", "TCPConnected", "TLSHandshakeDone", "WSHandshakeDone",
-		"FirstMessageResponse", "TotalTime",
-	}
-	list := make([]string, 0, len(order))
-	for _, k := range order {
-		v := d[k]
-		if k == "TotalTime" && r.TotalTime == 0 {
-			list = append(list, fmt.Sprintf("%s: - ms", k))
-			continue
+	resultCopy := *ws.result
+	if ws.result.Subscriptions != nil {
+		clone := make(map[string]SubscriptionStats, len(ws.result.Subscriptions))
+		for id, stats := range ws.result.Subscriptions {
+			clone[id] = stats
 		}
-		list = append(list, fmt.Sprintf("%s: %d ms", k, v/time.Millisecond))
+		resultCopy.Subscriptions = clone
 	}
-	io.WriteString(s, strings.Join(list, ", "))
+	return &resultCopy
 }
 
-// formatVerbosePlus prints the verbose multi-line view used by %#v.
-func (r *Result) formatVerbosePlus(s fmt.State) {
-	r.printURLAndIPSection(s)
-	r.printTLSSectionIfPresent(s)
-	r.printHeadersSection(s)
-	r.printDurationsSection(s)
-}
+// Close closes the WebSocket connection and cleans up the WSStat instance.
+// Sets result times: CloseDone
+func (ws *WSStat) Close() {
+	ws.closeOnce.Do(func() {
+		// Cancel the context
+		ws.cancel()
 
-// printURLAndIPSection prints the URL details and IPs, followed by a blank line.
-func (r *Result) printURLAndIPSection(s fmt.State) {
-	fmt.Fprintln(s, "URL")
-	fmt.Fprintf(s, "  Scheme: %s\n", r.URL.Scheme)
-	host, port := hostPort(r.URL)
-	fmt.Fprintf(s, "  Host: %s\n", host)
-	fmt.Fprintf(s, "  Port: %s\n", port)
-	if r.URL.Path != "" {
-		fmt.Fprintf(s, "  Path: %s\n", r.URL.Path)
-	}
-	if r.URL.RawQuery != "" {
-		fmt.Fprintf(s, "  Query: %s\n", r.URL.RawQuery)
-	}
-	fmt.Fprintln(s, "IP")
-	fmt.Fprintf(s, "  %v\n", r.IPs)
-	fmt.Fprintln(s)
-}
-
-// printTLSSectionIfPresent prints TLS handshake details and certificate information
-// if TLSState is set. It ends with a blank line only when TLS details are printed,
-// matching previous behavior.
-func (r *Result) printTLSSectionIfPresent(s fmt.State) {
-	if r.TLSState == nil {
-		return
-	}
-	fmt.Fprint(s, "TLS handshake details\n")
-	fmt.Fprintf(s, "  Version: %s\n", tls.VersionName(r.TLSState.Version))
-	fmt.Fprintf(s, "  Cipher Suite: %s\n", tls.CipherSuiteName(r.TLSState.CipherSuite))
-	fmt.Fprintf(s, "  Server Name: %s\n", r.TLSState.ServerName)
-	fmt.Fprintf(s, "  Handshake Complete: %t\n", r.TLSState.HandshakeComplete)
-
-	for i, cert := range r.CertificateDetails() {
-		fmt.Fprintf(s, "Certificate %d\n", i+1)
-		fmt.Fprintf(s, "  Common Name: %s\n", cert.CommonName)
-		fmt.Fprintf(s, "  Issuer: %s\n", cert.Issuer)
-		fmt.Fprintf(s, "  Not Before: %s\n", cert.NotBefore)
-		fmt.Fprintf(s, "  Not After: %s\n", cert.NotAfter)
-		fmt.Fprintf(s, "  Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm.String())
-		fmt.Fprintf(s, "  Signature Algorithm: %s\n", cert.SignatureAlgorithm.String())
-		fmt.Fprintf(s, "  DNS Names: %v\n", cert.DNSNames)
-		fmt.Fprintf(s, "  IP Addresses: %v\n", cert.IPAddresses)
-		fmt.Fprintf(s, "  URIs: %v\n", cert.URIs)
-	}
-	fmt.Fprintln(s)
-}
-
-// printHeadersSection prints request and response headers (if present) and then a blank line.
-func (r *Result) printHeadersSection(s fmt.State) {
-	if r.RequestHeaders != nil {
-		fmt.Fprint(s, "Request headers\n")
-		for k, v := range r.RequestHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
+		for _, state := range ws.activeSubscriptions() {
+			ws.finalizeSubscription(state, context.Canceled)
 		}
-	}
-	if r.ResponseHeaders != nil {
-		fmt.Fprint(s, "Response headers\n")
-		for k, v := range r.ResponseHeaders {
-			fmt.Fprintf(s, "  %s: %s\n", k, strings.Join(v, ", "))
+
+		// If the connection is not already closed, close it gracefully
+		if ws.conn != nil {
+			// Set read deadline to stop reading messages
+			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
+			}
+
+			// Send close frame
+			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
+			deadline := time.Now().Add(time.Second)
+			if err := ws.conn.WriteControl(
+				websocket.CloseMessage,
+				formattedCloseMessage,
+				deadline,
+			); err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				ws.log.Debug().Err(err).Msg("Failed to write close message")
+			}
+
+			if err := ws.conn.Close(); err != nil {
+				ws.log.Debug().Err(err).Msg("Failed to close connection")
+			}
+			ws.conn = nil
 		}
-	}
-	fmt.Fprintln(s)
-}
 
-// printDurationsSection prints the durations table exactly as before.
-func (r *Result) printDurationsSection(s fmt.State) {
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "DNS lookup:     %4d ms\n", int(r.DNSLookup/time.Millisecond))
-	fmt.Fprintf(&buf, "TCP connection: %4d ms\n", int(r.TCPConnection/time.Millisecond))
-	fmt.Fprintf(&buf, "TLS handshake:  %4d ms\n", int(r.TLSHandshake/time.Millisecond))
-	fmt.Fprintf(&buf, "WS handshake:   %4d ms\n", int(r.WSHandshake/time.Millisecond))
-	fmt.Fprintf(&buf, "Msg round trip: %4d ms\n\n", int(r.MessageRTT/time.Millisecond))
+		// Calculate timings and set result
+		ws.timings.closeDone = time.Now()
+		ws.calculateResult()
 
-	fmt.Fprintf(&buf, "Name lookup done:   %4d ms\n", int(r.DNSLookupDone/time.Millisecond))
-	fmt.Fprintf(&buf, "TCP connected:      %4d ms\n", int(r.TCPConnected/time.Millisecond))
-	fmt.Fprintf(&buf, "TLS handshake done: %4d ms\n", int(r.TLSHandshakeDone/time.Millisecond))
-	fmt.Fprintf(&buf, "WS handshake done:  %4d ms\n", int(r.WSHandshakeDone/time.Millisecond))
-	fmt.Fprintf(&buf, "First msg response: %4d ms\n", int(r.FirstMessageResponse/time.Millisecond))
+		// Wait for pumps to finish
+		pumpsTimeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 
-	if r.TotalTime > 0 {
-		fmt.Fprintf(&buf, "Total:              %4d ms\n", int(r.TotalTime/time.Millisecond))
-	} else {
-		fmt.Fprintf(&buf, "Total:          %4s ms\n", "-")
-	}
-	io.WriteString(s, buf.String())
-}
+		done := make(chan struct{})
+		go func() {
+			ws.wgPumps.Wait()
+			close(done)
+		}()
 
-// CertificateDetails returns a slice of CertificateDetails for each certificate in the
-// TLS connection.
-func (r *Result) CertificateDetails() []CertificateDetails {
-	if r.TLSState == nil {
-		return nil
-	}
-
-	var details []CertificateDetails
-	for _, cert := range r.TLSState.PeerCertificates {
-		details = append(details, CertificateDetails{
-			CommonName:         cert.Subject.CommonName,
-			Issuer:             cert.Issuer.CommonName,
-			NotBefore:          cert.NotBefore,
-			NotAfter:           cert.NotAfter,
-			PublicKeyAlgorithm: cert.PublicKeyAlgorithm,
-			SignatureAlgorithm: cert.SignatureAlgorithm,
-			DNSNames:           cert.DNSNames,
-			IPAddresses:        cert.IPAddresses,
-			URIs:               cert.URIs,
-		})
-	}
-
-	return details
-}
-
-// Format formats the time.Duration members of Result.
-func (r *Result) Format(s fmt.State, verb rune) {
-	switch verb {
-	case 'v':
-		if s.Flag('+') {
-			r.formatVerbosePlus(s)
-			return
+		select {
+		case <-done:
+			// All goroutines finished
+		case <-pumpsTimeoutCtx.Done():
+			ws.log.Warn().Msg("Timeout closing WSStat pumps")
 		}
-		fallthrough
-	case 's', 'q':
-		r.formatCompact(s)
-	default:
-		r.formatCompact(s)
-	}
+
+		// Close the pump channels
+		close(ws.readChan)
+		close(ws.pongChan)
+		close(ws.writeChan)
+	})
 }
 
-// hostPort returns the host and port from a URL.
-func hostPort(u *url.URL) (host, port string) {
-	host = u.Hostname()
-	port = u.Port()
-	if port == "" {
-		// Return the default port based on the scheme
-		switch u.Scheme {
-		case "ws":
-			port = "80"
-		case "wss":
-			port = "443"
-		default:
-			port = ""
-		}
-	}
-	return host, port
+// dialTarget represents a target address for dialing a WebSocket connection.
+type dialTarget struct {
+	host  string
+	port  string
+	addrs []string
 }
 
 // newDialer initializes and returns a websocket.Dialer with customized dial functions
@@ -1248,12 +585,7 @@ func newDialer(
 	}
 }
 
-type dialTarget struct {
-	host  string
-	port  string
-	addrs []string
-}
-
+// resolveDialTargets resolves the target address for dialing a WebSocket connection.
 func resolveDialTargets(
 	ctx context.Context,
 	addr string,
@@ -1277,6 +609,7 @@ func resolveDialTargets(
 	return dialTarget{host: host, port: port, addrs: addrs}, nil
 }
 
+// dialWithAddresses dials a WebSocket connection using the specified network and target address.
 func dialWithAddresses(
 	ctx context.Context,
 	network string,
@@ -1328,6 +661,7 @@ func (ws *WSStat) durationSinceDial(ts time.Time) time.Duration {
 // Option configures a WSStat instance.
 type Option func(*options)
 
+// options stores the configuration for a WSStat instance.
 type options struct {
 	tlsConfig  *tls.Config
 	timeout    time.Duration
