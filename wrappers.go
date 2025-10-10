@@ -204,6 +204,14 @@ func MeasureLatencyBurstWithContext(
 	go func() {
 		responses := make([]string, 0, len(msgs))
 		for _, msg := range msgs {
+			// Check for cancellation before each operation
+			select {
+			case <-ctx.Done():
+				resultCh <- result{err: ctx.Err()}
+				return
+			default:
+			}
+
 			ws.WriteMessage(websocket.TextMessage, []byte(msg))
 			_, p, err := ws.ReadMessage()
 			if err != nil {
@@ -217,6 +225,8 @@ func MeasureLatencyBurstWithContext(
 
 	select {
 	case <-ctx.Done():
+		// Wait for goroutine to finish before closing
+		<-resultCh
 		ws.Close()
 		return nil, nil, ctx.Err()
 	case r := <-resultCh:
@@ -256,6 +266,14 @@ func MeasureLatencyJSONBurstWithContext(
 	go func() {
 		responses := make([]any, 0, len(v))
 		for _, msg := range v {
+			// Check for cancellation before each operation
+			select {
+			case <-ctx.Done():
+				resultCh <- result{err: ctx.Err()}
+				return
+			default:
+			}
+
 			ws.WriteMessageJSON(msg)
 			resp, err := ws.ReadMessageJSON()
 			if err != nil {
@@ -269,6 +287,8 @@ func MeasureLatencyJSONBurstWithContext(
 
 	select {
 	case <-ctx.Done():
+		// Wait for goroutine to finish before closing
+		<-resultCh
 		ws.Close()
 		return nil, nil, ctx.Err()
 	case r := <-resultCh:
@@ -303,9 +323,25 @@ func MeasureLatencyPingBurstWithContext(
 
 	go func() {
 		for range pingCount {
+			// Check for cancellation before each operation
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			default:
+			}
+
 			ws.WriteMessage(websocket.PingMessage, nil)
 		}
 		for range pingCount {
+			// Check for cancellation before each operation
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			default:
+			}
+
 			if err := ws.ReadPong(); err != nil {
 				errCh <- err
 				return
@@ -316,6 +352,8 @@ func MeasureLatencyPingBurstWithContext(
 
 	select {
 	case <-ctx.Done():
+		// Wait for goroutine to finish before closing
+		<-errCh
 		ws.Close()
 		return nil, ctx.Err()
 	case err := <-errCh:
