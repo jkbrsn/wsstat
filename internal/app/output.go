@@ -52,10 +52,9 @@ func (c *Client) colorEnabled() bool {
 	switch c.colorMode {
 	case "always":
 		return true
-	case "never":
-		return false
 	case "auto", "":
 	default:
+		// never
 		return false
 	}
 
@@ -235,19 +234,8 @@ func (c *Client) printTimingResultsTiered(result *wsstat.Result, u *url.URL, lab
 			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
 			c.colorizeOrange(formatPadRight(result.TotalTime)),
 		)
-	case "ws":
-		fmt.Fprintf(os.Stdout, wsPrintTemplate,
-			label,
-			c.colorizeGreen(formatPadLeft(result.DNSLookup)),
-			c.colorizeGreen(formatPadLeft(result.TCPConnection)),
-			c.colorizeGreen(formatPadLeft(result.WSHandshake)),
-			c.colorizeGreen(formatPadLeft(result.MessageRTT)),
-			c.colorizeGreen(formatPadRight(result.DNSLookupDone)),
-			c.colorizeGreen(formatPadRight(result.TCPConnected)),
-			c.colorizeGreen(formatPadRight(result.WSHandshakeDone)),
-			c.colorizeOrange(formatPadRight(result.TotalTime)),
-		)
 	default:
+		// ws as default
 		fmt.Fprintf(os.Stdout, wsPrintTemplate,
 			label,
 			c.colorizeGreen(formatPadLeft(result.DNSLookup)),

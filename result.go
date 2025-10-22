@@ -66,8 +66,6 @@ func (r *Result) Format(s fmt.State, verb rune) {
 			return
 		}
 		fallthrough
-	case 's', 'q':
-		r.formatCompact(s)
 	default:
 		r.formatCompact(s)
 	}

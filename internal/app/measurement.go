@@ -104,17 +104,8 @@ func processTextResponse(response any, format string) (any, error) {
 		// Raw format: return response without any parsing
 		return responseStr, nil
 
-	case formatAuto, formatJSON:
-		// Auto/JSON formats: attempt JSON-RPC parsing, fall back to raw
-		if str, ok := responseStr.(string); ok {
-			if decoded, err := decodeAsJSONRPC(str); err == nil {
-				return decoded, nil
-			}
-		}
-		return responseStr, nil
-
 	default:
-		// Unknown format: treat as auto (attempt parsing, fall back to raw)
+		// Default to auto/fromatJSON: attempt parsing, fall back to raw
 		if str, ok := responseStr.(string); ok {
 			if decoded, err := decodeAsJSONRPC(str); err == nil {
 				return decoded, nil
