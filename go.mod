@@ -4,7 +4,7 @@ go 1.25.3
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/jkbrsn/jsonrpc v0.8.0
+	github.com/jkbrsn/jsonrpc v0.8.1
 	github.com/mattn/go-isatty v0.0.20
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
