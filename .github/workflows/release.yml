@@ -14,11 +14,24 @@ permissions:
 
 env:
   GO_VERSION: 1.25.3
-  GOLANGCI_LINT_VERSION: v2.5.0
+  GOLANGCI_LINT_VERSION: v2.6.1
 
 jobs:
+  initialize:
+    name: Initialize workflow
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.get.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: get
+        run: |
+          raw=$(cat VERSION)
+          echo "version=${raw#v}" >> "$GITHUB_OUTPUT"
+
   version-bump-check:
-    name: VERSION check
+    name: "Verify correctly tagged version (${{ needs.initialize.outputs.version }})"
+    needs: [initialize]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -49,7 +62,11 @@ jobs:
           echo "Latest FINAL tag: $LATEST_FINAL_TAG"
           echo "VERSION file:     $NEW_VERSION"
 
-          # VERSION must be strictly > latest FINAL (ignores rcs)
+          # STRICT: VERSION must be > latest final (no equality)
+          if [[ "$NEW_VERSION" == "$OLD_FINAL_VERSION" ]]; then
+            echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
+            exit 1
+          fi
           if [[ "$(printf '%s\n' "$OLD_FINAL_VERSION" "$NEW_VERSION" | sort -V | tail -n1)" != "$NEW_VERSION" ]]; then
             echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
             exit 1
@@ -57,10 +74,10 @@ jobs:
 
           echo "VERSION is newer than latest final: $OLD_FINAL_VERSION → $NEW_VERSION"
 
-  release:
-    name: Build, tag & release
-    needs: [version-bump-check]
+  test-race:
+    name: Test race
     runs-on: ubuntu-24.04
+    needs: [version-bump-check]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -70,19 +87,57 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run golangci-lint
+      - name: Run race tests (1x -race -shuffle)
+        shell: bash
+        run: go test -mod=readonly ./... -count=1 -shuffle=on -race
+
+  test-flaky:
+    name: Test flaky
+    runs-on: ubuntu-24.04
+    needs: [version-bump-check]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run flaky tests (16x -shuffle)
+        shell: bash
+        run: go test -mod=readonly ./... -count=16 -shuffle=on
+
+  golangci-lint:
+    runs-on: ubuntu-24.04
+    needs: [version-bump-check]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: -v
 
-      - name: Run tests (-race)
-        shell: bash
-        run: go test -mod=readonly ./... -count=1 -race
+  release:
+    name: "Build, tag & release (${{ needs.initialize.outputs.version }})"
+    needs: [version-bump-check, initialize, test-race, test-flaky, golangci-lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: Build
-        shell: bash
-        run: make build
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Compute tag (final or next -rc.N)
         id: compute_tag
@@ -143,6 +198,10 @@ jobs:
           echo "VERSION=$VERSION"        >> "$GITHUB_ENV"
 
           echo "Computed tag: $TAG (prerelease=$IS_PRE)"
+
+      - name: Build
+        shell: bash
+        run: make build
 
       - name: Create Git tag
         shell: bash
@@ -205,3 +264,38 @@ jobs:
           make_latest:      ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}  # finals only
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  summary:
+    name: Release summary
+    runs-on: ubuntu-24.04
+    needs: [initialize, version-bump-check, test-race, test-flaky, golangci-lint, release]
+    if: ${{ always() }}  # ensure this job runs even if dependencies failed
+    steps:
+      - name: Write release summary
+        run: |
+          {
+            echo "## 🚀 Release Summary"
+            echo ""
+            echo "### Job Status"
+            echo "- Initialize:        ${{ needs.initialize.result }}"
+            echo "- Version bump:      ${{ needs['version-bump-check'].result }}"
+            echo "- Tests (race):      ${{ needs['test-race'].result }}"
+            echo "- Tests (flaky):     ${{ needs['test-flaky'].result }}"
+            echo "- Lint:              ${{ needs.golangci-lint.result }}"
+            echo "- Release:           ${{ needs.release.result }}"
+            echo ""
+            # Only print release details/links if the release job succeeded and produced outputs
+            if [ "${{ needs.release.result }}" = "success" ] && [ -n "${{ needs.release.outputs.tag }}" ]; then
+              echo "### Release"
+              echo "- **Version:** \`${{ needs.release.outputs.version }}\`"
+              echo "- **Tag:** \`${{ needs.release.outputs.tag }}\`"
+              echo "- **Prerelease:** \`${{ needs.release.outputs.is_prerelease }}\`"
+              echo "- **Release page:** [${{ needs.release.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }})"
+            else
+              echo "> Release not created (see job statuses above)."
+            fi
+            echo ""
+            echo "Triggered by: @${{ github.actor }}"
+            echo "Commit: [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})"
+            echo "[View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"
