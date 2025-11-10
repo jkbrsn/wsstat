@@ -47,7 +47,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go mod download
-      - run: go test -mod=readonly ./... -count=16 -shuffle=on -v
+      - run: go test -mod=readonly ./... -count=16 -shuffle=on
 
   summary:
     name: CI Summary
