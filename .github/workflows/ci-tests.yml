@@ -36,7 +36,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go mod download
-      - run: go test -mod=readonly ./... -count=1 -shuffle=on -race -v
+      - run: go test -mod=readonly ./... -count=1 -shuffle=on -race
 
   unit-tests-flaky:
     name: Unit tests (flaky)
