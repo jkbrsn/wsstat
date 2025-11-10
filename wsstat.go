@@ -478,17 +478,19 @@ func (ws *WSStat) Close() {
 			ws.finalizeSubscription(state, context.Canceled)
 		}
 
+		conn := ws.conn
+
 		// If the connection is not already closed, close it gracefully
-		if ws.conn != nil {
+		if conn != nil {
 			// Set read deadline to stop reading messages
-			if err := ws.conn.SetReadDeadline(time.Now()); err != nil {
+			if err := conn.SetReadDeadline(time.Now()); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
 			}
 
 			// Send close frame
 			formattedCloseMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 			deadline := time.Now().Add(time.Second)
-			if err := ws.conn.WriteControl(
+			if err := conn.WriteControl(
 				websocket.CloseMessage,
 				formattedCloseMessage,
 				deadline,
@@ -496,10 +498,9 @@ func (ws *WSStat) Close() {
 				ws.log.Debug().Err(err).Msg("Failed to write close message")
 			}
 
-			if err := ws.conn.Close(); err != nil {
+			if err := conn.Close(); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to close connection")
 			}
-			ws.conn = nil
 		}
 
 		// Calculate timings and set result
@@ -516,11 +517,17 @@ func (ws *WSStat) Close() {
 			close(done)
 		}()
 
+		pumpsFinished := false
 		select {
 		case <-done:
+			pumpsFinished = true
 			// All goroutines finished
 		case <-pumpsTimeoutCtx.Done():
 			ws.log.Warn().Msg("Timeout closing WSStat pumps")
+		}
+
+		if pumpsFinished {
+			ws.conn = nil
 		}
 
 		// Close pump channels that signal read/write shutdown
