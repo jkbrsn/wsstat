@@ -1,4 +1,5 @@
 name: Manual Release
+run-name: "Release ${{ inputs.prerelease && ' (prerelease)' || '' }}"
 
 on:
   workflow_dispatch:
