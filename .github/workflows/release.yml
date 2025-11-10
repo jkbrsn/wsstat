@@ -131,6 +131,10 @@ jobs:
     name: "Build, tag & release (${{ needs.initialize.outputs.version }})"
     needs: [version-bump-check, initialize, test-race, test-flaky, golangci-lint]
     runs-on: ubuntu-24.04
+    outputs:
+      tag:           ${{ steps.compute_tag.outputs.tag }}
+      version:       ${{ steps.compute_tag.outputs.version }}
+      is_prerelease: ${{ steps.compute_tag.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v5
         with:
