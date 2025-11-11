@@ -496,11 +496,11 @@ func TestReadAfterClose(t *testing.T) {
 
 	_, _, err := ws.ReadMessage()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read channel closed")
+	assert.Contains(t, err.Error(), "context canceled")
 
 	_, err = ws.ReadMessageJSON()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read channel closed")
+	assert.Contains(t, err.Error(), "context canceled")
 
 	err = ws.ReadPong()
 	require.Error(t, err)

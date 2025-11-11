@@ -50,13 +50,10 @@ type WSStat struct {
 	subscriptionFirstEvent    time.Time
 	subscriptionLastEvent     time.Time
 
-	ctx           context.Context
-	cancel        context.CancelFunc
-	closeOnce     sync.Once
-	wgPumps       sync.WaitGroup
-	chansClosed   atomic.Bool  // Tracks if channels have been closed
-	pongChanOpen  atomic.Bool  // Separate flag for pongChan since it can be read independently
-	chanCloseMu   sync.RWMutex // Protects channel operations during close
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	wgPumps   sync.WaitGroup
 
 	// instance configuration
 	timeout time.Duration
@@ -98,7 +95,6 @@ func New(opts ...Option) *WSStat {
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
-	ws.pongChanOpen.Store(true)
 
 	return ws
 }
@@ -378,25 +374,9 @@ func (ws *WSStat) WriteMessage(messageType int, data []byte) {
 	default:
 	}
 
-	// Check if channels are closed to avoid race with Close()
-	if ws.chansClosed.Load() {
-		ws.log.Debug().Msg("Dropping write message, channels closed")
-		return
-	}
-
 	ws.timings.mu.Lock()
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
 	ws.timings.mu.Unlock()
-
-	// Acquire read lock to prevent channel close during send
-	ws.chanCloseMu.RLock()
-	defer ws.chanCloseMu.RUnlock()
-
-	// Double-check after acquiring lock
-	if ws.chansClosed.Load() {
-		ws.log.Debug().Msg("Dropping write message, channels closed after lock")
-		return
-	}
 
 	select {
 	case ws.writeChan <- &wsWrite{data: data, messageType: messageType}:
@@ -418,12 +398,6 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	default:
 	}
 
-	// Check if channels are closed to avoid race with Close()
-	if ws.chansClosed.Load() {
-		ws.log.Debug().Msg("Dropping JSON write message, channels closed")
-		return
-	}
-
 	b, err := json.Marshal(v)
 	if err != nil {
 		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
@@ -433,16 +407,6 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	ws.timings.mu.Lock()
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
 	ws.timings.mu.Unlock()
-
-	// Acquire read lock to prevent channel close during send
-	ws.chanCloseMu.RLock()
-	defer ws.chanCloseMu.RUnlock()
-
-	// Double-check after acquiring lock
-	if ws.chansClosed.Load() {
-		ws.log.Debug().Msg("Dropping JSON write message, channels closed after lock")
-		return
-	}
 
 	select {
 	case ws.writeChan <- &wsWrite{data: b, messageType: websocket.TextMessage}:
@@ -498,77 +462,78 @@ func (ws *WSStat) PingPong() error {
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
-	msg, ok := <-ws.readChan
-	if !ok {
-		return 0, nil, errors.New("read channel closed")
-	}
-
-	if msg.err != nil {
-		if websocket.IsUnexpectedCloseError(
-			msg.err,
-			websocket.CloseGoingAway,
-			websocket.CloseNormalClosure,
-		) {
-			return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
+	select {
+	case <-ws.ctx.Done():
+		return 0, nil, ws.ctx.Err()
+	case msg, ok := <-ws.readChan:
+		if !ok {
+			return 0, nil, ws.ctx.Err()
 		}
-		return msg.messageType, nil, msg.err
+
+		if msg.err != nil {
+			if websocket.IsUnexpectedCloseError(
+				msg.err,
+				websocket.CloseGoingAway,
+				websocket.CloseNormalClosure,
+			) {
+				return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
+			}
+			return msg.messageType, nil, msg.err
+		}
+
+		ws.timings.mu.Lock()
+		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+		ws.timings.mu.Unlock()
+
+		return msg.messageType, msg.data, nil
 	}
-
-	ws.timings.mu.Lock()
-	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-	ws.timings.mu.Unlock()
-
-	return msg.messageType, msg.data, nil
 }
 
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
-	msg, ok := <-ws.readChan
-	if !ok {
-		return nil, errors.New("read channel closed")
+	select {
+	case <-ws.ctx.Done():
+		return nil, ws.ctx.Err()
+	case msg, ok := <-ws.readChan:
+		if !ok {
+			return nil, ws.ctx.Err()
+		}
+
+		if msg.err != nil {
+			return nil, msg.err
+		}
+
+		ws.timings.mu.Lock()
+		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+		ws.timings.mu.Unlock()
+
+		var resp any
+		err := json.Unmarshal(msg.data, &resp)
+		if err != nil {
+			return nil, err
+		}
+
+		return resp, nil
 	}
-
-	if msg.err != nil {
-		return nil, msg.err
-	}
-
-	ws.timings.mu.Lock()
-	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-	ws.timings.mu.Unlock()
-
-	var resp any
-	err := json.Unmarshal(msg.data, &resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
 }
 
 // ReadPong reads a pong message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadPong() error {
-	// Check context first to ensure deterministic error when connection is closing
-	select {
-	case <-ws.ctx.Done():
-		return ws.ctx.Err()
-	default:
-	}
-
 	select {
 	case <-ws.ctx.Done():
 		return ws.ctx.Err()
 	case _, ok := <-ws.pongChan:
 		if !ok {
-			return errors.New("pong channel closed")
+			return ws.ctx.Err()
 		}
-	}
 
-	ws.timings.mu.Lock()
-	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-	ws.timings.mu.Unlock()
-	return nil
+		ws.timings.mu.Lock()
+		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+		ws.timings.mu.Unlock()
+		return nil
+	}
 }
 
 // ExtractResult calculate the current results and returns a copy of the Result object.
@@ -647,20 +612,14 @@ func (ws *WSStat) Close() {
 
 		if pumpsFinished {
 			ws.conn.Store(nil)
-
-			// Set flags before closing channels to prevent race with WriteMessage/ReadPong
-			ws.chansClosed.Store(true)
-			ws.pongChanOpen.Store(false)
-
-			// Acquire write lock to ensure no concurrent sends while closing
-			ws.chanCloseMu.Lock()
-			// Close pump channels after pumps have exited and lock is held.
-			// The lock prevents any new sends/receives from starting.
-			close(ws.readChan)
-			close(ws.pongChan)
-			close(ws.writeChan)
-			ws.chanCloseMu.Unlock()
 		}
+
+		// Note: Channels are intentionally NOT closed here.
+		// The pumps have exited due to context cancellation, and the channels
+		// will be garbage collected when the WSStat instance is no longer referenced.
+		// This avoids race conditions with external goroutines calling WriteMessage()
+		// or ReadMessage() after Close(). Those methods check ws.ctx.Done() and
+		// return early if the connection is closed.
 	})
 }
 
