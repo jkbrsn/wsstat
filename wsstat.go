@@ -214,33 +214,39 @@ func (ws *WSStat) readPump() {
 		case <-ws.ctx.Done():
 			return
 		default:
-			conn := ws.conn.Load()
-			if conn == nil {
-				ws.log.Debug().Msg("Connection already closed, exiting read pump")
-				return
-			}
+		}
 
-			if err := conn.SetReadDeadline(time.Now().Add(ws.timeout)); err != nil {
-				ws.log.Debug().Err(err).Msg("Failed to set read deadline")
+		conn := ws.conn.Load()
+		if conn == nil {
+			ws.log.Debug().Msg("Connection already closed, exiting read pump")
+			return
+		}
+
+		if err := conn.SetReadDeadline(time.Now().Add(ws.timeout)); err != nil {
+			ws.log.Debug().Err(err).Msg("Failed to set read deadline")
+		}
+
+		messageType, p, err := conn.ReadMessage()
+		if err != nil {
+			ws.dispatchIncoming(&wsRead{err: err, messageType: messageType})
+			select {
+			case ws.readChan <- &wsRead{err: err, messageType: messageType}:
+			case <-ws.ctx.Done():
+				ws.log.Debug().Msg("Context done, dropping error read")
 			}
-			if messageType, p, err := conn.ReadMessage(); err != nil {
-				ws.dispatchIncoming(&wsRead{err: err, messageType: messageType})
-				select {
-				case ws.readChan <- &wsRead{err: err, messageType: messageType}:
-				case <-ws.ctx.Done():
-					ws.log.Debug().Msg("Context done, dropping error read")
-				}
-				return
-			} else {
-				if !ws.dispatchIncoming(&wsRead{data: p, messageType: messageType}) {
-					select {
-					case ws.readChan <- &wsRead{data: p, messageType: messageType}:
-					case <-ws.ctx.Done():
-						ws.log.Debug().Msg("Context done, dropping read message")
-						return
-					}
-				}
-			}
+			return
+		}
+
+		// Message read successfully, dispatch if not handled by subscription
+		if ws.dispatchIncoming(&wsRead{data: p, messageType: messageType}) {
+			continue
+		}
+
+		select {
+		case ws.readChan <- &wsRead{data: p, messageType: messageType}:
+		case <-ws.ctx.Done():
+			ws.log.Debug().Msg("Context done, dropping read message")
+			return
 		}
 	}
 }
@@ -279,6 +285,7 @@ func (ws *WSStat) writePump() {
 			if err := conn.SetWriteDeadline(time.Now().Add(ws.timeout)); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to set write deadline")
 			}
+
 			if err := conn.WriteMessage(write.messageType, write.data); err != nil {
 				ws.log.Debug().Err(err).Msg("Failed to write message")
 				return
