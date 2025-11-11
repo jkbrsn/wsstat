@@ -156,7 +156,7 @@ func (s *Subscription) ByteCount() uint64 {
 // Subscribe registers a long-lived listener using the supplied options and context.
 // The returned Subscription can be used to consume streamed frames until cancellation.
 func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Subscription, error) {
-	if ws.conn == nil {
+	if ws.conn.Load() == nil {
 		return nil, errors.New("websocket connection is not established")
 	}
 
