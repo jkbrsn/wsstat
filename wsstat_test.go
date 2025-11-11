@@ -190,7 +190,7 @@ func TestDial(t *testing.T) {
 
 	err := ws.Dial(echoServerAddrWs, http.Header{})
 	assert.NoError(t, err)
-	assert.NotNil(t, ws.conn)
+	assert.NotNil(t, ws.conn.Load())
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 }
 
@@ -882,4 +882,114 @@ func validateOneHitResult(ws *WSStat, msg string, t *testing.T) {
 // validateCloseResult validates Results after Close has been called
 func validateCloseResult(ws *WSStat, msg string, t *testing.T) {
 	assert.Greater(t, ws.result.TotalTime, time.Duration(0), "Invalid TotalTime time in %s", msg)
+}
+
+// TestRaceConditionOnClose tests that closing while messages are being sent/received
+// doesn't cause a race condition or panic when accessing ws.conn
+func TestRaceConditionOnClose(t *testing.T) {
+	// Run this test multiple times to increase chances of hitting the race
+	for i := 0; i < 50; i++ {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			ws := New(WithTimeout(1 * time.Second))
+
+			err := ws.Dial(echoServerAddrWs, http.Header{})
+			require.NoError(t, err)
+
+			// Send multiple messages concurrently to fill the write buffer
+			done := make(chan bool)
+			go func() {
+				for j := 0; j < 10; j++ {
+					msg := []byte(fmt.Sprintf("test message %d", j))
+					ws.WriteMessage(websocket.TextMessage, msg)
+					// Small delay to allow some messages to be sent
+					time.Sleep(time.Microsecond)
+				}
+				close(done)
+			}()
+
+			// Close immediately while messages are still being sent
+			// This should trigger the race condition where writePump tries to access
+			// ws.conn after it's been set to nil
+			time.Sleep(time.Microsecond * 100)
+			ws.Close()
+
+			// Wait for the sender goroutine to finish
+			<-done
+
+			// If we get here without a panic, the fix is working
+		})
+	}
+}
+
+// TestRaceConditionWithSubscription tests race condition with subscriptions active
+func TestRaceConditionWithSubscription(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			ws := New(WithTimeout(1 * time.Second))
+
+			err := ws.Dial(echoServerAddrWs, http.Header{})
+			require.NoError(t, err)
+
+			// Create a subscription
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sub, err := ws.Subscribe(ctx, SubscriptionOptions{
+				MessageType: websocket.TextMessage,
+				Buffer:      10,
+			})
+			require.NoError(t, err)
+
+			// Send messages rapidly
+			go func() {
+				for j := 0; j < 5; j++ {
+					ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("sub message %d", j)))
+					time.Sleep(time.Microsecond * 10)
+				}
+			}()
+
+			// Try to read from subscription
+			go func() {
+				for j := 0; j < 3; j++ {
+					select {
+					case <-sub.Updates():
+						// Message received
+					case <-time.After(time.Millisecond * 10):
+						return
+					}
+				}
+			}()
+
+			// Close while subscription is active
+			time.Sleep(time.Microsecond * 50)
+			ws.Close()
+		})
+	}
+}
+
+// TestConcurrentWritesAndClose tests multiple goroutines writing while closing
+func TestConcurrentWritesAndClose(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			ws := New(WithTimeout(1 * time.Second))
+
+			err := ws.Dial(echoServerAddrWs, http.Header{})
+			require.NoError(t, err)
+
+			// Multiple writers
+			for j := 0; j < 3; j++ {
+				go func(id int) {
+					for k := 0; k < 5; k++ {
+						msg := []byte(fmt.Sprintf("writer %d msg %d", id, k))
+						ws.WriteMessage(websocket.TextMessage, msg)
+						time.Sleep(time.Microsecond * 5)
+					}
+				}(j)
+			}
+
+			// Close after a very short delay
+			time.Sleep(time.Microsecond * 20)
+			ws.Close()
+		})
+	}
 }
