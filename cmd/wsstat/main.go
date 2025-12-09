@@ -115,6 +115,7 @@ func run() error {
 	ws := app.NewClient(
 		app.WithCount(cfg.Count),
 		app.WithHeaders(cfg.Headers),
+		app.WithResolves(cfg.Resolves),
 		app.WithRPCMethod(cfg.RPCMethod),
 		app.WithTextMessage(cfg.TextMessage),
 		app.WithFormat(cfg.Format),
