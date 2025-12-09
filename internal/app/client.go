@@ -54,10 +54,11 @@ import (
 // or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
-	count       int      // Nr of interactions to perform; 0 means unlimited in subscription mode
-	headers     []string // HTTP headers for connection establishment ("Key: Value")
-	rpcMethod   string   // JSON-RPC method (no params)
-	textMessage string   // Text message
+	count       int               // Nr of interactions; 0 means unlimited in subscription mode
+	headers     []string          // HTTP headers for connection establishment ("Key: Value")
+	resolves    map[string]string // DNS resolution overrides: "host:port" → "address"
+	rpcMethod   string            // JSON-RPC method (no params)
+	textMessage string            // Text message
 
 	// Output
 	format    string // Output formatting mode: "auto", "json", or "raw"
@@ -101,6 +102,12 @@ func WithCount(n int) Option {
 // WithHeaders sets custom HTTP headers for the WebSocket handshake.
 func WithHeaders(headers []string) Option {
 	return func(c *Client) { c.headers = headers }
+}
+
+// WithResolves sets DNS resolution overrides for specific host:port combinations.
+// Map key format: "host:port", value: "ip_address".
+func WithResolves(resolves map[string]string) Option {
+	return func(c *Client) { c.resolves = resolves }
 }
 
 // WithRPCMethod configures JSON-RPC method to send.
@@ -178,14 +185,19 @@ func (c *Client) RPCMethod() string { return c.rpcMethod }
 
 // wsstatOptions builds wsstat options based on client configuration.
 func (c *Client) wsstatOptions() []wsstat.Option {
+	var opts []wsstat.Option
+
 	if c.insecure {
-		return []wsstat.Option{
-			wsstat.WithTLSConfig(&tls.Config{
-				InsecureSkipVerify: true,
-			}),
-		}
+		opts = append(opts, wsstat.WithTLSConfig(&tls.Config{
+			InsecureSkipVerify: true,
+		}))
 	}
-	return nil
+
+	if c.resolves != nil {
+		opts = append(opts, wsstat.WithResolves(c.resolves))
+	}
+
+	return opts
 }
 
 // MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages

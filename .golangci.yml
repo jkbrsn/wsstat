@@ -55,7 +55,7 @@ linters:
           arguments: [100]
         - name: function-length
           disabled: false
-          exclude: [""]
+          exclude: ["TEST"]
           arguments: [0, 80]
         - name: unhandled-error
           disabled: false

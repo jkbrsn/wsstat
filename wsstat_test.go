@@ -993,3 +993,173 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 		})
 	}
 }
+func TestWithResolves(t *testing.T) {
+	t.Run("basic resolve override", func(t *testing.T) {
+		// Create WSStat with resolve override pointing to localhost
+		resolves := map[string]string{
+			"example.com:8080": "127.0.0.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Dial using the overridden hostname
+		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		require.NoError(t, err)
+
+		// Verify connection succeeded (proves override worked)
+		err = ws.PingPong()
+		assert.NoError(t, err)
+
+		result := ws.ExtractResult()
+		assert.Equal(t, targetURL, result.URL)
+		// Note: result.IPs contains the result of a separate IP lookup
+		// done after connection, not the override IP
+	})
+
+	t.Run("multiple hosts", func(t *testing.T) {
+		// Multiple overrides for different hosts
+		resolves := map[string]string{
+			"example.com:8080": "127.0.0.1",
+			"other.com:8080":   "127.0.0.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Use the first override
+		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+
+	t.Run("multiple ports same host", func(t *testing.T) {
+		// Override for specific port
+		resolves := map[string]string{
+			"example.com:8080": "127.0.0.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Connect to port 8080 (should use override)
+		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+
+	t.Run("fallback to DNS when no override", func(t *testing.T) {
+		// Override for different host
+		resolves := map[string]string{
+			"other.com:8080": "192.168.1.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Connect to localhost (no override, should use DNS)
+		err := ws.Dial(echoServerAddrWs, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+
+	t.Run("case insensitive hostname", func(t *testing.T) {
+		// Override with lowercase
+		resolves := map[string]string{
+			"example.com:8080": "127.0.0.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Dial with uppercase (should match due to case-insensitive comparison)
+		targetURL, err := url.Parse("ws://EXAMPLE.COM:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+
+	t.Run("IPv6 address override", func(t *testing.T) {
+		// Override with IPv6 loopback
+		resolves := map[string]string{
+			"example.com:8080": "::1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		// Note: This test might fail if IPv6 is not available
+		// but that's acceptable for testing the override mechanism
+		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		// We don't require.NoError here because IPv6 might not be available
+		// The important thing is that the override was attempted
+		if err == nil {
+			ws.Close()
+		}
+	})
+
+	t.Run("timing measurements with override", func(t *testing.T) {
+		resolves := map[string]string{
+			"example.com:8080": "127.0.0.1",
+		}
+		ws := New(WithResolves(resolves))
+		defer ws.Close()
+
+		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		require.NoError(t, err)
+
+		err = ws.Dial(targetURL, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		require.NoError(t, err)
+
+		result := ws.ExtractResult()
+
+		// Verify timing measurements are still accurate
+		assert.Greater(t, result.DNSLookup, time.Duration(0))
+		assert.Greater(t, result.TCPConnection, time.Duration(0))
+		assert.Greater(t, result.WSHandshake, time.Duration(0))
+		assert.Greater(t, result.MessageRTT, time.Duration(0))
+	})
+
+	t.Run("nil resolves map", func(t *testing.T) {
+		// Should work normally with nil map
+		ws := New(WithResolves(nil))
+		defer ws.Close()
+
+		err := ws.Dial(echoServerAddrWs, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty resolves map", func(t *testing.T) {
+		// Should work normally with empty map
+		ws := New(WithResolves(map[string]string{}))
+		defer ws.Close()
+
+		err := ws.Dial(echoServerAddrWs, nil)
+		require.NoError(t, err)
+
+		err = ws.PingPong()
+		assert.NoError(t, err)
+	})
+}

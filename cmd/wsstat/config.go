@@ -14,6 +14,7 @@ type Config struct {
 	TargetURL       *url.URL
 	Count           int
 	Headers         []string
+	Resolves        map[string]string // DNS resolution overrides: "host:port" → "address"
 	RPCMethod       string
 	TextMessage     string
 	Subscribe       bool
@@ -75,6 +76,7 @@ func parseConfig() (*Config, error) {
 		TargetURL:       targetURL,
 		Count:           effectiveCount,
 		Headers:         headerArguments.Values(),
+		Resolves:        resolveOverrides.Values(),
 		RPCMethod:       *rpcMethod,
 		TextMessage:     *textMessage,
 		Subscribe:       *subscribe,

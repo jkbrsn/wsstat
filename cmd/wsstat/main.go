@@ -45,14 +45,15 @@ import (
 
 var (
 	// Input
-	countFlag       = newTrackedIntFlag(1)
-	headerArguments headerList
-	rpcMethod       = flag.String("rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
-	textMessage     = flag.String("text", "", "text message to send")
-	subscribe       = flag.Bool("subscribe", false, "stream events until interrupted")
-	subscribeOnce   = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
-	bufferSize      = flag.Int("buffer", 0, "subscription delivery buffer size (messages)")
-	summaryInterval = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
+	countFlag        = newTrackedIntFlag(1)
+	headerArguments  headerList
+	resolveOverrides resolveList
+	rpcMethod        = flag.String("rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
+	textMessage      = flag.String("text", "", "text message to send")
+	subscribe        = flag.Bool("subscribe", false, "stream events until interrupted")
+	subscribeOnce    = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
+	bufferSize       = flag.Int("buffer", 0, "subscription delivery buffer size (messages)")
+	summaryInterval  = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
 
 	// Output
 	formatOption = flag.String("format", "auto", "output format: auto, json, or raw")
@@ -78,6 +79,7 @@ func init() {
 	flag.Var(&countFlag, "c", "number of interactions to perform; 0 means unlimited when subscribing")
 	flag.Var(&headerArguments, "H", "HTTP header to include with the request (repeatable; format: Key: Value)")
 	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
+	flag.Var(&resolveOverrides, "resolve", "resolve host:port to address (repeatable; format: HOST:PORT:ADDRESS)")
 	flag.StringVar(textMessage, "t", "", "text message to send")
 	flag.BoolVar(subscribe, "s", false, "stream events until interrupted")
 	flag.IntVar(bufferSize, "b", 0, "subscription delivery buffer size (messages)")
@@ -113,6 +115,7 @@ func run() error {
 	ws := app.NewClient(
 		app.WithCount(cfg.Count),
 		app.WithHeaders(cfg.Headers),
+		app.WithResolves(cfg.Resolves),
 		app.WithRPCMethod(cfg.RPCMethod),
 		app.WithTextMessage(cfg.TextMessage),
 		app.WithFormat(cfg.Format),
@@ -189,6 +192,7 @@ func printUsage() {
 
 	fmt.Fprintln(os.Stderr, "Connection:")
 	fmt.Fprintln(os.Stderr, "  -H, --header <string>          HTTP header to include with request (repeatable; format: \"Key: Value\")")
+	fmt.Fprintln(os.Stderr, "      --resolve <string>         resolve host:port to specific address (repeatable; format: \"HOST:PORT:ADDRESS\")")
 	fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
 	fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
@@ -213,5 +217,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws")
 	fmt.Fprintln(os.Stderr, "  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
+	fmt.Fprintln(os.Stderr, "  wsstat --resolve example.com:443:127.0.0.1 wss://example.com/ws")
 	fmt.Fprintln(os.Stderr, "  wsstat --insecure -vv wss://self-signed.example.com")
 }

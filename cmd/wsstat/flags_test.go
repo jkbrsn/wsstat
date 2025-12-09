@@ -157,3 +157,199 @@ func TestTrackedIntFlag(t *testing.T) {
 		assert.False(t, f.WasSet())
 	})
 }
+func TestResolveList(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parse valid IPv4", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:192.168.1.1")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "192.168.1.1", values["example.com:443"])
+	})
+
+	t.Run("parse valid IPv6", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:2001:db8::1")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "2001:db8::1", values["example.com:443"])
+	})
+
+	t.Run("parse IPv6 loopback", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:::1")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "::1", values["example.com:443"])
+	})
+
+	t.Run("parse IPv6 with brackets", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:[2001:db8::1]")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "2001:db8::1", values["example.com:443"])
+	})
+
+	t.Run("parse IPv6 loopback with brackets", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:[::1]")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "::1", values["example.com:443"])
+	})
+
+	t.Run("multiple entries", func(t *testing.T) {
+		var r resolveList
+		require.NoError(t, r.Set("example.com:443:192.168.1.1"))
+		require.NoError(t, r.Set("api.example.com:80:192.168.1.2"))
+		require.NoError(t, r.Set("example.com:8080:127.0.0.1"))
+
+		values := r.Values()
+		assert.Len(t, values, 3)
+		assert.Equal(t, "192.168.1.1", values["example.com:443"])
+		assert.Equal(t, "192.168.1.2", values["api.example.com:80"])
+		assert.Equal(t, "127.0.0.1", values["example.com:8080"])
+	})
+
+	t.Run("case insensitive hostname", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("Example.COM:443:192.168.1.1")
+		require.NoError(t, err)
+		values := r.Values()
+		// Should be normalized to lowercase
+		assert.Equal(t, "192.168.1.1", values["example.com:443"])
+	})
+
+	t.Run("override same host:port", func(t *testing.T) {
+		var r resolveList
+		require.NoError(t, r.Set("example.com:443:192.168.1.1"))
+		require.NoError(t, r.Set("example.com:443:192.168.1.2"))
+
+		values := r.Values()
+		// Last one wins
+		assert.Equal(t, "192.168.1.2", values["example.com:443"])
+	})
+
+	t.Run("reject missing parts", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "resolve must be in 'host:port:address' format")
+	})
+
+	t.Run("reject only two parts", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "address must not be empty")
+	})
+
+	t.Run("reject empty host", func(t *testing.T) {
+		var r resolveList
+		err := r.Set(":443:192.168.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "host must not be empty")
+	})
+
+	t.Run("reject empty port", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com::192.168.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "port must not be empty")
+	})
+
+	t.Run("reject invalid port", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:abc:192.168.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid port")
+	})
+
+	t.Run("reject port zero", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:0:192.168.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "port must be between 1 and")
+	})
+
+	t.Run("reject port too high", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:99999:192.168.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "port must be between 1 and")
+	})
+
+	t.Run("accept port 1", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:1:192.168.1.1")
+		require.NoError(t, err)
+	})
+
+	t.Run("accept port 65535", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:65535:192.168.1.1")
+		require.NoError(t, err)
+	})
+
+	t.Run("reject invalid IP address", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:not-an-ip")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid IP address")
+	})
+
+	t.Run("reject malformed IPv4", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:256.1.1.1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid IP address")
+	})
+
+	t.Run("reject malformed IPv6", func(t *testing.T) {
+		var r resolveList
+		err := r.Set("example.com:443:gggg::1")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid IP address")
+	})
+
+	t.Run("String returns empty for nil", func(t *testing.T) {
+		var r resolveList
+		assert.Equal(t, "", r.String())
+	})
+
+	t.Run("String returns formatted entries", func(t *testing.T) {
+		var r resolveList
+		require.NoError(t, r.Set("example.com:443:192.168.1.1"))
+		// String format may vary due to map iteration order
+		str := r.String()
+		assert.Contains(t, str, "example.com:443")
+		assert.Contains(t, str, "192.168.1.1")
+	})
+
+	t.Run("Values returns nil for uninitialized", func(t *testing.T) {
+		var r resolveList
+		values := r.Values()
+		assert.Nil(t, values)
+	})
+
+	t.Run("Values returns copy", func(t *testing.T) {
+		var r resolveList
+		require.NoError(t, r.Set("example.com:443:192.168.1.1"))
+
+		values := r.Values()
+		values["example.com:443"] = "modified"
+
+		// Original should not be modified
+		assert.Equal(t, "192.168.1.1", r.Values()["example.com:443"])
+	})
+
+	t.Run("trim whitespace in parts", func(t *testing.T) {
+		var r resolveList
+		err := r.Set(" example.com : 443 : 192.168.1.1 ")
+		require.NoError(t, err)
+		values := r.Values()
+		assert.Equal(t, "192.168.1.1", values["example.com:443"])
+	})
+}

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,19 @@ const (
 	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
 	defaultSubscriptionBufferSize = 32
 )
+
+// documentedDefaultHeaders lists the known headers that Gorilla WebSocket sets by default.
+var documentedDefaultHeaders = map[string][]string{
+	"Upgrade":               {"websocket"}, // Constant value
+	"Connection":            {"Upgrade"},   // Constant value
+	"Sec-WebSocket-Version": {"13"},        // Constant value
+
+	// A nonce value; dynamically generated for each request
+	"Sec-WebSocket-Key": {"<hidden>"},
+
+	// Set by gorilla/websocket, but only if subprotocols are specified
+	// "Sec-WebSocket-Protocol",
+}
 
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
@@ -56,8 +70,9 @@ type WSStat struct {
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout time.Duration
-	tlsConf *tls.Config
+	timeout  time.Duration
+	tlsConf  *tls.Config
+	resolves map[string]string // DNS resolution overrides: "host:port" → "address"
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -76,7 +91,7 @@ func New(opts ...Option) *WSStat {
 
 	result := &Result{}
 	timings := &wsTimings{}
-	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
+	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
@@ -91,6 +106,7 @@ func New(opts ...Option) *WSStat {
 		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
 		timeout:                   cfg.timeout,
 		tlsConf:                   cfg.tlsConfig,
+		resolves:                  cfg.resolves,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
@@ -299,13 +315,7 @@ func (ws *WSStat) writePump() {
 // Sets times: dialStart, wsHandshakeDone
 func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	ws.result.URL = targetURL
-	headers := http.Header{}
-	// Preserve multi-value headers by copying each value individually
-	for name, values := range customHeaders {
-		for _, v := range values {
-			headers.Add(name, v)
-		}
-	}
+	headers := cloneHeaders(customHeaders)
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
 	if err != nil {
@@ -330,44 +340,74 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 		}
 	})
 
-	// Start the read and write pumps
+	// Lookup IP before starting pumps so slow DNS doesn't let idle read deadlines
+	// close the connection and cancel the context while we wait. If a resolve
+	// override is present, use it and skip DNS entirely.
+	overrideIP := ""
+	if ws.resolves != nil {
+		host := strings.ToLower(targetURL.Hostname())
+		port := targetURL.Port()
+		if port != "" {
+			if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
+				overrideIP = ip
+			}
+		}
+	}
+
+	if overrideIP != "" {
+		ws.result.IPs = []string{overrideIP}
+	} else {
+		ips, err := net.LookupIP(targetURL.Hostname())
+		if err != nil {
+			return fmt.Errorf("failed IP lookup: %v", err)
+		}
+		ws.result.IPs = make([]string, len(ips))
+		for i, ip := range ips {
+			ws.result.IPs[i] = ip.String()
+		}
+	}
+
+	// Start the read and write pumps after successful setup
 	ws.wgPumps.Add(2)
 	go ws.readPump()
 	go ws.writePump()
 
-	// Lookup IP
-	ips, err := net.LookupIP(targetURL.Hostname())
-	if err != nil {
-		return fmt.Errorf("failed IP lookup: %v", err)
-	}
-	ws.result.IPs = make([]string, len(ips))
-	for i, ip := range ips {
-		ws.result.IPs[i] = ip.String()
-	}
-
 	// Capture request and response headers
-	// documentedDefaultHeaders lists the known headers that Gorilla WebSocket sets by default.
-	var documentedDefaultHeaders = map[string][]string{
-		"Upgrade":               {"websocket"}, // Constant value
-		"Connection":            {"Upgrade"},   // Constant value
-		"Sec-WebSocket-Version": {"13"},        // Constant value
-
-		// A nonce value; dynamically generated for each request
-		"Sec-WebSocket-Key": {"<hidden>"},
-
-		// Set by gorilla/websocket, but only if subprotocols are specified
-		// "Sec-WebSocket-Protocol",
-	}
-	// Merge documented defaults without overwriting any user-provided values
-	for k, vals := range documentedDefaultHeaders {
-		if _, exists := headers[k]; !exists {
-			headers[k] = append([]string(nil), vals...)
-		}
-	}
-	ws.result.RequestHeaders = headers
+	ws.result.RequestHeaders = applyDefaultHeaders(headers)
 	ws.result.ResponseHeaders = resp.Header
 
 	return nil
+}
+
+// cloneHeaders preserves multi-value headers by copying each value individually.
+func cloneHeaders(src http.Header) http.Header {
+	if src == nil {
+		return http.Header{}
+	}
+	dst := make(http.Header, len(src))
+	for name, values := range src {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		dst[name] = copied
+	}
+	return dst
+}
+
+// applyDefaultHeaders merges documented defaults without overwriting user-provided values.
+func applyDefaultHeaders(headers http.Header) http.Header {
+	dst := headers
+	if dst == nil {
+		dst = http.Header{}
+	}
+	for k, vals := range documentedDefaultHeaders {
+		if _, exists := dst[k]; exists {
+			continue
+		}
+		copied := make([]string, len(vals))
+		copy(copied, vals)
+		dst[k] = copied
+	}
+	return dst
 }
 
 // WriteMessage sends a message through the WebSocket connection.
@@ -645,10 +685,11 @@ func newDialer(
 	timings *wsTimings,
 	tlsConf *tls.Config,
 	timeout time.Duration,
+	resolves map[string]string,
 ) *websocket.Dialer {
 	return &websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			target, err := resolveDialTargets(ctx, addr, timings)
+			target, err := resolveDialTargets(ctx, addr, timings, resolves)
 			if err != nil {
 				return nil, err
 			}
@@ -657,7 +698,7 @@ func newDialer(
 		},
 
 		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			target, err := resolveDialTargets(ctx, addr, timings)
+			target, err := resolveDialTargets(ctx, addr, timings, resolves)
 			if err != nil {
 				return nil, err
 			}
@@ -690,16 +731,30 @@ func newDialer(
 }
 
 // resolveDialTargets resolves the target address for dialing a WebSocket connection.
+// If a DNS override exists for the host:port combination, it is used instead of DNS lookup.
 func resolveDialTargets(
 	ctx context.Context,
 	addr string,
 	timings *wsTimings,
+	resolves map[string]string,
 ) (dialTarget, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return dialTarget{}, err
 	}
 
+	// Check for DNS override first
+	key := net.JoinHostPort(strings.ToLower(host), port)
+	if overrideIP, ok := resolves[key]; ok {
+		timings.dnsLookupDone = time.Now()
+		return dialTarget{
+			host:  host,
+			port:  port,
+			addrs: []string{overrideIP},
+		}, nil
+	}
+
+	// Fall back to DNS lookup
 	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 	if err != nil {
 		return dialTarget{}, err
@@ -771,6 +826,7 @@ type options struct {
 	timeout    time.Duration
 	bufferSize int
 	logger     zerolog.Logger
+	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -784,3 +840,9 @@ func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout =
 
 // WithTLSConfig sets the TLS configuration for the connection.
 func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
+
+// WithResolves sets DNS resolution overrides for specific host:port combinations.
+// Map key format: "host:port", value: "ip_address".
+func WithResolves(resolves map[string]string) Option {
+	return func(o *options) { o.resolves = resolves }
+}
