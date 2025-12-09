@@ -217,5 +217,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws")
 	fmt.Fprintln(os.Stderr, "  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
+	fmt.Fprintln(os.Stderr, "  wsstat --resolve example.com:443:127.0.0.1 wss://example.com/ws")
 	fmt.Fprintln(os.Stderr, "  wsstat --insecure -vv wss://self-signed.example.com")
 }

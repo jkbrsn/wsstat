@@ -140,6 +140,7 @@ Subscription:
 
 Connection:
   -H, --header <string>          HTTP header to include with request (repeatable; format: "Key: Value")
+      --resolve <string>         resolve host:port to specific address (repeatable; format: "HOST:PORT:ADDRESS")
   -k, --insecure                 skip TLS certificate verification (use with caution)
       --no-tls                   assume ws:// when URL lacks scheme [default: wss://]
       --color <string>           color output mode: auto, always, never [default: auto]
@@ -161,6 +162,7 @@ Examples:
   wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
   wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed
   wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
+  wsstat --resolve example.com:443:127.0.0.1 wss://example.com/ws
   wsstat --insecure -vv wss://self-signed.example.com
 ```
 
