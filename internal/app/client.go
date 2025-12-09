@@ -54,7 +54,7 @@ import (
 // or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
-	count       int               // Nr of interactions to perform; 0 means unlimited in subscription mode
+	count       int               // Nr of interactions; 0 means unlimited in subscription mode
 	headers     []string          // HTTP headers for connection establishment ("Key: Value")
 	resolves    map[string]string // DNS resolution overrides: "host:port" → "address"
 	rpcMethod   string            // JSON-RPC method (no params)

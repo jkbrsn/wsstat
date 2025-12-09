@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,8 +57,9 @@ type WSStat struct {
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout time.Duration
-	tlsConf *tls.Config
+	timeout  time.Duration
+	tlsConf  *tls.Config
+	resolves map[string]string // DNS resolution overrides: "host:port" → "address"
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -76,7 +78,7 @@ func New(opts ...Option) *WSStat {
 
 	result := &Result{}
 	timings := &wsTimings{}
-	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout)
+	dialer := newDialer(result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
@@ -91,6 +93,7 @@ func New(opts ...Option) *WSStat {
 		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
 		timeout:                   cfg.timeout,
 		tlsConf:                   cfg.tlsConfig,
+		resolves:                  cfg.resolves,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
@@ -645,10 +648,11 @@ func newDialer(
 	timings *wsTimings,
 	tlsConf *tls.Config,
 	timeout time.Duration,
+	resolves map[string]string,
 ) *websocket.Dialer {
 	return &websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			target, err := resolveDialTargets(ctx, addr, timings)
+			target, err := resolveDialTargets(ctx, addr, timings, resolves)
 			if err != nil {
 				return nil, err
 			}
@@ -657,7 +661,7 @@ func newDialer(
 		},
 
 		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			target, err := resolveDialTargets(ctx, addr, timings)
+			target, err := resolveDialTargets(ctx, addr, timings, resolves)
 			if err != nil {
 				return nil, err
 			}
@@ -690,16 +694,30 @@ func newDialer(
 }
 
 // resolveDialTargets resolves the target address for dialing a WebSocket connection.
+// If a DNS override exists for the host:port combination, it is used instead of DNS lookup.
 func resolveDialTargets(
 	ctx context.Context,
 	addr string,
 	timings *wsTimings,
+	resolves map[string]string,
 ) (dialTarget, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return dialTarget{}, err
 	}
 
+	// Check for DNS override first
+	key := net.JoinHostPort(strings.ToLower(host), port)
+	if overrideIP, ok := resolves[key]; ok {
+		timings.dnsLookupDone = time.Now()
+		return dialTarget{
+			host:  host,
+			port:  port,
+			addrs: []string{overrideIP},
+		}, nil
+	}
+
+	// Fall back to DNS lookup
 	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 	if err != nil {
 		return dialTarget{}, err
@@ -771,6 +789,7 @@ type options struct {
 	timeout    time.Duration
 	bufferSize int
 	logger     zerolog.Logger
+	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -784,3 +803,9 @@ func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout =
 
 // WithTLSConfig sets the TLS configuration for the connection.
 func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }
+
+// WithResolves sets DNS resolution overrides for specific host:port combinations.
+// Map key format: "host:port", value: "ip_address".
+func WithResolves(resolves map[string]string) Option {
+	return func(o *options) { o.resolves = resolves }
+}
