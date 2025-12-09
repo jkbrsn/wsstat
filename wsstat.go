@@ -333,20 +333,37 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 		}
 	})
 
-	// Start the read and write pumps
+	// Lookup IP before starting pumps so slow DNS doesn't let idle read deadlines
+	// close the connection and cancel the context while we wait. If a resolve
+	// override is present, use it and skip DNS entirely.
+	overrideIP := ""
+	if ws.resolves != nil {
+		host := strings.ToLower(targetURL.Hostname())
+		port := targetURL.Port()
+		if port != "" {
+			if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
+				overrideIP = ip
+			}
+		}
+	}
+
+	if overrideIP != "" {
+		ws.result.IPs = []string{overrideIP}
+	} else {
+		ips, err := net.LookupIP(targetURL.Hostname())
+		if err != nil {
+			return fmt.Errorf("failed IP lookup: %v", err)
+		}
+		ws.result.IPs = make([]string, len(ips))
+		for i, ip := range ips {
+			ws.result.IPs[i] = ip.String()
+		}
+	}
+
+	// Start the read and write pumps after successful setup
 	ws.wgPumps.Add(2)
 	go ws.readPump()
 	go ws.writePump()
-
-	// Lookup IP
-	ips, err := net.LookupIP(targetURL.Hostname())
-	if err != nil {
-		return fmt.Errorf("failed IP lookup: %v", err)
-	}
-	ws.result.IPs = make([]string, len(ips))
-	for i, ip := range ips {
-		ws.result.IPs[i] = ip.String()
-	}
 
 	// Capture request and response headers
 	// documentedDefaultHeaders lists the known headers that Gorilla WebSocket sets by default.
