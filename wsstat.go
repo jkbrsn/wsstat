@@ -30,6 +30,19 @@ const (
 	defaultSubscriptionBufferSize = 32
 )
 
+// documentedDefaultHeaders lists the known headers that Gorilla WebSocket sets by default.
+var documentedDefaultHeaders = map[string][]string{
+	"Upgrade":               {"websocket"}, // Constant value
+	"Connection":            {"Upgrade"},   // Constant value
+	"Sec-WebSocket-Version": {"13"},        // Constant value
+
+	// A nonce value; dynamically generated for each request
+	"Sec-WebSocket-Key": {"<hidden>"},
+
+	// Set by gorilla/websocket, but only if subprotocols are specified
+	// "Sec-WebSocket-Protocol",
+}
+
 // WSStat wraps the gorilla/websocket package with latency measuring capabilities.
 type WSStat struct {
 	log zerolog.Logger
@@ -302,13 +315,7 @@ func (ws *WSStat) writePump() {
 // Sets times: dialStart, wsHandshakeDone
 func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	ws.result.URL = targetURL
-	headers := http.Header{}
-	// Preserve multi-value headers by copying each value individually
-	for name, values := range customHeaders {
-		for _, v := range values {
-			headers.Add(name, v)
-		}
-	}
+	headers := cloneHeaders(customHeaders)
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := ws.dialer.Dial(targetURL.String(), headers)
 	if err != nil {
@@ -366,28 +373,41 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	go ws.writePump()
 
 	// Capture request and response headers
-	// documentedDefaultHeaders lists the known headers that Gorilla WebSocket sets by default.
-	var documentedDefaultHeaders = map[string][]string{
-		"Upgrade":               {"websocket"}, // Constant value
-		"Connection":            {"Upgrade"},   // Constant value
-		"Sec-WebSocket-Version": {"13"},        // Constant value
-
-		// A nonce value; dynamically generated for each request
-		"Sec-WebSocket-Key": {"<hidden>"},
-
-		// Set by gorilla/websocket, but only if subprotocols are specified
-		// "Sec-WebSocket-Protocol",
-	}
-	// Merge documented defaults without overwriting any user-provided values
-	for k, vals := range documentedDefaultHeaders {
-		if _, exists := headers[k]; !exists {
-			headers[k] = append([]string(nil), vals...)
-		}
-	}
-	ws.result.RequestHeaders = headers
+	ws.result.RequestHeaders = applyDefaultHeaders(headers)
 	ws.result.ResponseHeaders = resp.Header
 
 	return nil
+}
+
+// cloneHeaders preserves multi-value headers by copying each value individually.
+func cloneHeaders(src http.Header) http.Header {
+	if src == nil {
+		return http.Header{}
+	}
+	dst := make(http.Header, len(src))
+	for name, values := range src {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		dst[name] = copied
+	}
+	return dst
+}
+
+// applyDefaultHeaders merges documented defaults without overwriting user-provided values.
+func applyDefaultHeaders(headers http.Header) http.Header {
+	dst := headers
+	if dst == nil {
+		dst = http.Header{}
+	}
+	for k, vals := range documentedDefaultHeaders {
+		if _, exists := dst[k]; exists {
+			continue
+		}
+		copied := make([]string, len(vals))
+		copy(copied, vals)
+		dst[k] = copied
+	}
+	return dst
 }
 
 // WriteMessage sends a message through the WebSocket connection.
