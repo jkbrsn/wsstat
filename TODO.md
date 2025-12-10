@@ -2,7 +2,7 @@
 
 ## upcoming minor
 
-- Add an option to resolve to a specific IP address
+-
 
 ## further ahead
 
