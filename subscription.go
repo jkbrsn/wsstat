@@ -500,9 +500,6 @@ func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error)
 	if buffer != nil {
 		close(buffer)
 	}
-	if done != nil {
-		close(done)
-	}
 	if state.cancel != nil {
 		state.cancel()
 	}
@@ -519,6 +516,9 @@ func (ws *WSStat) finalizeSubscription(state *subscriptionState, finalErr error)
 			metricsCopy.totalInterArrival / time.Duration(metricsCopy.messageCount-1)
 	}
 	ws.removeSubscription(state.id, &subStats)
+	if done != nil {
+		close(done)
+	}
 }
 
 // snapshotSubscriptionStats snapshots the subscription stats.
