@@ -347,10 +347,18 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	if ws.resolves != nil {
 		host := strings.ToLower(targetURL.Hostname())
 		port := targetURL.Port()
-		if port != "" {
-			if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
-				overrideIP = ip
+		if port == "" {
+			switch targetURL.Scheme {
+			case "wss":
+				port = "443"
+			case "ws":
+				port = "80"
+			default:
+				// Unknown scheme; leave port empty to skip override lookup
 			}
+		}
+		if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
+			overrideIP = ip
 		}
 	}
 
