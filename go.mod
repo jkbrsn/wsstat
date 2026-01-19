@@ -1,6 +1,6 @@
-module github.com/jkbrsn/wsstat
+module github.com/jkbrsn/wsstat/v2
 
-go 1.25.3
+go 1.25.5
 
 require (
 	github.com/gorilla/websocket v1.5.3
@@ -21,6 +21,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -307,6 +307,7 @@ func TestParseConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resetFlags()
 			os.Args = tt.args
+			_ = flag.CommandLine.Parse(tt.args[1:]) // parse flags for test
 
 			cfg, err := parseConfig()
 

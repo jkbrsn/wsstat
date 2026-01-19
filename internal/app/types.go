@@ -9,7 +9,7 @@ import (
 	"net/url"
 
 	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat"
+	"github.com/jkbrsn/wsstat/v2"
 )
 
 const (

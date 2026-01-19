@@ -42,6 +42,7 @@ func TestRunIntegration(t *testing.T) {
 	t.Run("version flag returns special error", func(t *testing.T) {
 		resetTestState()
 		os.Args = []string{"wsstat", "-version"}
+		_ = flag.CommandLine.Parse(os.Args[1:])
 
 		err := run()
 		assert.ErrorIs(t, err, errVersionRequested)
@@ -50,6 +51,7 @@ func TestRunIntegration(t *testing.T) {
 	t.Run("missing URL returns error", func(t *testing.T) {
 		resetTestState()
 		os.Args = []string{"wsstat"}
+		_ = flag.CommandLine.Parse(os.Args[1:])
 
 		err := run()
 		assert.Error(t, err)
@@ -58,6 +60,7 @@ func TestRunIntegration(t *testing.T) {
 	t.Run("invalid URL returns error", func(t *testing.T) {
 		resetTestState()
 		os.Args = []string{"wsstat", "ht!tp://invalid"}
+		_ = flag.CommandLine.Parse(os.Args[1:])
 
 		err := run()
 		assert.Error(t, err)
@@ -66,6 +69,7 @@ func TestRunIntegration(t *testing.T) {
 	t.Run("quiet and verbose conflict returns error", func(t *testing.T) {
 		resetTestState()
 		os.Args = []string{"wsstat", "-q", "-v", "example.com"}
+		_ = flag.CommandLine.Parse(os.Args[1:])
 
 		err := run()
 		assert.Error(t, err)
@@ -74,6 +78,7 @@ func TestRunIntegration(t *testing.T) {
 	t.Run("invalid header format returns error", func(t *testing.T) {
 		resetTestState()
 		os.Args = []string{"wsstat", "-H", "InvalidHeader", "example.com"}
+		_ = flag.CommandLine.Parse(os.Args[1:])
 
 		err := run()
 		assert.Error(t, err)

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jkbrsn/wsstat/internal/app/color"
+	"github.com/jkbrsn/wsstat/v2/internal/app/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat"
+	"github.com/jkbrsn/wsstat/v2"
 )
 
 func main() {

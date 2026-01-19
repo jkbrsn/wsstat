@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/jsonrpc"
-	"github.com/jkbrsn/wsstat"
+	"github.com/jkbrsn/wsstat/v2"
 )
 
 // handleSubscriptionTick handles a subscription tick.
