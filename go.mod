@@ -1,4 +1,4 @@
-module github.com/jkbrsn/wsstat
+module github.com/jkbrsn/wsstat/v2
 
 go 1.25.3
 

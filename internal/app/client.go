@@ -44,7 +44,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jkbrsn/wsstat"
+	"github.com/jkbrsn/wsstat/v2"
 )
 
 // Client measures the latency of a WebSocket connection and manages subscription streams.

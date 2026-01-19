@@ -38,7 +38,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jkbrsn/wsstat/internal/app"
+	"github.com/jkbrsn/wsstat/v2/internal/app"
 )
 
 // revive:disable:line-length-limit allow flags
