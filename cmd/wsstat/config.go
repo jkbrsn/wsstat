@@ -30,8 +30,6 @@ type Config struct {
 
 // parseConfig parses command-line flags and returns a validated Config.
 func parseConfig() (*Config, error) {
-	flag.Parse()
-
 	if *showVersion {
 		fmt.Printf("Version: %s\n", version)
 		return nil, errVersionRequested

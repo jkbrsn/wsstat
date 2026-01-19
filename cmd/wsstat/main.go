@@ -92,6 +92,7 @@ func init() {
 }
 
 func main() {
+	flag.Parse()
 	if err := run(); err != nil {
 		if err == errVersionRequested {
 			os.Exit(0)
