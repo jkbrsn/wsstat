@@ -1,10 +1,10 @@
 # wsstat
 
 [![Go Documentation](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)][godocs]
-[![Go Report Card](https://goreportcard.com/badge/github.com/jkbrsn/wsstat)](https://goreportcard.com/report/github.com/jkbrsn/wsstat)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jkbrsn/wsstat/v2)](https://goreportcard.com/report/github.com/jkbrsn/wsstat/v2)
 [![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)][license]
 
-[godocs]: http://godoc.org/github.com/jkbrsn/wsstat
+[godocs]: http://godoc.org/github.com/jkbrsn/wsstat/v2
 [license]: /LICENSE
 
 This project provides a way to stat a WebSocket connection; measure the latency and learn the transport details. It implements the Go package [wsstat][godocs] and a CLI tool, also named `wsstat`.
@@ -51,7 +51,7 @@ Install via Go:
 
 ```sh
 # To install the latest version, specify other releases with @<tag>
-go install github.com/jkbrsn/wsstat@latest
+go install github.com/jkbrsn/wsstat/v2@latest
 
 # To include the version in the binary, run the install from the root of the repo
 git clone github.com/jkbrsn/wsstat
@@ -212,7 +212,7 @@ Use the `wsstat` Golang package to trace WebSocket connection and latency in you
 Install to use in your Go project:
 
 ```bash
-go get github.com/jkbrsn/wsstat
+go get github.com/jkbrsn/wsstat/v2
 ```
 
 ### Usage
