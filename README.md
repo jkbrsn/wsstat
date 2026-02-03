@@ -113,58 +113,29 @@ For macOS:
 
 ### Usage
 
-All the options are available from the help output, have a look at `wsstat -h`:
+Some examples:
 
-```sh
-wsstat 2.0.0
-Measure latency on WebSocket connections
+```bash
+# Basic request
+wsstat wss://echo.example.com
 
-USAGE:
-  wsstat [options] <url>
-  wsstat -subscribe [options] <url>
+# Send an RPC method
+wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 
-General:
-  -c, --count <int>              number of interactions [default: 1; unlimited when subscribing]
-      --version                  print program version and exit
+# Start a subscription
+wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed
 
-Input (choose one):
-      --rpc-method <string>      JSON-RPC method name to send (with id=1, jsonrpc=2.0)
-  -t, --text <string>            text message to send
+# Attach headers to dial request
+wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
 
-Subscription:
-  -s, --subscribe                stream events until interrupted
-      --subscribe-once           subscribe and exit after the first event
-  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]
-      --summary-interval <duration>
-                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]
+# Resolve to a target IP and set a longer timeout
+wsstat --resolve example.com:443:127.0.0.1 --timeout 30s wss://example.com/ws
 
-Connection:
-  -H, --header <string>          HTTP header to include with request (repeatable; format: "Key: Value")
-      --resolve <string>         resolve host:port to specific address (repeatable; format: "HOST:PORT:ADDRESS")
-  -k, --insecure                 skip TLS certificate verification (use with caution)
-      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]
-      --color <string>           color output mode: auto, always, never [default: auto]
-
-Output:
-  -q, --quiet                    suppress all output except response
-  -v, --verbose                  increase verbosity (level 1)
-  -vv                            increase verbosity (level 2)
-  -f, --format <string>          output format: auto, json, raw [default: auto]
-
-Verbosity Levels:
-  (default)                      minimal request info with summary timings
-  -v                             adds target/TLS summaries and timing diagram
-  -vv                            includes full TLS certificates and headers
-
-Examples:
-  wsstat wss://echo.example.com
-  wsstat -t "ping" wss://echo.example.com
-  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
-  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed
-  wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
-  wsstat --resolve example.com:443:127.0.0.1 wss://example.com/ws
-  wsstat --insecure -vv wss://self-signed.example.com
+# Allow insecure connection, make output extra verbose
+wsstat --insecure -vv wss://self-signed.example.com
 ```
+
+For a full list of the available options, check the `wsstat --help` option of your client.
 
 ### Subscription Mode
 
@@ -203,7 +174,7 @@ wsstat -subscribe-once -text '{"method":"subscribe_ticker"}' wss://example.org/w
 
 For machine-readable output of summaries, add `-format json`.
 
-## wsstat Package
+## wsstat Library Package
 
 Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [gorilla/websocket](https://pkg.go.dev/github.com/gorilla/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.
 

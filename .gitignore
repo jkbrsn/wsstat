@@ -25,8 +25,3 @@ bin/
 
 # Snap packages
 *.snap
-
-# AI agent files
-AGENTS.md
-CLAUDE.md
-
