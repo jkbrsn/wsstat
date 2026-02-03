@@ -76,6 +76,9 @@ type Client struct {
 
 	// TLS configuration
 	insecure bool // skip TLS certificate verification
+
+	// Timeouts
+	timeout time.Duration // read/dial timeout; 0 means use library default
 }
 
 // Option configures a Client.
@@ -165,6 +168,11 @@ func WithInsecure(insecure bool) Option {
 	return func(c *Client) { c.insecure = insecure }
 }
 
+// WithTimeout sets the read/dial timeout. Zero uses the library default (5s).
+func WithTimeout(d time.Duration) Option {
+	return func(c *Client) { c.timeout = d }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -195,6 +203,10 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 
 	if c.resolves != nil {
 		opts = append(opts, wsstat.WithResolves(c.resolves))
+	}
+
+	if c.timeout > 0 {
+		opts = append(opts, wsstat.WithTimeout(c.timeout))
 	}
 
 	return opts
