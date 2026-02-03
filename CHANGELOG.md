@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - (CLI) New option `--timeout` (default 5s).
   - Applies both to connection dial and read timeouts.
+- `AGENTS.md`, symlinked to `CLAUDE.md` and `GEMINI.md`.
 
 ## [2.1.3]
 
