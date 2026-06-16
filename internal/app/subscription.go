@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -170,7 +170,7 @@ func (*Client) subscriptionSummaryJSON(
 		for id := range result.Subscriptions {
 			ids = append(ids, id)
 		}
-		sort.Strings(ids)
+		slices.Sort(ids)
 		entries := make([]subscriptionEntryJSON, 0, len(ids))
 		for _, id := range ids {
 			stats := result.Subscriptions[id]

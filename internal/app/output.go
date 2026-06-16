@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -151,7 +151,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 		for id := range result.Subscriptions {
 			ids = append(ids, id)
 		}
-		sort.Strings(ids)
+		slices.Sort(ids)
 		for _, id := range ids {
 			stats := result.Subscriptions[id]
 			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
