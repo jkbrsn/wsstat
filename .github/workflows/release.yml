@@ -238,7 +238,7 @@ jobs:
         if: ${{ steps.compute_tag.outputs.is_prerelease == 'true' }}
         uses: orhun/git-cliff-action@v4
         with:
-          args: --current --no-exec
+          args: --current --tag ${{ steps.compute_tag.outputs.tag }} --no-exec
         env:
           GITHUB_REPO:  ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -250,7 +250,7 @@ jobs:
         with:
           # If no previous final tag, this produces an empty range; optionally
           # fall back to the root commit if you want *all* history instead.
-          args: "${{ steps.prev_final.outputs.prev }}..${{ steps.compute_tag.outputs.tag }} --no-exec"
+          args: "--tag ${{ steps.compute_tag.outputs.tag }} ${{ steps.prev_final.outputs.prev }}..${{ steps.compute_tag.outputs.tag }} --no-exec"
         env:
           GITHUB_REPO:  ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
