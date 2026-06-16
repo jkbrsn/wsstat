@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,8 +37,12 @@ func main() {
 	mux.HandleFunc("/close-abrupt", handle(closeAbruptBehavior))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	log.Println("mock-ws listening on :8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	addr := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		addr = ":" + p
+	}
+	log.Println("mock-ws listening on", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }
