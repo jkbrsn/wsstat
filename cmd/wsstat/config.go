@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/jkbrsn/wsstat/v3/internal/app"
 )
 
 // Config holds all configuration parsed from command-line flags.
@@ -23,7 +25,7 @@ type Config struct {
 	SummaryInterval time.Duration
 	Timeout         time.Duration
 	CloseTimeout    time.Duration
-	Format          string
+	Format          app.Format
 	ColorMode       string
 	Quiet           bool
 	Verbosity       int
@@ -65,6 +67,11 @@ func parseConfig() (*Config, error) {
 		return nil, errors.New("-color must be auto, always, or never")
 	}
 
+	format, err := app.ParseFormat(*formatOption)
+	if err != nil {
+		return nil, err
+	}
+
 	targetURL, err := parseWSURI(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("error parsing input URI: %w", err)
@@ -85,7 +92,7 @@ func parseConfig() (*Config, error) {
 		SummaryInterval: *summaryInterval,
 		Timeout:         *timeout,
 		CloseTimeout:    *closeTimeout,
-		Format:          strings.ToLower(*formatOption),
+		Format:          format,
 		ColorMode:       strings.ToLower(*colorArg),
 		Quiet:           *quiet,
 		Verbosity:       verbosity,

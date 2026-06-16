@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jkbrsn/wsstat/v3/internal/app"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -246,7 +247,7 @@ func TestParseConfig(t *testing.T) {
 			checkFunc: func(t *testing.T, cfg *Config) {
 				assert.Equal(t, "wss://example.com", cfg.TargetURL.String())
 				assert.Equal(t, 1, cfg.Count)
-				assert.Equal(t, "auto", cfg.Format)
+				assert.Equal(t, app.Format("auto"), cfg.Format)
 				assert.Equal(t, "auto", cfg.ColorMode)
 				assert.False(t, cfg.Quiet)
 				assert.Equal(t, 0, cfg.Verbosity)

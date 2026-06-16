@@ -126,6 +126,16 @@ func TestValidateComplexCombinations(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "compact format is valid",
+			client:  Client{format: "compact"},
+			wantErr: false,
+		},
+		{
+			name:    "truncate format is valid",
+			client:  Client{format: "truncate"},
+			wantErr: false,
+		},
+		{
 			name:    "color always is valid",
 			client:  Client{colorMode: "always"},
 			wantErr: false,
