@@ -3,10 +3,10 @@
 ## before v3 release
 
 - Revisit the close-handshake timeout bound. coder's `Conn.Close()` blocks up to a hard 5s
-  (`waitCloseHandshake`) waiting for the peer's Close echo. Write-only peers (e.g. event-pushing
-  subscription servers) never echo, so teardown/Ctrl-C stalls ~5s and slows the subscription
-  tests. Decide whether to bound the graceful close to ~1s with a `CloseNow()` fallback
-  (matching gorilla's old behavior) before shipping v3.
+  (`waitCloseHandshake`) waiting for the peer's Close echo. Write-only peers that do not read
+  (e.g. some event-pushing servers) never echo, so teardown/Ctrl-C can stall ~5s. Decide
+  whether to bound the graceful close to ~1s with a `CloseNow()` fallback (matching gorilla's
+  old behavior) before shipping v3.
 
 ## upcoming minor
 

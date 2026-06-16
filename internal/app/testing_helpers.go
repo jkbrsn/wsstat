@@ -120,8 +120,15 @@ func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
 		}
 		closeReady()
 
+		// Drain reads in the background so the client's Close frame is processed and
+		// echoed promptly; otherwise this write-only server would never answer the
+		// closing handshake and the client would stall on coder's 5s timeout.
+		ctx = conn.CloseRead(ctx)
+
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-done:
 				return
 			case msg, ok := <-events:

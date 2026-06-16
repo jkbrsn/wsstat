@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"runtime"
 	"strings"
@@ -501,6 +502,50 @@ func TestReadAfterClose(t *testing.T) {
 	err = ws.PingPong()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context canceled")
+}
+
+// TestCloseHandshakeStatus verifies that Close performs the RFC 6455 two-way closing
+// handshake: the server must observe a clean StatusNormalClosure (1000), not an abrupt
+// 1006. Regression test for the ungraceful-close defect fixed by the coder migration.
+func TestCloseHandshakeStatus(t *testing.T) {
+	closeStatus := make(chan websocket.StatusCode, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
+		for {
+			mt, msg, err := conn.Read(ctx)
+			if err != nil {
+				closeStatus <- websocket.CloseStatus(err)
+				return
+			}
+			if err := conn.Write(ctx, mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+	_, err = ws.OneHitMessage(TextMessage, []byte("hello"))
+	require.NoError(t, err)
+	ws.Close()
+
+	select {
+	case status := <-closeStatus:
+		assert.Equal(t, websocket.StatusNormalClosure, status,
+			"server should observe a clean 1000 close, not 1006")
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not observe a close status")
+	}
 }
 
 func TestResultFormat(t *testing.T) {
