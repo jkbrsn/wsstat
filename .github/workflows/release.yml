@@ -198,6 +198,7 @@ jobs:
           fi
 
           echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "version_label=${TAG#v}"  >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"                >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRE"   >> "$GITHUB_OUTPUT"
           echo "VERSION=$VERSION"        >> "$GITHUB_ENV"
@@ -206,7 +207,13 @@ jobs:
 
       - name: Build
         shell: bash
-        run: make build
+        run: make build VERSION_LABEL=${{ steps.compute_tag.outputs.version_label }}
+
+      - name: Rename binary with tag
+        shell: bash
+        run: |
+          mv ./bin/wsstat ./bin/wsstat-${{ steps.compute_tag.outputs.tag }}
+          ls -lh ./bin/
 
       - name: Create Git tag
         shell: bash
@@ -263,7 +270,7 @@ jobs:
           body:             ${{ steps.compute_tag.outputs.is_prerelease == 'true'
                               && steps.git-cliff-rc.outputs.content
                               || steps.git-cliff-final.outputs.content }}
-          files:            ./bin/wsstat
+          files:            ./bin/wsstat-${{ steps.compute_tag.outputs.tag }}
           prerelease:       ${{ steps.compute_tag.outputs.is_prerelease }}
           overwrite_files:  true  # rerun resilience
           make_latest:      ${{ steps.compute_tag.outputs.is_prerelease == 'false' }}  # finals only

@@ -2,7 +2,8 @@ CMD=wsstat
 PACKAGE_NAME=./cmd/${CMD}
 OS_ARCH_PAIRS=linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/386 windows/amd64 windows/arm64
 VERSION := $(shell cat VERSION)
-LDFLAGS=-ldflags "-X main.version=${VERSION}"
+VERSION_LABEL ?= $(VERSION)
+LDFLAGS=-ldflags "-X main.version=${VERSION_LABEL}"
 
 .PHONY: build build-all build-multi build-os-arch fmt lint test smoke explain
 
@@ -15,6 +16,7 @@ explain:
 	@echo "  [N=...]  - Number of times to run burst tests (default 1)"
 	@echo "  [RACE=1] - Run tests with race detector"
 	@echo "  [V=1]    - Add V=1 for verbose output"
+	@echo "  [VERSION_LABEL=...] - Override the version embedded in the binary"
 	@echo ""
 	@echo "Targets:"
 	@echo "  build           - Build the binary for the host OS/Arch."
