@@ -548,6 +548,53 @@ func TestCloseHandshakeStatus(t *testing.T) {
 	}
 }
 
+// TestCloseGraceBound verifies that Close does not stall on a write-only / non-echoing
+// peer. coder's Conn.Close waits up to a hard-coded 5s for the peer's Close echo; wsstat
+// bounds that wait to closeGrace and forces the socket shut, so teardown stays prompt.
+func TestCloseGraceBound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		// Write-only / non-echoing: pump frames, never read. The client's Close frame is
+		// never processed and never echoed, so the close handshake cannot complete. Exits
+		// when a write fails (client gone).
+		ctx := context.Background()
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.Write(ctx, websocket.MessageText, []byte("tick")); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	grace := 500 * time.Millisecond
+	ws := New(WithCloseGrace(grace))
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ws.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Less(t, time.Since(start), 3*time.Second,
+			"Close should bound the handshake to ~closeGrace, not coder's 5s")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close stalled past the grace bound")
+	}
+}
+
 func TestResultFormat(t *testing.T) {
 	ws := New()
 	defer ws.Close()

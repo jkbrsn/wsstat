@@ -25,6 +25,11 @@ import (
 const (
 	// defaultTimeout is the default read/dial timeout for WSStat instances.
 	defaultTimeout = 5 * time.Second
+	// defaultCloseGrace bounds how long Close waits for the peer's closing-handshake
+	// echo before forcing the socket shut. Above realistic worldwide RTT (clean 1000
+	// closes stay clean) yet below coder's hard-coded 5s, so a non-echoing peer cannot
+	// stall teardown for the full 5s.
+	defaultCloseGrace = 3 * time.Second
 	// defaultChanBufferSize is the default size of read/write channels.
 	defaultChanBufferSize = 8
 	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
@@ -66,6 +71,7 @@ type WSStat struct {
 	log zerolog.Logger
 
 	conn       atomic.Pointer[websocket.Conn]
+	netConn    atomic.Pointer[net.Conn] // raw transport conn, for forced teardown on close
 	httpClient *http.Client
 	timings    *wsTimings
 	result     *Result
@@ -87,9 +93,10 @@ type WSStat struct {
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout  time.Duration
-	tlsConf  *tls.Config
-	resolves map[string]string // DNS resolution overrides: "host:port" → "address"
+	timeout    time.Duration
+	closeGrace time.Duration
+	tlsConf    *tls.Config
+	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -99,6 +106,7 @@ func New(opts ...Option) *WSStat {
 	cfg := options{
 		bufferSize: defaultChanBufferSize,
 		timeout:    defaultTimeout,
+		closeGrace: defaultCloseGrace,
 		tlsConfig:  nil,
 		logger:     zerolog.Nop(),
 	}
@@ -108,12 +116,10 @@ func New(opts ...Option) *WSStat {
 
 	result := &Result{}
 	timings := &wsTimings{}
-	httpClient := newHTTPClient(result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ws := &WSStat{
 		log:                       cfg.logger.With().Str("pkg", "wsstat").Logger(),
-		httpClient:                httpClient,
 		timings:                   timings,
 		result:                    result,
 		ctx:                       ctx,
@@ -121,14 +127,25 @@ func New(opts ...Option) *WSStat {
 		readChan:                  make(chan *wsRead, cfg.bufferSize),
 		writeChan:                 make(chan *wsWrite, cfg.bufferSize),
 		timeout:                   cfg.timeout,
+		closeGrace:                cfg.closeGrace,
 		tlsConf:                   cfg.tlsConfig,
 		resolves:                  cfg.resolves,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
+	// Built after ws so the transport can hand the raw conn back via captureNetConn.
+	ws.httpClient = newHTTPClient(
+		result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves, ws.captureNetConn,
+	)
 
 	return ws
+}
+
+// captureNetConn stores the raw transport connection so Close can force the socket
+// shut if the peer never echoes the closing handshake.
+func (ws *WSStat) captureNetConn(c net.Conn) {
+	ws.netConn.Store(&c)
 }
 
 // wsRead holds the data read from the WebSocket connection.
@@ -611,21 +628,44 @@ func (ws *WSStat) ExtractResult() *Result {
 	return &resultCopy
 }
 
+// gracefulClose performs coder's two-way RFC 6455 closing handshake (write Close frame,
+// wait for the peer's echo), bounded by closeGrace. coder's Close blocks on a hard-coded
+// 5s wait for that echo (waitCloseHandshake); a write-only / non-echoing peer never echoes,
+// so on timeout the raw socket is forced shut, which unblocks coder's read and lets the
+// close goroutine return instead of stalling the full 5s.
+func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+			ws.log.Debug().Err(err).Msg("close handshake")
+		}
+	}()
+
+	timer := time.NewTimer(ws.closeGrace)
+	select {
+	case <-closed:
+		timer.Stop()
+	case <-timer.C:
+		ws.log.Debug().Dur("grace", ws.closeGrace).
+			Msg("close handshake timed out, forcing teardown")
+		if nc := ws.netConn.Load(); nc != nil {
+			_ = (*nc).Close()
+		}
+		<-closed
+	}
+}
+
 // Close closes the WebSocket connection and cleans up the WSStat instance.
 // Sets result times: CloseDone
 func (ws *WSStat) Close() {
 	ws.closeOnce.Do(func() {
-		conn := ws.conn.Load()
-
 		// Graceful close FIRST, while the read pump is still alive so the server's Close
-		// echo is read off the socket before TCP teardown. coder's Close performs the full
-		// two-way RFC 6455 closing handshake (write Close frame, wait for the peer's echo).
-		// Ordering is load-bearing: canceling the context first would kill the read pump
-		// before the echo arrives and force an ungraceful 1006 teardown.
-		if conn != nil {
-			if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-				ws.log.Debug().Err(err).Msg("close handshake")
-			}
+		// echo is read off the socket before TCP teardown. Ordering is load-bearing:
+		// canceling the context first would kill the read pump before the echo arrives
+		// and force an ungraceful 1006 teardown.
+		if conn := ws.conn.Load(); conn != nil {
+			ws.gracefulClose(conn)
 		}
 
 		// Record closeDone after the handshake completes for accurate timing.
@@ -689,6 +729,7 @@ func newHTTPClient(
 	tlsConf *tls.Config,
 	timeout time.Duration,
 	resolves map[string]string,
+	capture func(net.Conn),
 ) *http.Client {
 	transport := &http.Transport{
 		Proxy:             http.ProxyFromEnvironment,
@@ -701,7 +742,7 @@ func newHTTPClient(
 				return nil, err
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, nil)
+			return dialWithAddresses(ctx, network, target, timeout, timings, nil, capture)
 		},
 
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -732,7 +773,7 @@ func newHTTPClient(
 				return tlsConn, nil
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, wrap)
+			return dialWithAddresses(ctx, network, target, timeout, timings, wrap, capture)
 		},
 	}
 
@@ -788,6 +829,7 @@ func dialWithAddresses(
 	timeout time.Duration,
 	timings *wsTimings,
 	wrap func(net.Conn) (net.Conn, error),
+	capture func(net.Conn),
 ) (net.Conn, error) {
 	var dialErr error
 	for _, ip := range target.addrs {
@@ -799,6 +841,12 @@ func dialWithAddresses(
 		}
 
 		timings.tcpConnected = time.Now()
+
+		// Capture the raw conn (not the TLS wrapper) so Close can force the underlying
+		// socket shut; closing it unblocks coder's read regardless of the TLS layer.
+		if capture != nil {
+			capture(netConn)
+		}
 
 		if wrap == nil {
 			return netConn, nil
@@ -836,6 +884,7 @@ type Option func(*options)
 type options struct {
 	tlsConfig  *tls.Config
 	timeout    time.Duration
+	closeGrace time.Duration
 	bufferSize int
 	logger     zerolog.Logger
 	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
@@ -849,6 +898,11 @@ func WithLogger(logger zerolog.Logger) Option { return func(o *options) { o.logg
 
 // WithTimeout sets the timeout used for dialing and read deadlines.
 func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
+// WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
+// before forcing the connection shut. Zero or negative forces an immediate teardown
+// without waiting for the echo. Defaults to 3s.
+func WithCloseGrace(d time.Duration) Option { return func(o *options) { o.closeGrace = d } }
 
 // WithTLSConfig sets the TLS configuration for the connection.
 func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConfig = cfg } }

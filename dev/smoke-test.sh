@@ -37,14 +37,15 @@ check_summary_interval() {
 
 # check_teardown_bound measures the wall-clock of a full run against the
 # write-only /push peer, which never echoes the closing handshake. coder's
-# Conn.Close blocks up to 5s waiting for that echo, so an unbounded close shows
-# ~5s here; a bounded close (item 1) should land near ~1s. Threshold 2500ms
-# fails on the stall and passes once the close is bounded. The 3 pushed frames
-# arrive in ~150ms at rate=20, so the measured time is dominated by teardown.
+# Conn.Close blocks 5s waiting for that echo; wsstat bounds the wait to its
+# close-grace (default 3s) and forces teardown, so the run lands near 3s, not 5s.
+# Here we pin close-grace to 1s and assert < 2500ms: tight enough to catch a
+# regression to the unbounded 5s stall, loose enough to absorb the 3 pushed
+# frames (~150ms at rate=20) plus scheduling jitter.
 check_teardown_bound() {
 	local start end ms
 	start=$(date +%s%3N)
-	"$WSSTAT" -s -t sub -c 3 "$WS_URL/push?rate=20" >/dev/null 2>&1 || true
+	"$WSSTAT" -close-timeout 1s -s -t sub -c 3 "$WS_URL/push?rate=20" >/dev/null 2>&1 || true
 	end=$(date +%s%3N)
 	ms=$((end - start))
 	printf "    (teardown wall-clock: %dms)\n" "$ms" >&2

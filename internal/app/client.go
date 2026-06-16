@@ -78,7 +78,8 @@ type Client struct {
 	insecure bool // skip TLS certificate verification
 
 	// Timeouts
-	timeout time.Duration // read/dial timeout; 0 means use library default
+	timeout    time.Duration // read/dial timeout; 0 means use library default
+	closeGrace time.Duration // close-handshake echo wait; 0 means use library default
 }
 
 // Option configures a Client.
@@ -173,6 +174,11 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.timeout = d }
 }
 
+// WithCloseGrace sets the close-handshake echo wait. Zero uses the library default (3s).
+func WithCloseGrace(d time.Duration) Option {
+	return func(c *Client) { c.closeGrace = d }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -207,6 +213,10 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 
 	if c.timeout > 0 {
 		opts = append(opts, wsstat.WithTimeout(c.timeout))
+	}
+
+	if c.closeGrace > 0 {
+		opts = append(opts, wsstat.WithCloseGrace(c.closeGrace))
 	}
 
 	return opts

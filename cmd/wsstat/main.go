@@ -55,6 +55,7 @@ var (
 	bufferSize       = flag.Int("buffer", 0, "subscription delivery buffer size (messages)")
 	summaryInterval  = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
 	timeout          = flag.Duration("timeout", 0, "read/dial timeout (e.g., 30s, 1m); 0 uses default (5s)")
+	closeTimeout     = flag.Duration("close-timeout", 0, "max wait for the peer's close echo before forcing teardown (e.g., 1s, 5s); 0 uses default (3s)")
 
 	// Output
 	formatOption = flag.String("format", "auto", "output format: auto, json, or raw")
@@ -130,6 +131,7 @@ func run() error {
 		app.WithSummaryInterval(cfg.SummaryInterval),
 		app.WithInsecure(cfg.Insecure),
 		app.WithTimeout(cfg.Timeout),
+		app.WithCloseGrace(cfg.CloseTimeout),
 	)
 
 	if err := ws.Validate(); err != nil {
@@ -199,6 +201,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
 	fmt.Fprintln(os.Stderr, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
+	fmt.Fprintln(os.Stderr, "      --close-timeout <duration> max wait for the peer's close echo before forcing teardown [default: 3s]")
 	fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
 	fmt.Fprintln(os.Stderr)
 
