@@ -50,7 +50,7 @@ func TestNew(t *testing.T) {
 	defer ws.Close()
 
 	assert.NotNil(t, ws)
-	assert.NotNil(t, ws.dialer)
+	assert.NotNil(t, ws.httpClient)
 	assert.NotNil(t, ws.result)
 	assert.NotNil(t, ws.timings)
 	assert.NotNil(t, ws.readChan)
@@ -120,7 +120,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, 16, cap(ws.readChan))
 		assert.Equal(t, 16, cap(ws.writeChan))
-		assert.Equal(t, 16, cap(ws.pongChan))
 	})
 
 	t.Run("default buffer size", func(t *testing.T) {
@@ -129,7 +128,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, defaultChanBufferSize, cap(ws.readChan))
 		assert.Equal(t, defaultChanBufferSize, cap(ws.writeChan))
-		assert.Equal(t, defaultChanBufferSize, cap(ws.pongChan))
 	})
 
 	t.Run("zero buffer size creates unbuffered channels", func(t *testing.T) {
@@ -138,7 +136,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, 0, cap(ws.readChan))
 		assert.Equal(t, 0, cap(ws.writeChan))
-		assert.Equal(t, 0, cap(ws.pongChan))
 	})
 }
 
@@ -157,7 +154,6 @@ func TestMultipleOptions(t *testing.T) {
 		assert.True(t, ws.tlsConf.InsecureSkipVerify)
 		assert.Equal(t, 32, cap(ws.readChan))
 		assert.Equal(t, 32, cap(ws.writeChan))
-		assert.Equal(t, 32, cap(ws.pongChan))
 	})
 
 	t.Run("options order does not matter", func(t *testing.T) {
@@ -502,7 +498,7 @@ func TestReadAfterClose(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context canceled")
 
-	err = ws.ReadPong()
+	err = ws.PingPong()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context canceled")
 }

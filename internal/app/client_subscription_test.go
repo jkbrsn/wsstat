@@ -141,7 +141,9 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	select {
 	case err := <-errCh:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
+	case <-time.After(6 * time.Second):
+		// coder's graceful Close() blocks up to 5s waiting for the peer's Close echo;
+		// the write-only test server never echoes. See docs/TODO.md (close-bound revisit).
 		t.Fatal("subscription did not exit after cancellation")
 	}
 }
