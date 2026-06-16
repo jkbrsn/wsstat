@@ -106,10 +106,19 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 		return nil
 	}
 
+	compact := c.format == formatCompact
 	timestamp := msg.Received.Format(time.RFC3339Nano)
 	if c.verbosityLevel >= 1 {
+		if compact {
+			line := payload
+			if formatted, err := renderJSON(msg.Data, true); err == nil {
+				line = formatted
+			}
+			fmt.Printf("[%04d @ %s] %d bytes %s\n", index, timestamp, msg.Size, line)
+			return nil
+		}
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
-		if formatted, err := formatJSONIfPossible(msg.Data); err == nil {
+		if formatted, err := renderJSON(msg.Data, false); err == nil {
 			fmt.Println(formatted)
 		} else {
 			fmt.Println(payload)
@@ -119,7 +128,7 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 	}
 
 	line := payload
-	if formatted, err := formatJSONIfPossible(msg.Data); err == nil {
+	if formatted, err := renderJSON(msg.Data, compact); err == nil {
 		line = formatted
 	}
 	fmt.Printf("[%04d @ %s] %s\n", index, timestamp, line)

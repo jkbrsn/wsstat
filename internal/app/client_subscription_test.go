@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,6 +182,45 @@ func TestPrintSubscriptionMessageRaw(t *testing.T) {
 		return c.printSubscriptionMessage(1, msg)
 	})
 	assert.Equal(t, "raw\n", output)
+}
+
+func TestPrintSubscriptionMessageCompact(t *testing.T) {
+	msg := wsstat.SubscriptionMessage{
+		Data:     []byte("{\n  \"foo\": \"bar\",\n  \"n\": 1\n}"),
+		Received: time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC),
+		Size:     27,
+	}
+
+	t.Run("default level is one line", func(t *testing.T) {
+		c := &Client{format: formatCompact}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Equal(t,
+			"[0003 @ 2024-01-02T03:04:05.000000006Z] {\"foo\":\"bar\",\"n\":1}\n",
+			output)
+		assert.Equal(t, 1, strings.Count(output, "\n"))
+	})
+
+	t.Run("verbose level collapses to one line with byte count", func(t *testing.T) {
+		c := &Client{format: formatCompact, verbosityLevel: 1}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Equal(t,
+			"[0003 @ 2024-01-02T03:04:05.000000006Z] 27 bytes {\"foo\":\"bar\",\"n\":1}\n",
+			output)
+		assert.Equal(t, 1, strings.Count(output, "\n"))
+	})
+
+	t.Run("non-JSON payload falls back to raw bytes", func(t *testing.T) {
+		c := &Client{format: formatCompact}
+		plain := wsstat.SubscriptionMessage{Data: []byte("hello"), Received: msg.Received}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(1, plain)
+		})
+		assert.Equal(t, "[0001 @ 2024-01-02T03:04:05.000000006Z] hello\n", output)
+	})
 }
 
 func TestOpenSubscription(t *testing.T) {

@@ -61,7 +61,7 @@ type Client struct {
 	textMessage string            // Text message
 
 	// Output
-	format    string // Output formatting mode: "auto", "json", or "raw"
+	format    Format // Output formatting mode: auto, compact, json, or raw
 	colorMode string // Color behavior: "auto", "always", or "never"
 
 	// Verbosity
@@ -124,8 +124,8 @@ func WithTextMessage(msg string) Option {
 	return func(c *Client) { c.textMessage = msg }
 }
 
-// WithFormat sets the output format (auto, json, or raw).
-func WithFormat(format string) Option {
+// WithFormat sets the output format (auto, compact, json, or raw).
+func WithFormat(format Format) Option {
 	return func(c *Client) { c.format = format }
 }
 
@@ -184,7 +184,7 @@ func WithCloseGrace(d time.Duration) Option {
 func (c *Client) Count() int { return c.count }
 
 // Format returns the configured output format.
-func (c *Client) Format() string { return c.format }
+func (c *Client) Format() Format { return c.format }
 
 // ColorMode returns the configured color mode.
 func (c *Client) ColorMode() string { return c.colorMode }
@@ -264,7 +264,7 @@ func (c *Client) MeasureLatency(
 // Validation includes:
 //   - Ensures count is non-negative
 //   - Verifies text and rpc-method are not both set (mutually exclusive)
-//   - Validates format is "auto", "json", or "raw"
+//   - Validates format is "auto", "compact", "json", or "raw"
 //   - Validates colorMode is "auto", "always", or "never"
 //   - Ensures buffer and summaryInterval are non-negative
 //   - Enforces subscribe-once requires count == 1
@@ -279,16 +279,11 @@ func (c *Client) Validate() error {
 		return errors.New("mutually exclusive messaging flags")
 	}
 
-	c.format = strings.TrimSpace(strings.ToLower(c.format))
-	if c.format == "" {
-		c.format = formatAuto
+	format, err := ParseFormat(string(c.format))
+	if err != nil {
+		return err
 	}
-	switch c.format {
-	case formatAuto, formatRaw, formatJSON:
-		// valid
-	default:
-		return errors.New("format must be \"auto\", \"json\", or \"raw\"")
-	}
+	c.format = format
 
 	c.colorMode = strings.TrimSpace(strings.ToLower(c.colorMode))
 	if c.colorMode == "" {

@@ -89,13 +89,13 @@ func (c *Client) measurePing(
 // processTextResponse transforms a raw text response based on the format setting.
 // Format rules:
 //   - formatRaw: returns the raw response string without any parsing
-//   - formatAuto: attempts to parse as JSON-RPC; falls back to raw if not valid JSON-RPC
-//   - formatJSON: same as formatAuto (the format option controls output rendering,
-//     not response parsing; both auto and json modes parse JSON-RPC when possible)
+//   - all other formats (auto, compact, json): attempt to parse as JSON-RPC and
+//     fall back to raw if not valid JSON-RPC. The format option controls output
+//     rendering, not response parsing.
 //
 // The response may be a []string from burst measurements; if so, only the first
 // element is processed.
-func processTextResponse(response any, format string) (any, error) {
+func processTextResponse(response any, format Format) (any, error) {
 	// Extract first response from array if present
 	responseStr := extractFirstString(response)
 

@@ -11,14 +11,8 @@ import (
 	"github.com/jkbrsn/wsstat/v3"
 )
 
-const (
-	formatAuto = "auto"
-	formatRaw  = "raw"
-	formatJSON = "json"
-
-	// JSONSchemaVersion is the schema version for JSON output
-	JSONSchemaVersion = "1.0"
-)
+// JSONSchemaVersion is the schema version for JSON output
+const JSONSchemaVersion = "1.0"
 
 // MeasurementResult holds the outcome of a WebSocket measurement operation
 type MeasurementResult struct {
@@ -159,7 +153,11 @@ func buildTimingTimeline(result *wsstat.Result) *timingTimelineJSON {
 	return &timeline
 }
 
-func formatJSONIfPossible(data []byte) (string, error) {
+// renderJSON re-marshals JSON data for display. When compact is true the output
+// is a single line; otherwise it is pretty-printed with two-space indentation.
+//
+// revive:disable:flag-parameter allow
+func renderJSON(data []byte, compact bool) (string, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
 		return "", errors.New("empty data")
@@ -171,11 +169,17 @@ func formatJSONIfPossible(data []byte) (string, error) {
 	if err := json.Unmarshal(trimmed, &anyJSON); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
-	pretty, err := json.MarshalIndent(anyJSON, "", "  ")
+	var out []byte
+	var err error
+	if compact {
+		out, err = json.Marshal(anyJSON)
+	} else {
+		out, err = json.MarshalIndent(anyJSON, "", "  ")
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to format JSON: %w", err)
 	}
-	return string(pretty), nil
+	return string(out), nil
 }
 
 func normalizeResponseForJSON(value any) any {
