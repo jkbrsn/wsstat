@@ -65,6 +65,8 @@ Note: installing the package with `@latest`  will always install the latest vers
 
 The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
+> Maintainers: see [docs/operations/snap-release-flow.md](./docs/operations/snap-release-flow.md) for how snap revisions are built, published to `edge`, and promoted.
+
 #### Binary
 
 ##### Linux
