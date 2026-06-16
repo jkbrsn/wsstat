@@ -1,12 +1,22 @@
 // Mock WebSocket server for the wsstat dev stack. Each URL path maps to one
 // deterministic behavior so a single wsstat CLI feature can be exercised in
-// isolation against a live peer. No TLS in this iteration (see dev/README.md).
+// isolation against a live peer. Serves both ws:// (plain) and wss:// (TLS with
+// a startup-generated self-signed cert); see dev/README.md.
 package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"log"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,6 +37,11 @@ const slowDelay = 3 * time.Second
 type behavior func(*http.Request, *websocket.Conn)
 
 func main() {
+	cert, caPEM, err := selfSignedCert()
+	if err != nil {
+		log.Fatal("generate cert:", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/echo", handle(echoBehavior))
 	mux.HandleFunc("/jsonrpc", handle(jsonrpcBehavior))
@@ -37,15 +52,82 @@ func main() {
 	mux.HandleFunc("/close-abrupt", handle(closeAbruptBehavior))
 	mux.HandleFunc("/push", handle(pushBehavior))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	// /ca.pem publishes the server's self-signed cert so a verifying client can
+	// trust it via SSL_CERT_FILE without -insecure. Public material, safe to serve.
+	mux.HandleFunc("/ca.pem", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		_, _ = w.Write(caPEM)
+	})
 
-	addr := ":8080"
+	plainAddr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
-		addr = ":" + p
+		plainAddr = ":" + p
 	}
-	log.Println("mock-ws listening on", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal(err)
+	tlsAddr := ":8443"
+	if p := os.Getenv("TLS_PORT"); p != "" {
+		tlsAddr = ":" + p
 	}
+
+	// Bind both ports before serving so a passing /healthz on the plain port
+	// implies the TLS port is already accepting connections.
+	plainLn, err := net.Listen("tcp", plainAddr)
+	if err != nil {
+		log.Fatal("listen plain:", err)
+	}
+	tlsLn, err := net.Listen("tcp", tlsAddr)
+	if err != nil {
+		log.Fatal("listen tls:", err)
+	}
+
+	tlsSrv := &http.Server{Handler: mux, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}}}
+	go func() {
+		log.Println("mock-ws (wss) listening on", tlsAddr)
+		if err := tlsSrv.ServeTLS(tlsLn, "", ""); err != nil {
+			log.Fatal("serve tls:", err)
+		}
+	}()
+
+	log.Println("mock-ws (ws) listening on", plainAddr)
+	if err := http.Serve(plainLn, mux); err != nil {
+		log.Fatal("serve plain:", err)
+	}
+}
+
+// selfSignedCert generates an in-memory ECDSA self-signed certificate valid for
+// the dev-stack dial targets, returning the tls.Certificate and its PEM-encoded
+// public cert (served at /ca.pem so a verifying client can trust it).
+func selfSignedCert() (tls.Certificate, []byte, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "wsstat-dev-mock"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{"localhost", "mock"},
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	return cert, certPEM, nil
 }
 
 // handle wraps a behavior with Accept + an unbounded read limit (so /large works

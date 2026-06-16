@@ -18,10 +18,10 @@ make smoke          # build mock image, build wsstat, run the suite, tear down
 ./bin/wsstat -t hello ws://localhost:17080/echo
 ```
 
-The mock listens on host port **17080** (container `:8080`). Port `17443` is
-reserved for a future `wss://` listener (TLS is deferred). wsstat takes the
-`17xxx` range to avoid colliding with sibling stacks (iris `19xxx`,
-bcm-probe `18xxx`).
+The mock listens on host port **17080** (container `:8080`, `ws://`) and
+**17443** (container `:8443`, `wss://` with a startup-generated self-signed
+cert). wsstat takes the `17xxx` range to avoid colliding with sibling stacks
+(iris `19xxx`, bcm-probe `18xxx`).
 
 ## Endpoints
 
@@ -39,6 +39,9 @@ tested in isolation.
 | `/close-abrupt` | Reads one frame, then drops the connection with no close frame. |
 | `/push` | Write-only / non-echoing peer: pumps JSON notifications, never reads. `?rate=N` msgs/sec. Exercises the close-handshake teardown bound (never echoes the client's Close). |
 | `/healthz` | HTTP 200 for the compose healthcheck. |
+| `/ca.pem` | The server's self-signed cert (PEM). Trust it via `SSL_CERT_FILE` to verify `wss://` without `-insecure`. |
+
+Every path is served on both `ws://` (17080) and `wss://` (17443).
 
 ## Layout
 
@@ -57,8 +60,10 @@ dev/
   wsstat's own `go.mod`. The binary under test is the host build (`make build`).
 - `smoke-test.sh` asserts on exit codes and stdout. `jq`-dependent cases skip
   cleanly when `jq` is absent. Override targets with `WS_URL` / `WSSTAT`.
-- The mock listen port can be overridden with `PORT` (default `8080`); Docker
-  keeps the default and maps it to `17080`.
-- **TLS is deferred.** A `wss://` listener on `17443` with a build-time
-  self-signed cert will unlock `-insecure`/`-k`, `-no-tls`, and `WithTLSConfig`
-  coverage.
+- The mock listen ports can be overridden with `PORT` (plain, default `8080`)
+  and `TLS_PORT` (default `8443`); Docker keeps the defaults and maps them to
+  `17080`/`17443`.
+- **TLS** uses a self-signed cert generated in-memory at startup (no committed
+  key material), with SANs for `localhost`/`127.0.0.1`/`::1`/`mock`. The smoke
+  suite covers `-insecure`/`-k`, the verify-rejects-self-signed path, a verifying
+  handshake trusted via `/ca.pem` + `SSL_CERT_FILE`, and `-no-tls` defaulting.

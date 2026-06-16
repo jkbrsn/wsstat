@@ -4,7 +4,8 @@ services:
   mock-ws:
     build: ./mock-server
     ports:
-      - "17080:8080" # 17443 reserved for a future wss:// listener
+      - "17080:8080" # ws:// plain
+      - "17443:8443" # wss:// TLS (startup-generated self-signed cert)
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 2s

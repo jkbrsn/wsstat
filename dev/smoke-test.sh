@@ -9,6 +9,7 @@
 set -euo pipefail
 
 WS_URL="${WS_URL:-ws://localhost:17080}"
+WSS_URL="${WSS_URL:-wss://localhost:17443}"
 WSSTAT="${WSSTAT:-./bin/wsstat}"
 
 PASS=0 FAIL=0 SKIP=0
@@ -52,8 +53,25 @@ check_teardown_bound() {
 	[[ "$ms" -lt 2500 ]]
 }
 
+# check_wss_verify_ca fetches the mock's self-signed cert over the plain port and
+# trusts it via SSL_CERT_FILE, then dials wss:// WITHOUT -insecure. This is the
+# only case that exercises a successful *verifying* TLS handshake end-to-end (the
+# realistic production path that -insecure bypasses).
+check_wss_verify_ca() {
+	local ca http_url
+	ca=$(mktemp)
+	# shellcheck disable=SC2064
+	trap "rm -f '$ca'" RETURN
+	# /ca.pem is served over plain HTTP; curl rejects the ws:// scheme.
+	http_url="${WS_URL/#ws:\/\//http://}"
+	curl -fsS "$http_url/ca.pem" -o "$ca" || return 1
+	SSL_CERT_FILE="$ca" "$WSSTAT" -t hi "$WSS_URL/echo" >/dev/null 2>&1
+}
+
 HAVE_JQ=0
 command -v jq >/dev/null 2>&1 && HAVE_JQ=1
+HAVE_CURL=0
+command -v curl >/dev/null 2>&1 && HAVE_CURL=1
 
 echo "wsstat smoke test against $WS_URL"
 echo ""
@@ -92,6 +110,17 @@ check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"
 check "large frame"        bash -c "$WSSTAT -f raw -rpc-method ws_large $WS_URL/large | wc -c | awk '{exit (\$1 > 32768) ? 0 : 1}'"
 check "abrupt close"       bash -c "! $WSSTAT -t hi $WS_URL/close-abrupt"
 check "teardown bound"     check_teardown_bound
+
+# --- TLS / wss:// -----------------------------------------------------------
+check "wss insecure"       "$WSSTAT" -insecure -t hi "$WSS_URL/echo"
+check "wss -k short form"   "$WSSTAT" -k -t hi "$WSS_URL/echo"
+check "wss verify rejects"  bash -c "! $WSSTAT -t hi $WSS_URL/echo"
+if [[ $HAVE_CURL -eq 1 ]]; then
+	check "wss verify trusts ca" check_wss_verify_ca
+else
+	skip "wss verify trusts ca" "curl not installed"
+fi
+check "no-tls scheme"      "$WSSTAT" -no-tls -t hi "localhost:17080/echo"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

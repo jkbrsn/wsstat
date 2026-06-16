@@ -1,12 +1,5 @@
 # todo
 
-## smoke stack
-
-- Add `wss://` coverage to the `dev/` mock server smoke stack. The mock currently serves
-  `ws://` only (port 17080); `dev/smoke-test.sh` never exercises the TLS dial path
-  (`DialTLSContext`, `-insecure`/`-k`, `-no-tls`, `WithTLSConfig`). Serve TLS on 17443 and add
-  smoke cases so the `wss://` handshake/timing path is validated end-to-end.
-
 ## upcoming minor
 
 - Option to flatten structured response data, e.g. JSON, to a single line per message

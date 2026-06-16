@@ -29,9 +29,11 @@ $COMPOSE up -d --build --wait
 
 if [[ "${1:-}" == "up" ]]; then
 	echo ""
-	echo "Mock WS server ready at ws://localhost:17080/<path> (Ctrl+C to tear down)."
+	echo "Mock WS server ready (Ctrl+C to tear down):"
+	echo "  ws://localhost:17080/<path>   wss://localhost:17443/<path> (self-signed)"
 	echo "Paths: /echo /jsonrpc /stream /large /slow /headers /close-abrupt /push"
 	echo "Example: ./bin/wsstat -t hello ws://localhost:17080/echo"
+	echo "Example: ./bin/wsstat -insecure -t hello wss://localhost:17443/echo"
 	echo ""
 	# Block until Ctrl+C so the EXIT trap tears the stack down.
 	sleep infinity &
