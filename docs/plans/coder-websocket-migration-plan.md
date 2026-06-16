@@ -1,9 +1,20 @@
 # Migrate wsstat from gorilla/websocket to coder/websocket
 
 - **Date:** 2026-06-16
-- **Commit:** b5bbeba (line numbers are "as of" this commit; re-find symbols if the tree moved)
+- **Commit:** b5bbeba (line numbers are "as of" this commit; the tree has since moved to `3c8b74e` — re-find symbols by name, do not trust line numbers)
 - **Branch:** main
-- **Module:** `github.com/jkbrsn/wsstat/v2`
+- **Module:** `github.com/jkbrsn/wsstat/v2` → bumps to **`github.com/jkbrsn/wsstat/v3`** (see Decisions)
+
+## Decisions
+
+Locked in before implementation:
+
+1. **Library goes to v3 (breaking changes allowed); CLI behavior is unchanged.** The library is a standalone importable package, so simplifying its public API (dropping `ReadPong`, collapsing the ping/pong split) is a semver-major change and the module path bumps to `/v3`. The CLI (`cmd/wsstat`, `internal/app`) is only an internal consumer: its flags, validation, and output stay byte-for-byte identical. The churn in `cmd/` and `internal/app/` is mechanical (import path `/v2 → /v3`, adapt to new library calls), not user-facing.
+2. **Keep the int-based message-type API.** Define `wsstat.TextMessage = 1` / `wsstat.BinaryMessage = 2` and convert internally. Do **not** re-export coder's `websocket.MessageType` — that would force every library consumer to import `github.com/coder/websocket` just for constants, coupling them to the transport dependency we want to keep swappable.
+3. **Drop `ReadPong` entirely.** Its write-ping-then-read-pong semantics do not exist in coder's model; `PingPong` records both timings around the single blocking `conn.Ping()`.
+4. **Accept coder's internal 5s close-handshake timeout.** No 1s `CloseNow()` wrapper. Simpler `Close()`; a dead peer can stall close up to 5s, which is acceptable.
+5. **Pong test relies on coder's automatic pong.** Drop the manual server-side ping handler; the test only asserts `MessageCount`, never pong payload.
+6. **Ping bursts run sequentially** as N `PingPong()` calls (overlap is not a tested property; mean-RTT math is unaffected).
 
 ## Problem
 
@@ -14,7 +25,8 @@ The migration is not a mechanical import swap. wsstat's reason for existing is t
 ## Goals
 
 - Replace all `gorilla/websocket` usage with `coder/websocket` across production code, tests, and the example.
-- Preserve the existing public API surface (`WriteMessage(int, …)`, `ReadMessage() (int, …)`, `SubscriptionOptions.MessageType int`, the `MeasureLatency*` wrappers, all `WithX` options).
+- Bump the library to `/v3` and keep the int-based message-type API (`WriteMessage(int, …)`, `ReadMessage() (int, …)`, `SubscriptionOptions.MessageType int`, the `MeasureLatency*` wrappers, all `WithX` options) backed by `wsstat.TextMessage`/`BinaryMessage` constants. `ReadPong` is removed (the one intentional public-API break).
+- Keep the CLI unchanged: same flags, validation, and output. Only internal import paths and library call sites change.
 - Preserve timing semantics: the `Result` phase durations must remain accurate and computed the same way.
 - `make lint && make test` pass, including the race-detector + 16x repetition CI run.
 
@@ -204,9 +216,9 @@ func (ws *WSStat) PingPong() error {
 ```
 
 Consequences to handle:
-- `pongChan`, `SetPongHandler`, and `ReadPong` become unused. Remove `ReadPong` only if it is not part of the documented public API; otherwise reimplement it in terms of the new flow. Check exported status before deleting (it is exported — confirm whether any external contract depends on it; if unsure, keep it but mark its new semantics).
+- `pongChan`, `SetPongHandler`, and `ReadPong` are removed (Decision 3). `ReadPong` is exported, so its removal is the one intentional public-API break that justifies the `/v3` bump. `PingPong` now records both `messageWrites` and `messageReads` around the single `conn.Ping()` call.
 - `Ping` requires the read pump to be actively reading so the library can process the inbound pong control frame. The read pump loops on `conn.Read`, which satisfies this. Confirm no deadlock when `Ping` and `readPump` run concurrently (coder supports one concurrent reader + `Ping`).
-- `MeasureLatencyPingBurst` (`wrappers.go:155`) and `MeasureLatencyPingBurstWithContext` (`wrappers.go:303`) currently "write N pings, then read N pongs" using `WriteMessage(PingMessage,…)` + `ReadPong`. Rewrite as N sequential `PingPong()` calls (simplest, preserves mean-RTT math) or N concurrent `conn.Ping` goroutines if burst concurrency must be retained. Sequential is recommended unless burst overlap is a tested property.
+- `MeasureLatencyPingBurst` (`wrappers.go:155`) and `MeasureLatencyPingBurstWithContext` (`wrappers.go:303`) currently "write N pings, then read N pongs" using `WriteMessage(PingMessage,…)` + `ReadPong`. Rewrite as N sequential `PingPong()` calls (Decision 6 — preserves mean-RTT math). Verify `wrappers_test.go` does not assert in-flight overlap before committing to sequential.
 
 Remove `websocket.PingMessage` references at `wrappers.go:167`, `wrappers.go:334`, `wsstat.go:512`.
 
@@ -247,7 +259,7 @@ func (ws *WSStat) Close() {
 Why this is safe with the dedicated read pump:
 - `conn.Close()` sends the frame (separate write path), then `waitCloseHandshake` contends with the read pump for coder's `readMu` (bounded 5s). When the server's echo arrives, the read pump's `conn.Read` consumes it off the socket and returns a `CloseError`, releasing `readMu`; `Close` then completes and force-closes TCP. The echo is read **before** TCP teardown, so the server sees a clean handshake.
 - No new deadlock: the pump defers (`wsstat.go:223-226`, `:272-275`) already call `wgPumps.Done()` *before* `ws.Close()`, so the drain step never waits on the goroutine that invoked it. `closeOnce` keeps re-entrant calls (pump defer + external caller) idempotent.
-- Worst case (peer never echoes): coder's internal 5s timeout in `waitCloseHandshake` bounds the delay, then it force-closes. If a tighter bound than 5s is wanted (gorilla used 1s), wrap step 1 in a goroutine with a `select` on a `~1s` timer and fall back to `conn.CloseNow()` — see Open Question 5.
+- Worst case (peer never echoes): coder's internal 5s timeout in `waitCloseHandshake` bounds the delay, then it force-closes. Decision 4 accepts this 5s bound as-is — no `CloseNow()` wrapper.
 
 Drop `FormatCloseMessage` / `IsCloseError` entirely.
 
@@ -260,9 +272,7 @@ Every test echo server uses gorilla's `Upgrader`. Migrate each to `websocket.Acc
 - `conn.Close()` (server) → `conn.Close(websocket.StatusNormalClosure, "")` or `CloseNow()`.
 - Assertions like `assert.Equal(t, websocket.TextMessage, msgType)` (`internal/app/client_subscription_test.go:248,256,269,277`): since the API still returns `int` and `wsstat.TextMessage == 1`, compare against the `wsstat` constant.
 
-**Special case — the pong test** (`internal/app/client_measurement_test.go:150-153`): the server installs `conn.SetPingHandler(...)` and replies with a custom `WriteControl(websocket.PongMessage, …)`. coder auto-responds to pings and exposes no server-side ping handler hook of this shape. Options:
-- Rely on coder's automatic pong response (drop the manual handler) and assert the client's `PingPong()`/`Ping` succeeds.
-- If the test asserts pong *payload* behavior, use the client-side `DialOptions.OnPongReceived` callback instead. Decide based on what the test actually verifies (see Open Questions).
+**Special case — the pong test** (`internal/app/client_measurement_test.go`, the `SetPingHandler` server): the server installs `conn.SetPingHandler(...)` and replies with a custom `WriteControl(websocket.PongMessage, …)`. Confirmed: the test only asserts `MessageCount` (and no error) — it never checks pong payload. Per Decision 5, drop the manual handler entirely and rely on coder's automatic pong response; the `Accept`-based echo server is sufficient.
 
 Files with test servers / message-type refs to migrate:
 - `wsstat_test.go` (upgrader at `:815`, close check `:834`, many `WriteMessage`/`MessageType` refs)
@@ -271,10 +281,13 @@ Files with test servers / message-type refs to migrate:
 - `internal/app/client_measurement_test.go` (upgraders at `:18,79,139`; pong handler `:150`)
 - `internal/app/client_subscription_test.go` (`MessageType` / assertions)
 
-### 7. `go.mod` / example
+### 7. `go.mod` / `/v3` path sweep / example
 
+- Change the module path in `go.mod` from `github.com/jkbrsn/wsstat/v2` to `github.com/jkbrsn/wsstat/v3`.
+- Sweep every internal import of `github.com/jkbrsn/wsstat/v2` → `/v3`: `cmd/wsstat/`, `internal/app/`, `_example/`, and any test files. `grep -rn "jkbrsn/wsstat/v2" --include="*.go" .` must return nothing afterward.
 - Promote `github.com/coder/websocket` from indirect to a direct require; remove `github.com/gorilla/websocket`. Run `go mod tidy` (ask before committing manifest changes per repo policy).
-- `_example/main.go:11,43`: swap the import and use `wsstat.TextMessage`.
+- Update non-Go references to the module path: README install/import snippets, any `go install github.com/jkbrsn/wsstat/v2/...` lines, and `_example/` doc text.
+- `_example/main.go`: swap the import and use `wsstat.TextMessage`.
 
 ## Affected Files
 
@@ -285,8 +298,11 @@ Files with test servers / message-type refs to migrate:
 | `subscription.go` | `TextMessage` default (`:164`) → `wsstat` constant. |
 | `internal/app/types.go` | `messageTypeLabel` (`:216`) — keep text/binary, drop close/ping/pong cases. |
 | `internal/app/subscription.go` | `TextMessage` refs (`:119,127,129`). |
-| `_example/main.go` | Import + constant. |
-| `go.mod` / `go.sum` | Drop gorilla, promote coder; `go mod tidy`. |
+| `_example/main.go` | Import path `/v3` + `wsstat.TextMessage` constant. |
+| `cmd/wsstat/*.go` | Import path `/v2 → /v3` only (no behavior change). |
+| `internal/app/*.go` (non-test) | Import path `/v2 → /v3`; `TextMessage` refs; adapt to new library calls. |
+| `go.mod` / `go.sum` | Module path `/v2 → /v3`; drop gorilla, promote coder; `go mod tidy`. |
+| `README.md` / docs | Update module path in install/import snippets and `go install` lines. |
 | `wsstat_test.go` | Server `Accept`, read/write contexts, close checks, type asserts. |
 | `wrappers_test.go` | Same test-server migration. |
 | `internal/app/testing_helpers.go` | Server `Accept`, read/write contexts. |
@@ -307,23 +323,27 @@ Files with test servers / message-type refs to migrate:
 
 1. **Core dial path.** Introduce `newHTTPClient` + transport, swap the struct field, rewrite `Dial`, add message-type converters and `wsstat.TextMessage`/`BinaryMessage` constants, `SetReadLimit(-1)`. Get a single text round-trip working (skip ping for now).
 2. **Pumps + close.** Rewrite `readPump`/`writePump` to contexts; rewrite `Close`; rewrite close-error classification in `ReadMessage`.
-3. **Ping/pong.** Rewrite `PingPong`, the two ping-burst wrappers; remove `pongChan`/`SetPongHandler`/dead `PingMessage` paths; decide `ReadPong` fate.
-4. **Tests + example + manifest.** Migrate all test servers and assertions, the pong-handler test, `_example`, and `go.mod`. Run lint + race suite.
+3. **Ping/pong.** Rewrite `PingPong`, the two ping-burst wrappers; remove `pongChan`/`SetPongHandler`/`ReadPong`/dead `PingMessage` paths.
+4. **Tests + example + manifest + `/v3` sweep.** Migrate all test servers and assertions, the pong-handler test, `_example`, and `go.mod` (module path `/v3`, drop gorilla, promote coder). Sweep all `/v2 → /v3` import paths across `cmd/`, `internal/app/`, tests, README. Run lint + race suite.
 
 ## Acceptance Criteria
 
 - No remaining `gorilla/websocket` import anywhere: `grep -rn "gorilla/websocket" --include="*.go" .` returns nothing.
+- No remaining `/v2` module path: `grep -rn "jkbrsn/wsstat/v2" --include="*.go" .` returns nothing; `go.mod` declares `github.com/jkbrsn/wsstat/v3`.
 - `make lint` passes (gofmt -s, ≤100-char soft / ≤80-line functions excluding tests).
 - `make test` and the race + 16x run pass.
-- Public API unchanged: `WriteMessage`/`ReadMessage`/`OneHitMessage*`/`PingPong`/`Subscribe*` signatures and all `WithX` options compile against existing callers without edits beyond the constant rename.
+- Library API change is limited and intentional: `WriteMessage`/`ReadMessage`/`OneHitMessage*`/`PingPong`/`Subscribe*` signatures and all `WithX` options unchanged (int message-type API preserved via `wsstat.TextMessage`/`BinaryMessage`); `ReadPong` removed.
+- CLI unchanged: `cmd/wsstat` flags, validation, and output identical; only import paths and library call sites changed.
 - Phase timings remain populated and plausible for both `ws://` and `wss://` targets (manual smoke test against a real endpoint).
 - **Clean close handshake.** A test server that records the close status sees `StatusNormalClosure` (1000), not `1006`, for the connect→send→read→close flow. Verifies the Iris-reported defect is resolved.
-- `CHANGELOG.md` and `VERSION` updated (user-facing dependency + behavior change).
+- `CHANGELOG.md` and `VERSION` updated. This is a **major** version bump (`/v3`): new `3.0.0` line in `CHANGELOG.md`, `VERSION` set to `3.0.0`.
 
-## Open Questions
+## Resolved Questions
 
-1. **`ReadPong` exported API.** Is `ReadPong` part of the contract external callers depend on, or internal-only? Determines whether it is removed or reimplemented over the new ping flow.
-2. **Ping-burst concurrency.** Must `MeasureLatencyPingBurst` keep its "all pings in flight at once" behavior, or is sequential ping/pong acceptable (simpler, and the mean-RTT math is unaffected)?
-3. **Pong test intent.** Does `client_measurement_test.go`'s pong test assert mere pong delivery (covered by coder's auto-pong) or specific payload/handler behavior (needs `OnPongReceived`)?
-4. **Public message-type type.** Keep the `int`-based public API (recommended, back-compat) or take the v2-major opportunity to expose `websocket.MessageType` directly?
-5. **Close grace bound.** Accept coder's internal 5s `waitCloseHandshake` timeout, or wrap the graceful close to fall back to `CloseNow()` after ~1s (matching gorilla's old 1s deadline) to cap close latency against non-echoing peers?
+All resolved before implementation — see Decisions for the rationale.
+
+1. **`ReadPong` exported API.** Resolved: **removed** (Decision 3). Its removal is the intentional break behind the `/v3` bump.
+2. **Ping-burst concurrency.** Resolved: **sequential** `PingPong()` calls (Decision 6). Verify `wrappers_test.go` does not assert in-flight overlap.
+3. **Pong test intent.** Resolved: test asserts only `MessageCount`, so **rely on coder's auto-pong** and drop the manual handler (Decision 5).
+4. **Public message-type type.** Resolved: **keep the `int`-based API** via `wsstat.TextMessage`/`BinaryMessage`; do not re-export coder's type (Decision 2).
+5. **Close grace bound.** Resolved: **accept coder's 5s default** (Decision 4); no `CloseNow()` wrapper.
