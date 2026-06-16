@@ -35,6 +35,22 @@ check_summary_interval() {
 	[[ "$n" -ge 2 ]]
 }
 
+# check_teardown_bound measures the wall-clock of a full run against the
+# write-only /push peer, which never echoes the closing handshake. coder's
+# Conn.Close blocks up to 5s waiting for that echo, so an unbounded close shows
+# ~5s here; a bounded close (item 1) should land near ~1s. Threshold 2500ms
+# fails on the stall and passes once the close is bounded. The 3 pushed frames
+# arrive in ~150ms at rate=20, so the measured time is dominated by teardown.
+check_teardown_bound() {
+	local start end ms
+	start=$(date +%s%3N)
+	"$WSSTAT" -s -t sub -c 3 "$WS_URL/push?rate=20" >/dev/null 2>&1 || true
+	end=$(date +%s%3N)
+	ms=$((end - start))
+	printf "    (teardown wall-clock: %dms)\n" "$ms" >&2
+	[[ "$ms" -lt 2500 ]]
+}
+
 HAVE_JQ=0
 command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 
@@ -74,6 +90,7 @@ check "summary-interval"   check_summary_interval
 check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"
 check "large frame"        bash -c "$WSSTAT -f raw -rpc-method ws_large $WS_URL/large | wc -c | awk '{exit (\$1 > 32768) ? 0 : 1}'"
 check "abrupt close"       bash -c "! $WSSTAT -t hi $WS_URL/close-abrupt"
+check "teardown bound"     check_teardown_bound
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

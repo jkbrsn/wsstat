@@ -37,6 +37,7 @@ tested in isolation.
 | `/slow` | Stalls 3s before replying. Serves the `-timeout` failure path. |
 | `/headers` | Replies with the value of the `X-Smoke` request header. Serves `-H`/`-header`. |
 | `/close-abrupt` | Reads one frame, then drops the connection with no close frame. |
+| `/push` | Write-only / non-echoing peer: pumps JSON notifications, never reads. `?rate=N` msgs/sec. Exercises the close-handshake teardown bound (never echoes the client's Close). |
 | `/healthz` | HTTP 200 for the compose healthcheck. |
 
 ## Layout

@@ -35,6 +35,7 @@ func main() {
 	mux.HandleFunc("/slow", handle(slowBehavior))
 	mux.HandleFunc("/headers", handle(headersBehavior))
 	mux.HandleFunc("/close-abrupt", handle(closeAbruptBehavior))
+	mux.HandleFunc("/push", handle(pushBehavior))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	addr := ":8080"
@@ -176,6 +177,39 @@ func closeAbruptBehavior(_ *http.Request, conn *websocket.Conn) {
 		return
 	}
 	conn.CloseNow()
+}
+
+// pushBehavior is a write-only / non-echoing peer: it pumps JSON notifications
+// and never reads, so it never processes the client's Close frame and never
+// sends the closing-handshake echo. This exercises the client-side close path,
+// where coder's Conn.Close blocks up to 5s waiting for an echo that never
+// arrives, so a smoke case can observe and bound teardown latency. Models
+// event-pushing servers that ignore inbound frames. ?rate sets msgs/sec.
+func pushBehavior(r *http.Request, conn *websocket.Conn) {
+	// No graceful close: this peer never reads the echo, so CloseNow is honest.
+	defer conn.CloseNow()
+	ctx := context.Background()
+
+	rate := queryInt(r, "rate", 10)
+	if rate < 1 {
+		rate = 1
+	}
+	ticker := time.NewTicker(time.Second / time.Duration(rate))
+	defer ticker.Stop()
+
+	var n int
+	for range ticker.C {
+		n++
+		notif, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "subscription",
+			"params":  map[string]any{"subscription": "push", "result": n},
+		})
+		// Write fails once the client's TCP teardown completes; that ends the loop.
+		if err := conn.Write(ctx, websocket.MessageText, notif); err != nil {
+			return
+		}
+	}
 }
 
 // streamBehavior waits for an initial subscribe frame, then pumps JSON
