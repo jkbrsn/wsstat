@@ -175,6 +175,7 @@ func WithTimeout(d time.Duration) Option {
 }
 
 // WithCloseGrace sets the close-handshake echo wait. Zero uses the library default (3s).
+// Values of 5s or more have no effect; the transport caps its close handshake at 5s.
 func WithCloseGrace(d time.Duration) Option {
 	return func(c *Client) { c.closeGrace = d }
 }

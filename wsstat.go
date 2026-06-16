@@ -902,6 +902,10 @@ func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout =
 // WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
 // before forcing the connection shut. Zero or negative forces an immediate teardown
 // without waiting for the echo. Defaults to 3s.
+//
+// Only values below 5s take effect: the underlying coder/websocket library caps its
+// own close handshake at a hard-coded 5s, so Close returns by then regardless and a
+// larger grace cannot extend the wait. The useful range is (0, 5s).
 func WithCloseGrace(d time.Duration) Option { return func(o *options) { o.closeGrace = d } }
 
 // WithTLSConfig sets the TLS configuration for the connection.
