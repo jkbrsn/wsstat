@@ -1,0 +1,12 @@
+name: dev-wsstat
+
+services:
+  mock-ws:
+    build: ./mock-server
+    ports:
+      - "17080:8080" # 17443 reserved for a future wss:// listener
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 10

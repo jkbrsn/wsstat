@@ -4,7 +4,7 @@ OS_ARCH_PAIRS=linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 window
 VERSION := $(shell cat VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION}"
 
-.PHONY: build build-all build-multi build-os-arch fmt lint test explain
+.PHONY: build build-all build-multi build-os-arch fmt lint test smoke explain
 
 .DEFAULT_GOAL := explain
 
@@ -22,6 +22,7 @@ explain:
 	@echo "  fmt             - Format code with gofmt."
 	@echo "  lint            - Run linter (golangci-lint)."
 	@echo "  test            - Run tests."
+	@echo "  smoke           - Run the dev-stack smoke test (Docker mock + host binary)."
 	@echo "  explain         - Display this help message."
 
 # Number of times to run burst tests, default 1
@@ -62,3 +63,6 @@ lint:
 test:
 	@echo "==> Running tests"
 	@go test -shuffle=on -count=$(N) $(TEST_FLAGS) ./...
+
+smoke:
+	@./dev/run.sh
