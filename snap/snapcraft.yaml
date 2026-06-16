@@ -1,6 +1,11 @@
 name: wsstat
+title: wsstat
 adopt-info: wsstat
 license: MIT
+contact: jakob.ersson@proton.me
+issues: https://github.com/jkbrsn/wsstat/issues
+source-code: https://github.com/jkbrsn/wsstat
+website: https://github.com/jkbrsn/wsstat
 summary: wsstat - a WebSocket endpoint monitoring tool
 description: |
   wsstat provides a simple and easy way to check the connection stats of a WebSocket endpoint.
@@ -31,12 +36,11 @@ parts:
       cp -a "${CRAFT_PART_SRC}/." "${CRAFT_PART_INSTALL}/usr/local/go/"
     stage:
       - usr/local/go/**
-    prime: []
-    # TODO: consider ignoring the testdata files
-    #lint:
-    #  ignore:
-    #    library:
-    #      - usr/local/go/src/debug/elf/testdata/libtiffxx.so_
+    # prime: [] would NOT exclude these files; craft-parts treats an empty
+    # include list as "*". Use an exclusion so the Go toolchain stays in the
+    # build stage but never ships in the snap.
+    prime:
+      - -usr
 
   wsstat:
     plugin: go
