@@ -72,7 +72,7 @@ check "summary-interval"   check_summary_interval
 
 # --- Failure & edge paths ---------------------------------------------------
 check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"
-check "large frame"        "$WSSTAT" -rpc-method ws_large "$WS_URL/large"
+check "large frame"        bash -c "$WSSTAT -f raw -rpc-method ws_large $WS_URL/large | wc -c | awk '{exit (\$1 > 32768) ? 0 : 1}'"
 check "abrupt close"       bash -c "! $WSSTAT -t hi $WS_URL/close-abrupt"
 
 echo ""
