@@ -66,6 +66,7 @@ check "resolve override"   "$WSSTAT" -t hi -resolve "mock:17080:127.0.0.1" "ws:/
 
 # --- Subscriptions (stream) -------------------------------------------------
 check "subscribe-once"     "$WSSTAT" -subscribe-once -t sub "$WS_URL/stream?rate=10"
+check "subscribe bounded"  "$WSSTAT" -s -t sub -c 3 "$WS_URL/stream?rate=10"
 check "buffer size"        "$WSSTAT" -b 8 -s -t sub -c 3 "$WS_URL/stream?rate=10"
 check "summary-interval"   check_summary_interval
 
