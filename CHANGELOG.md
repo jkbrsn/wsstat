@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-06-16
+
 ### Added
 
 - (dev) `dev/` stack for end-to-end CLI testing: a Dockerized mock WebSocket server (`dev/mock-server/`, a separate Go module on `coder/websocket`) exposing one path per behavior, and `dev/smoke-test.sh` firing the host-built `./bin/wsstat` through the full CLI feature matrix.
@@ -43,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/jkbrsn/wsstat/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/jkbrsn/wsstat/compare/v2.1.3...v2.2.0
 [2.1.3]: https://github.com/jkbrsn/wsstat/compare/v2.1.1...v2.1.3
 [2.1.1]: https://github.com/jkbrsn/wsstat/compare/v2.1.0...v2.1.1
