@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (dev) `dev/` stack for end-to-end CLI testing: a Dockerized mock WebSocket server (`dev/mock-server/`, a separate Go module on `coder/websocket`) exposing one path per behavior, and `dev/smoke-test.sh` firing the host-built `./bin/wsstat` through the full CLI feature matrix.
 - (dev) `make smoke` target and `dev/run.sh` orchestrator (`up` mode leaves the mock running for manual use).
 
+### Changed
+
+- Upgraded to Go 1.26.3.
+- General update of dependencies.
+
 ## [2.2.0] - 2026-02-03
 
 ### Added
