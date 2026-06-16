@@ -1,3 +1,5 @@
+name: dev-wsstat
+
 services:
   mock-ws:
     build: ./mock-server
