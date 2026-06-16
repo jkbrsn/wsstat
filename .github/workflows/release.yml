@@ -277,10 +277,33 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+  snap:
+    name: "Build & publish snap to edge"
+    needs: [release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # snapcraft.yaml's `git describe --tags` needs full history
+
+      - name: Check out the release tag
+        shell: bash
+        run: git checkout "${{ needs.release.outputs.tag }}"
+
+      - uses: snapcore/action-build@v1
+        id: build
+
+      - uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge
+
   summary:
     name: Release summary
     runs-on: ubuntu-24.04
-    needs: [initialize, version-bump-check, test-race, test-flaky, golangci-lint, release]
+    needs: [initialize, version-bump-check, test-race, test-flaky, golangci-lint, release, snap]
     if: ${{ always() }}  # ensure this job runs even if dependencies failed
     steps:
       - name: Write release summary
@@ -295,6 +318,7 @@ jobs:
             echo "- Tests (flaky):     ${{ needs['test-flaky'].result }}"
             echo "- Lint:              ${{ needs.golangci-lint.result }}"
             echo "- Release:           ${{ needs.release.result }}"
+            echo "- Snap (edge):       ${{ needs.snap.result }}"
             echo ""
             # Only print release details/links if the release job succeeded and produced outputs
             if [ "${{ needs.release.result }}" = "success" ] && [ -n "${{ needs.release.outputs.tag }}" ]; then
