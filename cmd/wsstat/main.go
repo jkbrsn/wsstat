@@ -104,6 +104,28 @@ func main() {
 	}
 }
 
+// interruptContext returns a context canceled on the first SIGINT/SIGTERM, beginning a
+// graceful shutdown (which bounds the close handshake via close-grace). A second signal
+// hard-exits immediately, so a teardown stuck on a non-echoing peer can always be escaped.
+// Exit code 130 = 128 + SIGINT.
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+			return
+		}
+		<-sigCh
+		// revive:disable-next-line:deep-exit second signal force-quits a stuck teardown
+		os.Exit(130)
+	}()
+	return ctx, cancel
+}
+
 func run() error {
 	cfg, err := parseConfig()
 	if err != nil {
@@ -138,7 +160,7 @@ func run() error {
 		return fmt.Errorf("invalid settings: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := interruptContext()
 	defer cancel()
 
 	if cfg.SubscribeOnce {
