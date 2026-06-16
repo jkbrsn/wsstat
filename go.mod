@@ -1,9 +1,9 @@
-module github.com/jkbrsn/wsstat/v2
+module github.com/jkbrsn/wsstat/v3
 
 go 1.26.3
 
 require (
-	github.com/gorilla/websocket v1.5.3
+	github.com/coder/websocket v1.8.15
 	github.com/jkbrsn/jsonrpc v0.8.2
 	github.com/mattn/go-isatty v0.0.22
 	github.com/rs/zerolog v1.35.1
@@ -15,7 +15,6 @@ require (
 	github.com/bytedance/sonic v1.15.2 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect

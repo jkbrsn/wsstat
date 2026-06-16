@@ -8,8 +8,7 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat/v2"
+	"github.com/jkbrsn/wsstat/v3"
 )
 
 func main() {
@@ -40,7 +39,7 @@ func main() {
 		log.Fatalf("Failed to establish WebSocket connection: %v", err)
 	}
 
-	ws.WriteMessage(websocket.TextMessage, []byte(msg))
+	ws.WriteMessage(wsstat.TextMessage, []byte(msg))
 	_, p, err = ws.ReadMessage()
 	if err != nil {
 		log.Fatalf("Failed to read message: %v", err)

@@ -9,29 +9,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestMeasureText(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
 
 		for {
-			msgType, msg, err := conn.ReadMessage()
+			msgType, msg, err := conn.Read(ctx)
 			if err != nil {
 				return
 			}
-			if err := conn.WriteMessage(msgType, msg); err != nil {
+			if err := conn.Write(ctx, msgType, msg); err != nil {
 				return
 			}
 		}
@@ -76,20 +75,18 @@ func TestMeasureText(t *testing.T) {
 }
 
 func TestMeasureJSON(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
 
 		for {
 			var msg map[string]any
-			if err := conn.ReadJSON(&msg); err != nil {
+			if err := wsjson.Read(ctx, conn, &msg); err != nil {
 				return
 			}
 			response := map[string]any{
@@ -97,7 +94,7 @@ func TestMeasureJSON(t *testing.T) {
 				"id":      msg["id"],
 				"result":  "success",
 			}
-			if err := conn.WriteJSON(response); err != nil {
+			if err := wsjson.Write(ctx, conn, response); err != nil {
 				return
 			}
 		}
@@ -136,24 +133,19 @@ func TestMeasureJSON(t *testing.T) {
 }
 
 func TestMeasurePing(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
 
-		conn.SetPingHandler(func(appData string) error {
-			deadline := time.Now().Add(time.Second)
-			return conn.WriteControl(websocket.PongMessage, []byte(appData), deadline)
-		})
-
+		// coder answers incoming pings with a pong automatically inside the read loop,
+		// so no manual ping handler is needed.
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			if _, _, err := conn.Read(ctx); err != nil {
 				return
 			}
 		}

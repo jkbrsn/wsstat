@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jkbrsn/wsstat/v2"
-	"github.com/jkbrsn/wsstat/v2/internal/app/color"
+	"github.com/jkbrsn/wsstat/v3"
+	"github.com/jkbrsn/wsstat/v3/internal/app/color"
 	"github.com/mattn/go-isatty"
 )
 
