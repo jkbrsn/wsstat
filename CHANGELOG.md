@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `WithCloseGrace(d)` option (and the `-close-timeout` CLI flag) bounding how long `Close()` waits for the peer's closing-handshake echo before forcing teardown. Defaults to 3s; `0` forces immediate teardown.
+- The CLI now force-quits on a second interrupt: the first `Ctrl-C` (SIGINT/SIGTERM) begins a graceful shutdown bounded by close-grace, and a second immediately exits with code 130. Lets a teardown stuck on a non-echoing peer always be escaped.
+- (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`, and `-no-tls` scheme defaulting.
+
+### Changed
+
+- **BREAKING:** Migrated the underlying WebSocket library from the unmaintained `gorilla/websocket` to `coder/websocket`. The module path is now `github.com/jkbrsn/wsstat/v3`; importers must update their import paths. The `wsstat` CLI is unaffected (same flags, same output).
+- `Close()` now performs the full RFC 6455 two-way closing handshake before tearing down the socket, resolving an ungraceful client close where strict peers logged `1006` / `use of closed network connection`. The handshake wait is bounded by `WithCloseGrace` (default 3s) so a write-only / non-echoing peer cannot stall teardown for coder's hard-coded 5s.
+- The public message-type API stays `int`-based via the new `wsstat.TextMessage` / `wsstat.BinaryMessage` constants (numerically identical to the previous values), so callers do not need to import the transport package.
+
+### Removed
+
+- **BREAKING:** `ReadPong()`. coder's `Ping` is a synchronous round-trip, so `PingPong()` now records the ping/pong timings directly and the separate `ReadPong` step no longer exists.
+
 ## [2.2.2] - 2026-06-16
 
 ### Fixed

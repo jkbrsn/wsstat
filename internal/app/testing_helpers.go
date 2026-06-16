@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat/v2"
+	"github.com/coder/websocket"
+	"github.com/jkbrsn/wsstat/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -102,35 +102,40 @@ func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
 		})
 	}
 
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			closeReady()
 			return
 		}
 		defer func() {
-			_ = conn.Close()
+			_ = conn.CloseNow()
 		}()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
 
-		if _, _, err := conn.ReadMessage(); err != nil {
+		if _, _, err := conn.Read(ctx); err != nil {
 			closeReady()
 			return
 		}
 		closeReady()
 
+		// Drain reads in the background so the client's Close frame is processed and
+		// echoed promptly; otherwise this write-only server would never answer the
+		// closing handshake and the client would stall on coder's 5s timeout.
+		ctx = conn.CloseRead(ctx)
+
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-done:
 				return
 			case msg, ok := <-events:
 				if !ok {
 					return
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+				if err := conn.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
 					return
 				}
 			}

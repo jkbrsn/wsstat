@@ -8,9 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/jkbrsn/jsonrpc"
-	"github.com/jkbrsn/wsstat/v2"
+	"github.com/jkbrsn/wsstat/v3"
 )
 
 // handleSubscriptionTick handles a subscription tick.
@@ -116,7 +115,7 @@ func (c *Client) runSubscriptionLoop(
 // subscriptionPayload returns the payload to be sent to the server.
 func (c *Client) subscriptionPayload() (int, []byte, error) {
 	if c.textMessage != "" {
-		return websocket.TextMessage, []byte(c.textMessage), nil
+		return wsstat.TextMessage, []byte(c.textMessage), nil
 	}
 	if c.rpcMethod != "" {
 		req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
@@ -124,9 +123,9 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
 		}
-		return websocket.TextMessage, payload, nil
+		return wsstat.TextMessage, payload, nil
 	}
-	return websocket.TextMessage, nil, nil
+	return wsstat.TextMessage, nil, nil
 }
 
 // subscriptionMessageJSON builds a subscription message.

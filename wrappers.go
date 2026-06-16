@@ -1,5 +1,5 @@
 // Package wsstat measures the latency of WebSocket connections.
-// It wraps the gorilla/websocket package and includes latency measurements in the Result struct.
+// It wraps the coder/websocket package and includes latency measurements in the Result struct.
 package wsstat
 
 import (
@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-
-	"github.com/gorilla/websocket"
 )
 
 // MeasureLatency is a wrapper around a one-hit usage of the WSStat instance. It establishes a
@@ -25,7 +23,7 @@ func MeasureLatency(
 	if err := ws.Dial(targetURL, customHeaders); err != nil {
 		return nil, nil, fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
-	ws.WriteMessage(websocket.TextMessage, []byte(msg))
+	ws.WriteMessage(TextMessage, []byte(msg))
 	_, p, err := ws.ReadMessage()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read message: %v", err)
@@ -53,7 +51,7 @@ func MeasureLatencyBurst(
 	}
 
 	for _, msg := range msgs {
-		ws.WriteMessage(websocket.TextMessage, []byte(msg))
+		ws.WriteMessage(TextMessage, []byte(msg))
 	}
 
 	var responses []string
@@ -164,10 +162,7 @@ func MeasureLatencyPingBurst(
 		return nil, err
 	}
 	for range pingCount {
-		ws.WriteMessage(websocket.PingMessage, nil)
-	}
-	for range pingCount {
-		if err := ws.ReadPong(); err != nil {
+		if err := ws.PingPong(); err != nil {
 			return nil, err
 		}
 	}
@@ -212,7 +207,7 @@ func MeasureLatencyBurstWithContext(
 			default:
 			}
 
-			ws.WriteMessage(websocket.TextMessage, []byte(msg))
+			ws.WriteMessage(TextMessage, []byte(msg))
 			_, p, err := ws.ReadMessage()
 			if err != nil {
 				resultCh <- result{err: fmt.Errorf("failed to read message: %w", err)}
@@ -331,18 +326,7 @@ func MeasureLatencyPingBurstWithContext(
 			default:
 			}
 
-			ws.WriteMessage(websocket.PingMessage, nil)
-		}
-		for range pingCount {
-			// Check for cancellation before each operation
-			select {
-			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-			default:
-			}
-
-			if err := ws.ReadPong(); err != nil {
+			if err := ws.PingPong(); err != nil {
 				errCh <- err
 				return
 			}

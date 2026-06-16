@@ -1,9 +1,9 @@
-module github.com/jkbrsn/wsstat/v2
+module github.com/jkbrsn/wsstat/v3
 
 go 1.26.3
 
 require (
-	github.com/gorilla/websocket v1.5.3
+	github.com/coder/websocket v1.8.15
 	github.com/jkbrsn/jsonrpc v0.8.2
 	github.com/mattn/go-isatty v0.0.22
 	github.com/rs/zerolog v1.35.1

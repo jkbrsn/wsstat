@@ -22,6 +22,7 @@ type Config struct {
 	BufferSize      int
 	SummaryInterval time.Duration
 	Timeout         time.Duration
+	CloseTimeout    time.Duration
 	Format          string
 	ColorMode       string
 	Quiet           bool
@@ -83,6 +84,7 @@ func parseConfig() (*Config, error) {
 		BufferSize:      *bufferSize,
 		SummaryInterval: *summaryInterval,
 		Timeout:         *timeout,
+		CloseTimeout:    *closeTimeout,
 		Format:          strings.ToLower(*formatOption),
 		ColorMode:       strings.ToLower(*colorArg),
 		Quiet:           *quiet,

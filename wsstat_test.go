@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func TestNew(t *testing.T) {
 	defer ws.Close()
 
 	assert.NotNil(t, ws)
-	assert.NotNil(t, ws.dialer)
+	assert.NotNil(t, ws.httpClient)
 	assert.NotNil(t, ws.result)
 	assert.NotNil(t, ws.timings)
 	assert.NotNil(t, ws.readChan)
@@ -120,7 +121,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, 16, cap(ws.readChan))
 		assert.Equal(t, 16, cap(ws.writeChan))
-		assert.Equal(t, 16, cap(ws.pongChan))
 	})
 
 	t.Run("default buffer size", func(t *testing.T) {
@@ -129,7 +129,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, defaultChanBufferSize, cap(ws.readChan))
 		assert.Equal(t, defaultChanBufferSize, cap(ws.writeChan))
-		assert.Equal(t, defaultChanBufferSize, cap(ws.pongChan))
 	})
 
 	t.Run("zero buffer size creates unbuffered channels", func(t *testing.T) {
@@ -138,7 +137,6 @@ func TestWithBufferSize(t *testing.T) {
 
 		assert.Equal(t, 0, cap(ws.readChan))
 		assert.Equal(t, 0, cap(ws.writeChan))
-		assert.Equal(t, 0, cap(ws.pongChan))
 	})
 }
 
@@ -157,7 +155,6 @@ func TestMultipleOptions(t *testing.T) {
 		assert.True(t, ws.tlsConf.InsecureSkipVerify)
 		assert.Equal(t, 32, cap(ws.readChan))
 		assert.Equal(t, 32, cap(ws.writeChan))
-		assert.Equal(t, 32, cap(ws.pongChan))
 	})
 
 	t.Run("options order does not matter", func(t *testing.T) {
@@ -207,7 +204,7 @@ func TestWriteReadClose(t *testing.T) {
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
 	message := []byte("Hello, world!")
-	ws.WriteMessage(websocket.TextMessage, message)
+	ws.WriteMessage(TextMessage, message)
 	_, receivedMessage, err := ws.ReadMessage()
 	assert.NoError(t, err)
 	assert.Equal(t, message, receivedMessage, "Received message does not match sent message")
@@ -233,9 +230,9 @@ func TestBufferedReadWrite(t *testing.T) {
 		validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
 		message := []byte("Hello, world!")
-		ws.WriteMessage(websocket.TextMessage, message)
-		ws.WriteMessage(websocket.TextMessage, message)
-		ws.WriteMessage(websocket.TextMessage, message)
+		ws.WriteMessage(TextMessage, message)
+		ws.WriteMessage(TextMessage, message)
+		ws.WriteMessage(TextMessage, message)
 		time.Sleep(10 * time.Millisecond) // Wait for messages to be sent
 
 		result := ws.ExtractResult()
@@ -259,7 +256,7 @@ func TestBufferedReadWrite(t *testing.T) {
 		message := []byte("Hello, world!")
 		messageCount := 75
 		for range make([]struct{}, messageCount) {
-			ws.WriteMessage(websocket.TextMessage, message)
+			ws.WriteMessage(TextMessage, message)
 		}
 		time.Sleep(25 * time.Millisecond) // Wait for messages to be sent
 
@@ -298,7 +295,7 @@ func TestOneHitMessage(t *testing.T) {
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
 	message := []byte("Hello, world!")
-	response, err := ws.OneHitMessage(websocket.TextMessage, message)
+	response, err := ws.OneHitMessage(TextMessage, message)
 	assert.NoError(t, err)
 	assert.Equal(t, message, response, "Received message does not match sent message")
 
@@ -343,7 +340,7 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
-		MessageType: websocket.TextMessage,
+		MessageType: TextMessage,
 		Payload:     []byte("hello-sub"),
 	})
 	require.NoError(t, err)
@@ -383,7 +380,7 @@ func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
 
 	msg, err := ws.SubscribeOnce(context.Background(), SubscriptionOptions{
-		MessageType: websocket.TextMessage,
+		MessageType: TextMessage,
 		Payload:     []byte("hello-once"),
 	})
 	require.NoError(t, err)
@@ -406,7 +403,7 @@ func TestSubscriptionMatcherFallThrough(t *testing.T) {
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
-		MessageType: websocket.TextMessage,
+		MessageType: TextMessage,
 		Payload:     []byte("init"),
 		matcher: func(int, []byte, any) bool {
 			return false
@@ -424,7 +421,7 @@ func TestSubscriptionMatcherFallThrough(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "init", string(initial))
 
-	ws.WriteMessage(websocket.TextMessage, []byte("ping"))
+	ws.WriteMessage(TextMessage, []byte("ping"))
 	_, data, err := ws.ReadMessage()
 	require.NoError(t, err)
 	assert.Equal(t, "ping", string(data))
@@ -502,9 +499,100 @@ func TestReadAfterClose(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context canceled")
 
-	err = ws.ReadPong()
+	err = ws.PingPong()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context canceled")
+}
+
+// TestCloseHandshakeStatus verifies that Close performs the RFC 6455 two-way closing
+// handshake: the server must observe a clean StatusNormalClosure (1000), not an abrupt
+// 1006. Regression test for the ungraceful-close defect fixed by the coder migration.
+func TestCloseHandshakeStatus(t *testing.T) {
+	closeStatus := make(chan websocket.StatusCode, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
+		for {
+			mt, msg, err := conn.Read(ctx)
+			if err != nil {
+				closeStatus <- websocket.CloseStatus(err)
+				return
+			}
+			if err := conn.Write(ctx, mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+	_, err = ws.OneHitMessage(TextMessage, []byte("hello"))
+	require.NoError(t, err)
+	ws.Close()
+
+	select {
+	case status := <-closeStatus:
+		assert.Equal(t, websocket.StatusNormalClosure, status,
+			"server should observe a clean 1000 close, not 1006")
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not observe a close status")
+	}
+}
+
+// TestCloseGraceBound verifies that Close does not stall on a write-only / non-echoing
+// peer. coder's Conn.Close waits up to a hard-coded 5s for the peer's Close echo; wsstat
+// bounds that wait to closeGrace and forces the socket shut, so teardown stays prompt.
+func TestCloseGraceBound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		// Write-only / non-echoing: pump frames, never read. The client's Close frame is
+		// never processed and never echoed, so the close handshake cannot complete. Exits
+		// when a write fails (client gone).
+		ctx := context.Background()
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.Write(ctx, websocket.MessageText, []byte("tick")); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	grace := 500 * time.Millisecond
+	ws := New(WithCloseGrace(grace))
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ws.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Less(t, time.Since(start), 3*time.Second,
+			"Close should bound the handshake to ~closeGrace, not coder's 5s")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close stalled past the grace bound")
+	}
 }
 
 func TestResultFormat(t *testing.T) {
@@ -512,7 +600,7 @@ func TestResultFormat(t *testing.T) {
 	defer ws.Close()
 
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
-	_, err := ws.OneHitMessage(websocket.TextMessage, []byte("test"))
+	_, err := ws.OneHitMessage(TextMessage, []byte("test"))
 	require.NoError(t, err)
 	ws.Close()
 
@@ -594,7 +682,7 @@ func TestSubscriptionByteCount(t *testing.T) {
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
-		MessageType: websocket.TextMessage,
+		MessageType: TextMessage,
 		Payload:     []byte("byte-count-test"),
 	})
 	require.NoError(t, err)
@@ -622,7 +710,7 @@ func TestSubscriptionUnsubscribe(t *testing.T) {
 	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
-		MessageType: websocket.TextMessage,
+		MessageType: TextMessage,
 		Payload:     []byte("unsubscribe-test"),
 	})
 	require.NoError(t, err)
@@ -812,32 +900,28 @@ func getFunctionName() string {
 
 // startEchoServer starts a WebSocket server that echoes back any received messages.
 func startEchoServer(addr string) {
-	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(_ *http.Request) bool {
-			return true // Allow all origins
-		},
-	}
-
 	http.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
-			log.Print("upgrade:", err)
+			log.Print("accept:", err)
 			return
 		}
 		defer func() {
-			_ = conn.Close()
+			_ = conn.CloseNow()
 		}()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
 		for {
-			mt, message, err := conn.ReadMessage()
+			mt, message, err := conn.Read(ctx)
 			if err != nil {
-				// Only print error if it's not a normal closure
-				if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				// Only print error if it's not a normal/expected closure
+				status := websocket.CloseStatus(err)
+				if status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
 					log.Println("read:", err)
 				}
 				break
 			}
-			err = conn.WriteMessage(mt, message)
-			if err != nil {
+			if err := conn.Write(ctx, mt, message); err != nil {
 				log.Println("write:", err)
 				break
 			}
@@ -900,7 +984,7 @@ func TestRaceConditionOnClose(t *testing.T) {
 			go func() {
 				for j := range 10 {
 					msg := fmt.Appendf(nil, "test message %d", j)
-					ws.WriteMessage(websocket.TextMessage, msg)
+					ws.WriteMessage(TextMessage, msg)
 					// Small delay to allow some messages to be sent
 					time.Sleep(time.Microsecond)
 				}
@@ -934,7 +1018,7 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 			ctx := t.Context()
 
 			sub, err := ws.Subscribe(ctx, SubscriptionOptions{
-				MessageType: websocket.TextMessage,
+				MessageType: TextMessage,
 				Buffer:      10,
 			})
 			require.NoError(t, err)
@@ -942,7 +1026,7 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 			// Send messages rapidly
 			go func() {
 				for j := range 5 {
-					ws.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, "sub message %d", j))
+					ws.WriteMessage(TextMessage, fmt.Appendf(nil, "sub message %d", j))
 					time.Sleep(time.Microsecond * 10)
 				}
 			}()
@@ -980,7 +1064,7 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 				go func(id int) {
 					for k := range 5 {
 						msg := fmt.Appendf(nil, "writer %d msg %d", id, k)
-						ws.WriteMessage(websocket.TextMessage, msg)
+						ws.WriteMessage(TextMessage, msg)
 						time.Sleep(time.Microsecond * 5)
 					}
 				}(j)

@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -162,7 +160,7 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 	}
 
 	if opts.MessageType == 0 {
-		opts.MessageType = websocket.TextMessage
+		opts.MessageType = TextMessage
 	}
 
 	bufferSize := opts.Buffer

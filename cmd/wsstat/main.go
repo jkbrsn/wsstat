@@ -38,7 +38,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jkbrsn/wsstat/v2/internal/app"
+	"github.com/jkbrsn/wsstat/v3/internal/app"
 )
 
 // revive:disable:line-length-limit allow flags
@@ -55,6 +55,7 @@ var (
 	bufferSize       = flag.Int("buffer", 0, "subscription delivery buffer size (messages)")
 	summaryInterval  = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
 	timeout          = flag.Duration("timeout", 0, "read/dial timeout (e.g., 30s, 1m); 0 uses default (5s)")
+	closeTimeout     = flag.Duration("close-timeout", 0, "max wait for the peer's close echo before forcing teardown (e.g., 1s, 2s); 0 uses default (3s); capped at 5s")
 
 	// Output
 	formatOption = flag.String("format", "auto", "output format: auto, json, or raw")
@@ -103,6 +104,28 @@ func main() {
 	}
 }
 
+// interruptContext returns a context canceled on the first SIGINT/SIGTERM, beginning a
+// graceful shutdown (which bounds the close handshake via close-grace). A second signal
+// hard-exits immediately, so a teardown stuck on a non-echoing peer can always be escaped.
+// Exit code 130 = 128 + SIGINT.
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+			return
+		}
+		<-sigCh
+		// revive:disable-next-line:deep-exit second signal force-quits a stuck teardown
+		os.Exit(130)
+	}()
+	return ctx, cancel
+}
+
 func run() error {
 	cfg, err := parseConfig()
 	if err != nil {
@@ -130,13 +153,14 @@ func run() error {
 		app.WithSummaryInterval(cfg.SummaryInterval),
 		app.WithInsecure(cfg.Insecure),
 		app.WithTimeout(cfg.Timeout),
+		app.WithCloseGrace(cfg.CloseTimeout),
 	)
 
 	if err := ws.Validate(); err != nil {
 		return fmt.Errorf("invalid settings: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := interruptContext()
 	defer cancel()
 
 	if cfg.SubscribeOnce {
@@ -199,6 +223,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
 	fmt.Fprintln(os.Stderr, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
+	fmt.Fprintln(os.Stderr, "      --close-timeout <duration> max wait for the peer's close echo before forcing teardown [default: 3s; capped at 5s]")
 	fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
 	fmt.Fprintln(os.Stderr)
 

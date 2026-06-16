@@ -8,8 +8,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat/v2"
+	"github.com/jkbrsn/wsstat/v3"
 )
 
 const (
@@ -215,17 +214,13 @@ func parseJSONPayload(data []byte) (any, bool) {
 
 func messageTypeLabel(messageType int) string {
 	switch messageType {
-	case websocket.TextMessage:
+	case wsstat.TextMessage:
 		return "text"
-	case websocket.BinaryMessage:
+	case wsstat.BinaryMessage:
 		return "binary"
-	case websocket.CloseMessage:
-		return "close"
-	case websocket.PingMessage:
-		return "ping"
-	case websocket.PongMessage:
-		return "pong"
 	default:
+		// coder never surfaces close/ping/pong frames from Read; they are handled
+		// inside the library and never reach this label path.
 		return ""
 	}
 }

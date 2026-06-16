@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/jkbrsn/wsstat/v2"
+	"github.com/jkbrsn/wsstat/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +15,7 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 	t.Run("message metadata", func(t *testing.T) {
 		client := &Client{format: formatJSON}
 		msg := wsstat.SubscriptionMessage{
-			MessageType: websocket.TextMessage,
+			MessageType: wsstat.TextMessage,
 			Data:        []byte(`{"foo":"bar"}`),
 			Received:    time.Unix(0, 0).UTC(),
 			Size:        len(`{"foo":"bar"}`),
@@ -141,7 +140,7 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	select {
 	case err := <-errCh:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("subscription did not exit after cancellation")
 	}
 }
@@ -245,7 +244,7 @@ func TestSubscriptionPayload(t *testing.T) {
 		client := NewClient(WithTextMessage("hello"))
 		msgType, payload, err := client.subscriptionPayload()
 		require.NoError(t, err)
-		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, wsstat.TextMessage, msgType)
 		assert.Equal(t, []byte("hello"), payload)
 	})
 
@@ -253,7 +252,7 @@ func TestSubscriptionPayload(t *testing.T) {
 		client := NewClient(WithRPCMethod("test_method"))
 		msgType, payload, err := client.subscriptionPayload()
 		require.NoError(t, err)
-		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, wsstat.TextMessage, msgType)
 
 		var decoded map[string]any
 		require.NoError(t, json.Unmarshal(payload, &decoded))
@@ -266,7 +265,7 @@ func TestSubscriptionPayload(t *testing.T) {
 		client := NewClient()
 		msgType, payload, err := client.subscriptionPayload()
 		require.NoError(t, err)
-		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, wsstat.TextMessage, msgType)
 		assert.Nil(t, payload)
 	})
 
@@ -274,7 +273,7 @@ func TestSubscriptionPayload(t *testing.T) {
 		client := &Client{textMessage: "text", rpcMethod: "method"}
 		msgType, payload, err := client.subscriptionPayload()
 		require.NoError(t, err)
-		assert.Equal(t, websocket.TextMessage, msgType)
+		assert.Equal(t, wsstat.TextMessage, msgType)
 		assert.Equal(t, []byte("text"), payload)
 	})
 }
