@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -598,9 +599,7 @@ func (ws *WSStat) ExtractResult() *Result {
 	resultCopy := *ws.result
 	if ws.result.Subscriptions != nil {
 		clone := make(map[string]SubscriptionStats, len(ws.result.Subscriptions))
-		for id, stats := range ws.result.Subscriptions {
-			clone[id] = stats
-		}
+		maps.Copy(clone, ws.result.Subscriptions)
 		resultCopy.Subscriptions = clone
 	}
 	return &resultCopy

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -560,9 +561,7 @@ func (ws *WSStat) snapshotSubscriptionStats() (
 		state.mu.Unlock()
 		snap[id] = stats
 	}
-	for id, archived := range ws.subscriptionArchive {
-		snap[id] = archived
-	}
+	maps.Copy(snap, ws.subscriptionArchive)
 
 	return snap, ws.subscriptionFirstEvent, ws.subscriptionLastEvent
 }

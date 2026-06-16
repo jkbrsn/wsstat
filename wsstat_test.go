@@ -270,7 +270,7 @@ func TestBufferedReadWrite(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result.MessageRTT, "Expected 0 MessageRTT with no reads")
 		assert.Zero(t, result.MessageCount, "Expected 0 MessageCount with no reads")
 
-		for i := 0; i < messageCount; i++ {
+		for range messageCount {
 			_, receivedMessage, err := ws.ReadMessage()
 			assert.NoError(t, err)
 			assert.Equal(t, message, receivedMessage,
@@ -888,7 +888,7 @@ func validateCloseResult(ws *WSStat, msg string, t *testing.T) {
 // doesn't cause a race condition or panic when accessing ws.conn
 func TestRaceConditionOnClose(t *testing.T) {
 	// Run this test multiple times to increase chances of hitting the race
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
@@ -898,8 +898,8 @@ func TestRaceConditionOnClose(t *testing.T) {
 			// Send multiple messages concurrently to fill the write buffer
 			done := make(chan bool)
 			go func() {
-				for j := 0; j < 10; j++ {
-					msg := []byte(fmt.Sprintf("test message %d", j))
+				for j := range 10 {
+					msg := fmt.Appendf(nil, "test message %d", j)
 					ws.WriteMessage(websocket.TextMessage, msg)
 					// Small delay to allow some messages to be sent
 					time.Sleep(time.Microsecond)
@@ -923,7 +923,7 @@ func TestRaceConditionOnClose(t *testing.T) {
 
 // TestRaceConditionWithSubscription tests race condition with subscriptions active
 func TestRaceConditionWithSubscription(t *testing.T) {
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
@@ -931,8 +931,7 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 			require.NoError(t, err)
 
 			// Create a subscription
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			sub, err := ws.Subscribe(ctx, SubscriptionOptions{
 				MessageType: websocket.TextMessage,
@@ -942,15 +941,15 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 
 			// Send messages rapidly
 			go func() {
-				for j := 0; j < 5; j++ {
-					ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("sub message %d", j)))
+				for j := range 5 {
+					ws.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, "sub message %d", j))
 					time.Sleep(time.Microsecond * 10)
 				}
 			}()
 
 			// Try to read from subscription
 			go func() {
-				for j := 0; j < 3; j++ {
+				for range 3 {
 					select {
 					case <-sub.Updates():
 						// Message received
@@ -969,7 +968,7 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 
 // TestConcurrentWritesAndClose tests multiple goroutines writing while closing
 func TestConcurrentWritesAndClose(t *testing.T) {
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
@@ -977,10 +976,10 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 			require.NoError(t, err)
 
 			// Multiple writers
-			for j := 0; j < 3; j++ {
+			for j := range 3 {
 				go func(id int) {
-					for k := 0; k < 5; k++ {
-						msg := []byte(fmt.Sprintf("writer %d msg %d", id, k))
+					for k := range 5 {
+						msg := fmt.Appendf(nil, "writer %d msg %d", id, k)
 						ws.WriteMessage(websocket.TextMessage, msg)
 						time.Sleep(time.Microsecond * 5)
 					}
