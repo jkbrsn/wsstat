@@ -160,10 +160,12 @@ func TestStreamFlags(t *testing.T) {
 		assert.True(t, client.Once())
 	})
 
-	t.Run("once with count greater than one rejected", func(t *testing.T) {
-		_, _, err := buildStream([]string{"--once", "-c", "5", "example.com"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--once")
+	t.Run("once with explicit count rejected", func(t *testing.T) {
+		for _, c := range []string{"0", "1", "5"} {
+			_, _, err := buildStream([]string{"--once", "-c", c, "example.com"})
+			require.Errorf(t, err, "--once -c %s should be rejected", c)
+			assert.Contains(t, err.Error(), "--once")
+		}
 	})
 
 	t.Run("json output allowed without message", func(t *testing.T) {
