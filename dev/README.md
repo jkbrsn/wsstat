@@ -30,9 +30,9 @@ tested in isolation.
 
 | Path | Behavior |
 |---|---|
-| `/echo` | Echoes each frame back unchanged. Serves `-t`, `-c`, `-f`, `-resolve`, verbosity. |
-| `/jsonrpc` | Replies with a JSON-RPC result (or `-32700` on parse error). Serves `-rpc-method`. |
-| `/stream` | Waits for an initial frame, then pumps JSON notifications. `?rate=N` msgs/sec, `?count=N` cap. Serves `-s`, `-subscribe-once`, `-summary-interval`, `-b`. |
+| `/echo` | Echoes each frame back unchanged. Serves `-t`, `-c`, `-o`/`--body`/`--clip`, `--resolve`, verbosity. |
+| `/jsonrpc` | Replies with a JSON-RPC result (or `-32700` on parse error). Serves `--rpc-method`. |
+| `/stream` | Waits for an initial frame, then pumps JSON notifications. `?rate=N` msgs/sec, `?count=N` cap. Serves the `stream` subcommand, `--once`, `--summary-interval`, `-b`. |
 | `/large` | Replies with a valid JSON-RPC frame whose result exceeds 32 KiB. |
 | `/slow` | Stalls 3s before replying. Serves the `-timeout` failure path. |
 | `/headers` | Replies with the value of the `X-Smoke` request header. Serves `-H`/`-header`. |
@@ -66,4 +66,4 @@ dev/
 - **TLS** uses a self-signed cert generated in-memory at startup (no committed
   key material), with SANs for `localhost`/`127.0.0.1`/`::1`/`mock`. The smoke
   suite covers `-insecure`/`-k`, the verify-rejects-self-signed path, a verifying
-  handshake trusted via `/ca.pem` + `SSL_CERT_FILE`, and `-no-tls` defaulting.
+  handshake trusted via `/ca.pem` + `SSL_CERT_FILE`, and `ws://` scheme defaulting.
