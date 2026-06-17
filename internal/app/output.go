@@ -107,6 +107,7 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 
 	payload := string(msg.Data)
 	if c.quiet {
+		// Quiet prints the payload only; --body/--clip rendering does not apply.
 		fmt.Println(payload)
 		return nil
 	}
@@ -490,10 +491,10 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 			}
 			_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(body))
 		} else {
-			_, err = fmt.Printf("%s%v\n", baseMessage, v)
+			_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
 		}
 	case []any:
-		_, err = fmt.Printf("%s%v\n", baseMessage, v)
+		_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
 	case []byte:
 		_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(string(v)))
 	default:
