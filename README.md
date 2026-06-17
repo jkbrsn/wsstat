@@ -174,7 +174,7 @@ wsstat -subscribe -count 1 -text '{"method":"subscribe_ticker"}' wss://example.o
 wsstat -subscribe-once -text '{"method":"subscribe_ticker"}' wss://example.org/ws
 ```
 
-For machine-readable output of summaries, add `-format json`. To keep streamed events scannable, `-format compact` prints each event on a single line.
+For machine-readable output of summaries, add `-format json`. To keep streamed events scannable, `-format compact` prints each event on a single line, and `-format truncate` clips each line to the terminal width with a trailing `...` (when stdout is piped or redirected, `truncate` falls back to full `compact` output).
 
 ## wsstat Library Package
 

@@ -264,7 +264,7 @@ func (c *Client) MeasureLatency(
 // Validation includes:
 //   - Ensures count is non-negative
 //   - Verifies text and rpc-method are not both set (mutually exclusive)
-//   - Validates format is "auto", "compact", "json", or "raw"
+//   - Validates format is "auto", "compact", "truncate", "json", or "raw"
 //   - Validates colorMode is "auto", "always", or "never"
 //   - Ensures buffer and summaryInterval are non-negative
 //   - Enforces subscribe-once requires count == 1

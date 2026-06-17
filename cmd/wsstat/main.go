@@ -58,7 +58,7 @@ var (
 	closeTimeout     = flag.Duration("close-timeout", 0, "max wait for the peer's close echo before forcing teardown (e.g., 1s, 2s); 0 uses default (3s); capped at 5s")
 
 	// Output
-	formatOption = flag.String("format", "auto", "output format: auto, compact, json, or raw")
+	formatOption = flag.String("format", "auto", "output format: auto, compact, truncate, json, or raw")
 
 	// General/meta
 	showVersion = flag.Bool("version", false, "print the program version")
@@ -85,7 +85,7 @@ func init() {
 	flag.StringVar(textMessage, "t", "", "text message to send")
 	flag.BoolVar(subscribe, "s", false, "stream events until interrupted")
 	flag.IntVar(bufferSize, "b", 0, "subscription delivery buffer size (messages)")
-	flag.StringVar(formatOption, "f", "auto", "output format: auto, compact, json, or raw")
+	flag.StringVar(formatOption, "f", "auto", "output format: auto, compact, truncate, json, or raw")
 	flag.BoolVar(quiet, "quiet", false, "quiet all output but the response")
 	flag.BoolVar(v1, "verbose", false, "increase verbosity (level 1)")
 	flag.BoolVar(insecure, "k", false, "skip TLS certificate verification")
@@ -231,7 +231,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -q, --quiet                    suppress all output except response")
 	fmt.Fprintln(os.Stderr, "  -v, --verbose                  increase verbosity (level 1)")
 	fmt.Fprintln(os.Stderr, "  -vv                            increase verbosity (level 2)")
-	fmt.Fprintln(os.Stderr, "  -f, --format <string>          output format: auto, compact, json, raw [default: auto]")
+	fmt.Fprintln(os.Stderr, "  -f, --format <string>          output format: auto, compact, truncate, json, raw [default: auto]")
 	fmt.Fprintln(os.Stderr)
 
 	fmt.Fprintln(os.Stderr, "Verbosity Levels:")

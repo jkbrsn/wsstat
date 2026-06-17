@@ -16,10 +16,12 @@ func TestParseFormat(t *testing.T) {
 		{in: "", want: formatAuto},
 		{in: "auto", want: formatAuto},
 		{in: "compact", want: formatCompact},
+		{in: "truncate", want: formatTruncate},
 		{in: "json", want: formatJSON},
 		{in: "raw", want: formatRaw},
 		{in: "  JSON  ", want: formatJSON},
 		{in: "Compact", want: formatCompact},
+		{in: "TRUNCATE", want: formatTruncate},
 		{in: "garbage", wantErr: true},
 		{in: "pretty", wantErr: true},
 	}

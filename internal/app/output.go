@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jkbrsn/wsstat/v3"
 	"github.com/jkbrsn/wsstat/v3/internal/app/color"
 	"github.com/mattn/go-isatty"
+	"golang.org/x/term"
 )
 
 // buildTimingSummaryFromResult builds a timing summary from a result.
@@ -106,15 +108,16 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 		return nil
 	}
 
-	compact := c.format == formatCompact
+	singleLine := c.format == formatCompact || c.format == formatTruncate
 	timestamp := msg.Received.Format(time.RFC3339Nano)
 	if c.verbosityLevel >= 1 {
-		if compact {
-			line := payload
+		if singleLine {
+			body := payload
 			if formatted, err := renderJSON(msg.Data, true); err == nil {
-				line = formatted
+				body = formatted
 			}
-			fmt.Printf("[%04d @ %s] %d bytes %s\n", index, timestamp, msg.Size, line)
+			line := fmt.Sprintf("[%04d @ %s] %d bytes %s", index, timestamp, msg.Size, body)
+			fmt.Println(c.clipLine(line))
 			return nil
 		}
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
@@ -127,12 +130,66 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 		return nil
 	}
 
-	line := payload
-	if formatted, err := renderJSON(msg.Data, compact); err == nil {
-		line = formatted
+	body := payload
+	if formatted, err := renderJSON(msg.Data, singleLine); err == nil {
+		body = formatted
 	}
-	fmt.Printf("[%04d @ %s] %s\n", index, timestamp, line)
+	line := fmt.Sprintf("[%04d @ %s] %s", index, timestamp, body)
+	fmt.Println(c.clipLine(line))
 	return nil
+}
+
+// truncMarker is appended to lines clipped by the truncate format.
+const truncMarker = "..."
+
+// clipLine clips s to the terminal width with a trailing marker when the
+// truncate format is active and stdout is a terminal. For any other format, or
+// when the width cannot be determined (e.g. piped/redirected output), s is
+// returned unchanged so truncate degrades to the same output as compact.
+func (c *Client) clipLine(s string) string {
+	if c.format != formatTruncate {
+		return s
+	}
+	width := terminalWidth()
+	if width <= 0 {
+		return s
+	}
+	return clipToWidth(s, width)
+}
+
+// terminalWidth returns the column count of stdout, or 0 when stdout is not a
+// terminal or its size cannot be determined.
+func terminalWidth() int {
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
+		return 0
+	}
+	w, _, err := term.GetSize(fd)
+	if err != nil {
+		return 0
+	}
+	return w
+}
+
+// clipToWidth shortens s to at most width display columns (counted as runes),
+// replacing the tail with truncMarker when truncation occurs.
+func clipToWidth(s string, width int) string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return s
+	}
+	markerLen := utf8.RuneCountInString(truncMarker)
+	if width <= markerLen {
+		return string([]rune(truncMarker)[:width])
+	}
+	keep := width - markerLen
+	runes := 0
+	for i := range s {
+		if runes == keep {
+			return s[:i] + truncMarker
+		}
+		runes++
+	}
+	return s
 }
 
 // printSubscriptionSummary prints a subscription summary.
