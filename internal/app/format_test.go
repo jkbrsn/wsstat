@@ -7,27 +7,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseFormat(t *testing.T) {
+func TestParseOutput(t *testing.T) {
 	cases := []struct {
 		in      string
-		want    Format
+		want    Output
 		wantErr bool
 	}{
-		{in: "", want: formatAuto},
-		{in: "auto", want: formatAuto},
-		{in: "compact", want: formatCompact},
-		{in: "truncate", want: formatTruncate},
-		{in: "json", want: formatJSON},
-		{in: "raw", want: formatRaw},
-		{in: "  JSON  ", want: formatJSON},
-		{in: "Compact", want: formatCompact},
-		{in: "TRUNCATE", want: formatTruncate},
+		{in: "", want: OutputText},
+		{in: "text", want: OutputText},
+		{in: "json", want: OutputJSON},
+		{in: "raw", want: OutputRaw},
+		{in: "  JSON  ", want: OutputJSON},
+		{in: "Text", want: OutputText},
+		{in: "compact", wantErr: true},
+		{in: "auto", wantErr: true},
 		{in: "garbage", wantErr: true},
-		{in: "pretty", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := ParseFormat(tc.in)
+			got, err := ParseOutput(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestParseBody(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    Body
+		wantErr bool
+	}{
+		{in: "", want: BodyAuto},
+		{in: "auto", want: BodyAuto},
+		{in: "compact", want: BodyCompact},
+		{in: "  Compact  ", want: BodyCompact},
+		{in: "truncate", wantErr: true},
+		{in: "json", wantErr: true},
+		{in: "garbage", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := ParseBody(tc.in)
 			if tc.wantErr {
 				require.Error(t, err)
 				return
