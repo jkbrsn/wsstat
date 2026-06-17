@@ -105,7 +105,7 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
-			if c.output != OutputJSON {
+			if c.output == OutputText {
 				fmt.Println()
 			}
 		}
@@ -213,7 +213,7 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 			<-subscription.Done()
 			return err
 		}
-		if c.output != OutputJSON {
+		if c.output == OutputText {
 			fmt.Println()
 			fmt.Println(c.colorizeOrange("Streaming subscription events"))
 		}
@@ -247,7 +247,7 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 		}
 	}
 
-	if c.output != OutputJSON {
+	if c.output == OutputText {
 		fmt.Println()
 	}
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)

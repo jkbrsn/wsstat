@@ -215,6 +215,10 @@ func clipToWidth(s string, width int) string {
 
 // printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result) {
+	if c.output == OutputRaw {
+		// Raw emits payload bytes only; no summary chrome.
+		return
+	}
 	if c.output == OutputJSON {
 		_ = c.printJSONLine(c.subscriptionSummaryJSON(target, result))
 		if c.verbosityLevel >= 1 {
