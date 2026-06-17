@@ -201,6 +201,12 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	if *count < 0 {
 		return nil, nil, errors.New("count must be zero or greater")
 	}
+	if *once {
+		set := setFlagNames(fs)
+		if set["c"] || set["count"] {
+			return nil, nil, errors.New("--count cannot be combined with --once")
+		}
+	}
 	opts = append(opts,
 		app.WithCount(*count),
 		app.WithStreamOnce(*once),

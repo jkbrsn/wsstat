@@ -49,6 +49,7 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.StringVar(&c.body, "body", "auto", "body rendering for text output: auto or compact")
 	fs.BoolVar(&c.clip, "clip", false, "clip each rendered line to terminal width (text output, TTY only)")
 	fs.BoolVar(&c.quiet, "q", false, "suppress all output except the response")
+	fs.BoolVar(&c.quiet, "quiet", false, "suppress all output except the response")
 	fs.BoolVar(&c.v1, "v", false, "increase verbosity (level 1)")
 	fs.BoolVar(&c.v2, "vv", false, "increase verbosity (level 2)")
 
@@ -66,6 +67,7 @@ var textOnlyFlags = []struct{ name, display string }{
 	{"body", "--body"},
 	{"clip", "--clip"},
 	{"q", "-q"},
+	{"quiet", "--quiet"},
 	{"v", "-v"},
 	{"vv", "-vv"},
 }

@@ -81,6 +81,18 @@ func TestMeasureFlags(t *testing.T) {
 		assert.Contains(t, err.Error(), "only applies to text output")
 	})
 
+	t.Run("quiet long form accepted and quiets", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"--quiet", "example.com"})
+		require.NoError(t, err)
+		assert.True(t, client.Quiet())
+	})
+
+	t.Run("quiet long form under json rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "json", "--quiet", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
+
 	t.Run("raw measure without message rejected", func(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-o", "raw", "example.com"})
 		require.Error(t, err)
@@ -160,10 +172,12 @@ func TestStreamFlags(t *testing.T) {
 		assert.True(t, client.Once())
 	})
 
-	t.Run("once with count greater than one rejected", func(t *testing.T) {
-		_, _, err := buildStream([]string{"--once", "-c", "5", "example.com"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--once")
+	t.Run("once with explicit count rejected", func(t *testing.T) {
+		for _, c := range []string{"0", "1", "5"} {
+			_, _, err := buildStream([]string{"--once", "-c", c, "example.com"})
+			require.Errorf(t, err, "--once -c %s should be rejected", c)
+			assert.Contains(t, err.Error(), "--once")
+		}
 	})
 
 	t.Run("json output allowed without message", func(t *testing.T) {
