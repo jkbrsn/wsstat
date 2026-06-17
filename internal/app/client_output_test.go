@@ -206,8 +206,7 @@ func TestPrintResponseJSON(t *testing.T) {
 			Response: map[string]any{"jsonrpc": "2.0", "result": "0x1"},
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "response", payload["type"])
@@ -224,8 +223,7 @@ func TestPrintResponseJSON(t *testing.T) {
 			Response: "hello world",
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "response", payload["type"])
@@ -238,8 +236,7 @@ func TestPrintResponseRaw(t *testing.T) {
 		client := &Client{output: OutputRaw}
 		result := &MeasurementResult{Response: "hello world"}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		assert.Equal(t, "hello world", output)
 	})
@@ -250,8 +247,7 @@ func TestPrintResponseRaw(t *testing.T) {
 			Response: map[string]any{"jsonrpc": "2.0", "result": "0x1"},
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		assert.NotContains(t, output, "Response:")
 		assert.False(t, strings.HasSuffix(output, "\n"), "raw adds no trailing newline")
@@ -268,8 +264,7 @@ func TestPrintResponseBodyRendering(t *testing.T) {
 		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
 		result := &MeasurementResult{Response: response}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		assert.Contains(t, output, "Response: ")
 		assert.Contains(t, output, "\"result\": \"0x1\"", "auto indents the body")
@@ -280,8 +275,7 @@ func TestPrintResponseBodyRendering(t *testing.T) {
 		client := &Client{output: OutputText, body: BodyCompact, colorMode: "never"}
 		result := &MeasurementResult{Response: response}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		assert.Contains(t, output, "\"result\":\"0x1\"", "compact has no spaces")
 		assert.Equal(t, 1, strings.Count(output, "\n"), "compact is one line")

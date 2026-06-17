@@ -244,7 +244,9 @@ func runMeasure(args []string) error {
 	if err := client.PrintTimingResults(target, result); err != nil {
 		return fmt.Errorf("printing timing results: %w", err)
 	}
-	client.PrintResponse(result)
+	if err := client.PrintResponse(result); err != nil {
+		return fmt.Errorf("printing response: %w", err)
+	}
 	return nil
 }
 
