@@ -9,20 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `compact` output format (`-format compact`): renders structured (JSON) subscription events on a single line per message, instead of the multi-line pretty-print of `auto`. At `-v` the per-message block also collapses to one line (`[idx @ ts] N bytes {…}`).
-- `truncate` output format (`-format truncate`): like `compact`, but each line is clipped to the terminal width with a trailing `...`. When stdout is not a terminal (piped/redirected), it falls back to full `compact` output so nothing is silently lost.
-- `WithCloseGrace(d)` option (and the `-close-timeout` CLI flag) bounding how long `Close()` waits for the peer's closing-handshake echo before forcing teardown. Defaults to 3s; `0` forces immediate teardown.
+- **CLI subcommands.** Mode is now an explicit subcommand: `wsstat measure <url>` (also the bare `wsstat <url>` form) and `wsstat stream <url>` for long-lived feeds. `stream --once` exits after the first event. Each subcommand's `-h` lists only its own flags.
+- **Three orthogonal output axes.** `-o, --output text|json|raw` selects the whole-stdout contract; `--body auto|compact` selects human body rendering; `--clip` clips each rendered line to the terminal width on a TTY (no-op when piped/redirected). `-o json` is schema-stable: `-v`/`-vv` never change which fields appear. `-o raw` writes payload bytes verbatim (no label, color, timing, or added newline) in both measure and stream modes; stream frames are concatenated undelimited (binary-safe), so use `-o json` when you need delimited machine-readable streaming. `-o raw` in measure mode requires `--text` or `--rpc-method`.
+- `--body` now governs the measured response too: `--body auto` pretty-prints a JSON-RPC response, `--body compact` one-lines it (previously the measured response was always compact JSON regardless of format).
+- `WithCloseGrace(d)` library option (and the `--close-timeout` CLI flag) bounding how long `Close()` waits for the peer's closing-handshake echo before forcing teardown. The library option defaults to 3s and treats `0` as immediate teardown; the CLI flag forwards only positive values, so `--close-timeout 0` keeps the 3s default (the handshake is capped at 5s either way).
 - The CLI now force-quits on a second interrupt: the first `Ctrl-C` (SIGINT/SIGTERM) begins a graceful shutdown bounded by close-grace, and a second immediately exits with code 130. Lets a teardown stuck on a non-echoing peer always be escaped.
-- (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`, and `-no-tls` scheme defaulting.
+- (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, and a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`.
 
 ### Changed
 
-- **BREAKING:** Migrated the underlying WebSocket library from the unmaintained `gorilla/websocket` to `coder/websocket`. The module path is now `github.com/jkbrsn/wsstat/v3`; importers must update their import paths. The `wsstat` CLI is unaffected (same flags, same output).
+- **BREAKING (CLI):** The flag surface was reworked for 3.0.0. Mode moved from the `-subscribe`/`-subscribe-once` booleans to the `stream` subcommand; the overloaded `-format` split into `-o`/`--body`/`--clip`; and text-only flags (`--body`, `--clip`, `-q`, `-v`, `-vv`) are now rejected (not silently ignored) under `-o json|raw`. Removed v2 flags emit a targeted "removed in v3; use X" error. Migration:
+
+  | v2 | v3 |
+  |---|---|
+  | `wsstat -subscribe <url>` | `wsstat stream <url>` |
+  | `wsstat -subscribe-once <url>` | `wsstat stream --once <url>` |
+  | `wsstat -format json` | `wsstat -o json` |
+  | `wsstat -format compact` | `wsstat --body compact` |
+  | `wsstat -format truncate` | `wsstat --body compact --clip` |
+  | `wsstat -format raw` | `wsstat -o raw` |
+  | `wsstat -f <x>` | removed — use `-o`/`--body`/`--clip` |
+  | `wsstat -no-tls <host>` | `wsstat ws://<host>` |
+  | `wsstat -count N -subscribe` | `wsstat stream -c N <url>` |
+
+- **BREAKING:** Migrated the underlying WebSocket library from the unmaintained `gorilla/websocket` to `coder/websocket`. The module path is now `github.com/jkbrsn/wsstat/v3`; importers must update their import paths.
 - `Close()` now performs the full RFC 6455 two-way closing handshake before tearing down the socket, resolving an ungraceful client close where strict peers logged `1006` / `use of closed network connection`. The handshake wait is bounded by `WithCloseGrace` (default 3s) so a write-only / non-echoing peer cannot stall teardown for coder's hard-coded 5s.
 - The public message-type API stays `int`-based via the new `wsstat.TextMessage` / `wsstat.BinaryMessage` constants (numerically identical to the previous values), so callers do not need to import the transport package.
 
 ### Removed
 
+- **BREAKING (CLI):** `-subscribe`, `-subscribe-once` (and `-s`), `-format`/`-f`, and `-no-tls`. See the migration table above.
 - **BREAKING:** `ReadPong()`. coder's `Ping` is a synchronous round-trip, so `PingPong()` now records the ping/pong timings directly and the separate `ReadPong` step no longer exists.
 
 ## [2.2.2] - 2026-06-16

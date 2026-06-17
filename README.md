@@ -124,8 +124,8 @@ wsstat wss://echo.example.com
 # Send an RPC method
 wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 
-# Start a subscription
-wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed
+# Start a stream
+wsstat stream --summary-interval 5s wss://stream.example.com/feed
 
 # Attach headers to dial request
 wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
@@ -137,44 +137,66 @@ wsstat --resolve example.com:443:127.0.0.1 --timeout 30s wss://example.com/ws
 wsstat --insecure -vv wss://self-signed.example.com
 ```
 
-For a full list of the available options, check the `wsstat --help` option of your client.
+For a full list of the available options, run `wsstat -h`, `wsstat measure -h`, or `wsstat stream -h`.
 
-### Subscription Mode
+### Modes
 
-Long-lived streaming endpoints can be exercised with the subscription mode:
+`wsstat <url>` (or `wsstat measure <url>`) measures connection latency. `wsstat
+stream <url>` keeps the socket open for long-lived feeds. A host literally named
+`measure`/`stream` must be spelled with a scheme (`wsstat wss://stream`).
 
-```sh
-wsstat -subscribe -text '{"method":"subscribe"}' wss://example.org/stream
-```
+### Stream Mode
 
-When `-subscribe` is supplied the client keeps the socket open, forwards each
-incoming frame to stdout, and periodically snapshots timing metrics. Use
-`-buffer` to adjust the per-subscription queue length and `-summary-interval`
-(for example, `30s`) to print recurring summaries that include per-subscription
-message counts, byte totals, and mean inter-arrival latency.
-
-Control how many interactions occur by setting `-count`. Non-subscription
-commands default to `-count 1`. When streaming (`-subscribe`), `-count 0`
-keeps the connection open until you cancel it, while any positive value limits
-delivery to that many events before wsstat disconnects:
+Long-lived streaming endpoints are exercised with the `stream` subcommand:
 
 ```sh
-wsstat -subscribe -count 5 -text '{"method":"subscribe"}' wss://example.org/stream
+wsstat stream -t '{"method":"subscribe"}' wss://example.org/stream
 ```
 
-For a single-response probe, you can either run `-subscribe -count 1` or use the
-dedicated helper `-subscribe-once`, both of which subscribe and exit after the
-first event:
+`stream` keeps the socket open, forwards each incoming frame to stdout, and
+periodically snapshots timing metrics. Use `-b/--buffer` to adjust the
+per-subscription queue length and `--summary-interval` (for example, `30s`) to
+print recurring summaries that include per-subscription message counts, byte
+totals, and mean inter-arrival latency.
+
+`measure` defaults to `-c 1`. In `stream`, `-c 0` (the default) keeps the
+connection open until you cancel it, while any positive value limits delivery to
+that many events before wsstat disconnects:
 
 ```sh
-wsstat -subscribe -count 1 -text '{"method":"subscribe_ticker"}' wss://example.org/ws
+wsstat stream -c 5 -t '{"method":"subscribe"}' wss://example.org/stream
 ```
+
+For a single-response probe, run `stream --once`, which streams and exits after
+the first event:
 
 ```sh
-wsstat -subscribe-once -text '{"method":"subscribe_ticker"}' wss://example.org/ws
+wsstat stream --once -t '{"method":"subscribe_ticker"}' wss://example.org/ws
 ```
 
-For machine-readable output of summaries, add `-format json`. To keep streamed events scannable, `-format compact` prints each event on a single line, and `-format truncate` clips each line to the terminal width with a trailing `...` (when stdout is piped or redirected, `truncate` falls back to full `compact` output).
+### Output
+
+Output is split across three orthogonal axes:
+
+- `-o, --output text|json|raw` — the whole-stdout contract. `json` emits
+  newline-delimited envelopes with a stable schema (`-v`/`-vv` never change which
+  fields appear); `raw` writes payload bytes verbatim with nothing added (in
+  measure mode `raw` requires `--text` or `--rpc-method`).
+- `--body auto|compact` — human body rendering (text output only). `auto`
+  pretty-prints; `compact` puts each message on one line.
+- `--clip` — clips each rendered line to the terminal width with a trailing `...`
+  (text output, TTY only; a no-op when piped or redirected).
+
+```sh
+# Machine-readable streaming summaries and events
+wsstat stream -o json --summary-interval 5s wss://example.org/stream
+
+# Scannable one-line-per-event output, clipped to the terminal
+wsstat stream --body compact --clip wss://example.org/stream
+```
+
+`--body`, `--clip`, `-q`, `-v`, and `-vv` apply only to `-o text` and are
+rejected under `-o json|raw`.
 
 ## wsstat Library Package
 

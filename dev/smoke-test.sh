@@ -31,7 +31,7 @@ skip() {
 # count limit ends the run: one periodic + one final == >=2 "Subscription summary".
 check_summary_interval() {
 	local n
-	n=$("$WSSTAT" -s -t sub -c 15 -summary-interval 1s "$WS_URL/stream?rate=5" 2>/dev/null \
+	n=$("$WSSTAT" stream -t sub -c 15 --summary-interval 1s "$WS_URL/stream?rate=5" 2>/dev/null \
 		| grep -c "Subscription summary")
 	[[ "$n" -ge 2 ]]
 }
@@ -46,7 +46,7 @@ check_summary_interval() {
 check_teardown_bound() {
 	local start end ms
 	start=$(date +%s%3N)
-	"$WSSTAT" -close-timeout 1s -s -t sub -c 3 "$WS_URL/push?rate=20" >/dev/null 2>&1 || true
+	"$WSSTAT" stream --close-timeout 1s -t sub -c 3 "$WS_URL/push?rate=20" >/dev/null 2>&1 || true
 	end=$(date +%s%3N)
 	ms=$((end - start))
 	printf "    (teardown wall-clock: %dms)\n" "$ms" >&2
@@ -81,14 +81,18 @@ check "text echo"          "$WSSTAT" -t hello "$WS_URL/echo"
 check "burst count=5"      "$WSSTAT" -t hi -c 5 "$WS_URL/echo"
 check "rpc-method"         "$WSSTAT" -rpc-method eth_blockNumber "$WS_URL/jsonrpc"
 
-# --- Output formats ---------------------------------------------------------
-check "format raw"         "$WSSTAT" -f raw -t hi "$WS_URL/echo"
-check "format auto"        "$WSSTAT" -f auto -t hi "$WS_URL/echo"
+# --- Output axes ------------------------------------------------------------
+check "output raw"         "$WSSTAT" -o raw -t hi "$WS_URL/echo"
+check "body auto"          "$WSSTAT" --body auto -t hi "$WS_URL/echo"
+check "body compact"       "$WSSTAT" --body compact -t hi "$WS_URL/echo"
 if [[ $HAVE_JQ -eq 1 ]]; then
-	check "format json"    bash -c "$WSSTAT -f json -t hi $WS_URL/echo | jq -es 'any(.[]; .durations_ms.total != null)'"
+	check "output json"    bash -c "$WSSTAT -o json -t hi $WS_URL/echo | jq -es 'any(.[]; .durations_ms.total != null)'"
 else
-	skip "format json" "jq not installed"
+	skip "output json" "jq not installed"
 fi
+# Axis purity: text-only flags must be rejected under -o json|raw.
+check "json rejects -v"    bash -c "! $WSSTAT -o json -v -t hi $WS_URL/echo"
+check "raw measure needs msg" bash -c "! $WSSTAT -o raw $WS_URL/echo"
 
 # --- Verbosity --------------------------------------------------------------
 check "quiet"              "$WSSTAT" -q -t hi "$WS_URL/echo"
@@ -99,15 +103,15 @@ check "very verbose"      "$WSSTAT" -vv -t hi "$WS_URL/echo"
 check "custom header"      bash -c "$WSSTAT -t hi -H 'X-Smoke: 1' $WS_URL/headers | grep -q 1"
 check "resolve override"   "$WSSTAT" -t hi -resolve "mock:17080:127.0.0.1" "ws://mock:17080/echo"
 
-# --- Subscriptions (stream) -------------------------------------------------
-check "subscribe-once"     "$WSSTAT" -subscribe-once -t sub "$WS_URL/stream?rate=10"
-check "subscribe bounded"  "$WSSTAT" -s -t sub -c 3 "$WS_URL/stream?rate=10"
-check "buffer size"        "$WSSTAT" -b 8 -s -t sub -c 3 "$WS_URL/stream?rate=10"
+# --- Stream subcommand ------------------------------------------------------
+check "stream once"        "$WSSTAT" stream --once -t sub "$WS_URL/stream?rate=10"
+check "stream bounded"     "$WSSTAT" stream -t sub -c 3 "$WS_URL/stream?rate=10"
+check "buffer size"        "$WSSTAT" stream -b 8 -t sub -c 3 "$WS_URL/stream?rate=10"
 check "summary-interval"   check_summary_interval
 
 # --- Failure & edge paths ---------------------------------------------------
 check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"
-check "large frame"        bash -c "$WSSTAT -f raw -rpc-method ws_large $WS_URL/large | wc -c | awk '{exit (\$1 > 32768) ? 0 : 1}'"
+check "large frame"        bash -c "$WSSTAT -o raw --rpc-method ws_large $WS_URL/large | wc -c | awk '{exit (\$1 > 32768) ? 0 : 1}'"
 check "abrupt close"       bash -c "! $WSSTAT -t hi $WS_URL/close-abrupt"
 check "teardown bound"     check_teardown_bound
 
@@ -120,7 +124,12 @@ if [[ $HAVE_CURL -eq 1 ]]; then
 else
 	skip "wss verify trusts ca" "curl not installed"
 fi
-check "no-tls scheme"      "$WSSTAT" -no-tls -t hi "localhost:17080/echo"
+check "ws:// scheme"       "$WSSTAT" -t hi "ws://localhost:17080/echo"
+
+# --- v2 migration errors ----------------------------------------------------
+# wsstat exits non-zero; the pipeline status is grep's, so a found message passes.
+check "removed -subscribe" bash -c "$WSSTAT -subscribe -t hi $WS_URL/stream 2>&1 | grep -q 'removed in v3'"
+check "removed -format"    bash -c "$WSSTAT -format json -t hi $WS_URL/echo 2>&1 | grep -q 'removed in v3'"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
