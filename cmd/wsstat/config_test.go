@@ -98,6 +98,18 @@ func TestMeasureFlags(t *testing.T) {
 		require.Error(t, err)
 	})
 
+	t.Run("negative timeout rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--timeout", "-1s", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--timeout must be zero or greater")
+	})
+
+	t.Run("negative close-timeout rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--close-timeout", "-2s", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--close-timeout must be zero or greater")
+	})
+
 	t.Run("quiet and verbose conflict", func(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-q", "-v", "example.com"})
 		require.Error(t, err)

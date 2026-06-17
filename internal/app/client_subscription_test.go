@@ -201,6 +201,36 @@ func TestPrintSubscriptionMessageRawBinary(t *testing.T) {
 	assert.Equal(t, string(data), output)
 }
 
+func TestStreamSubscriptionRawIsByteClean(t *testing.T) {
+	// Raw stream output must be verbatim payload bytes only: no "Streaming
+	// subscription events" header, no summary block, no inter-frame newlines.
+	// Runs non-quiet so the human-chrome paths are exercised and proven inert.
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
+
+	c := &Client{
+		count:       2,
+		mode:        ModeStream,
+		output:      OutputRaw,
+		textMessage: "start",
+	}
+	require.NoError(t, c.Validate())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	output := captureStdoutFrom(t, func() error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- c.StreamSubscription(ctx, server.wsURL) }()
+		<-server.ready
+		server.events <- "event-1"
+		server.events <- "event-2"
+		return <-errCh
+	})
+
+	assert.Equal(t, "event-1event-2", output)
+}
+
 func TestPrintSubscriptionMessageCompact(t *testing.T) {
 	msg := wsstat.SubscriptionMessage{
 		Data:     []byte("{\n  \"foo\": \"bar\",\n  \"n\": 1\n}"),

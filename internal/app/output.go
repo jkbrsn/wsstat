@@ -215,6 +215,10 @@ func clipToWidth(s string, width int) string {
 
 // printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result) {
+	if c.output == OutputRaw {
+		// Raw emits payload bytes only; no summary chrome.
+		return
+	}
 	if c.output == OutputJSON {
 		_ = c.printJSONLine(c.subscriptionSummaryJSON(target, result))
 		if c.verbosityLevel >= 1 {
@@ -434,33 +438,34 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 	return nil
 }
 
-// PrintResponse prints the WebSocket server response to stdout.
+// PrintResponse prints the WebSocket server response to stdout, returning any
+// write error so a failed or closed stdout propagates as a non-zero exit.
 // Output depends on the configured output contract:
 //   - json: structured JSON envelope with schema_version
-//   - raw: payload bytes verbatim, no label/color/newline
+//   - raw: payload bytes verbatim, no label/color/newline (structured JSON-RPC
+//     responses are re-marshaled compactly, since the original frame bytes are
+//     decoded before reaching this layer)
 //   - text: "Response:" label; JSON-RPC bodies rendered per --body (auto pretty,
 //     compact one-line)
 //
 // Does nothing if result is nil or result.Response is nil.
-func (c *Client) PrintResponse(result *MeasurementResult) {
+func (c *Client) PrintResponse(result *MeasurementResult) error {
 	if result == nil || result.Response == nil {
-		return
+		return nil
 	}
 
 	response := result.Response
 
 	switch c.output {
 	case OutputJSON:
-		_ = c.printJSONLine(responseOutputJSON{
+		return c.printJSONLine(responseOutputJSON{
 			Schema:    JSONSchemaVersion,
 			Type:      "response",
 			RPCMethod: c.rpcMethod,
 			Payload:   normalizeResponseForJSON(response),
 		})
-		return
 	case OutputRaw:
-		_ = writeRaw(rawResponseBytes(response))
-		return
+		return writeRaw(rawResponseBytes(response))
 	}
 
 	label := c.colorizeOrange("Response")
@@ -471,28 +476,33 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 	}
 
 	compact := c.body == BodyCompact
-	if responseMap, ok := response.(map[string]any); ok {
-		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.rpcMethod != "" {
-			responseJSON, err := json.Marshal(responseMap)
-			if err != nil {
-				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
-				return
+	var err error
+	switch v := response.(type) {
+	case map[string]any:
+		if _, isJSON := v["jsonrpc"]; isJSON || c.rpcMethod != "" {
+			responseJSON, merr := json.Marshal(v)
+			if merr != nil {
+				return fmt.Errorf("failed to marshal response: %w", merr)
 			}
 			body := string(responseJSON)
 			if formatted, ferr := renderJSON(responseJSON, compact); ferr == nil {
 				body = formatted
 			}
-			fmt.Printf("%s%s\n", baseMessage, c.clipBody(body))
+			_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(body))
 		} else {
-			fmt.Printf("%s%v\n", baseMessage, responseMap)
+			_, err = fmt.Printf("%s%v\n", baseMessage, v)
 		}
-	} else if responseArray, ok := response.([]any); ok {
-		fmt.Printf("%s%v\n", baseMessage, responseArray)
-	} else if responseBytes, ok := response.([]byte); ok {
-		fmt.Printf("%s%s\n", baseMessage, c.clipBody(string(responseBytes)))
-	} else {
-		fmt.Printf("%s%v\n", baseMessage, c.clipBody(fmt.Sprintf("%v", response)))
+	case []any:
+		_, err = fmt.Printf("%s%v\n", baseMessage, v)
+	case []byte:
+		_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(string(v)))
+	default:
+		_, err = fmt.Printf("%s%v\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
 	}
+	if err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	}
+	return nil
 }
 
 // rawResponseBytes renders a measured response as verbatim bytes for the raw

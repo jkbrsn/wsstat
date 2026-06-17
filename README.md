@@ -145,6 +145,9 @@ For a full list of the available options, run `wsstat -h`, `wsstat measure -h`, 
 stream <url>` keeps the socket open for long-lived feeds. A host literally named
 `measure`/`stream` must be spelled with a scheme (`wsstat wss://stream`).
 
+In measure mode, `-c N` aggregates timing across all interactions; the response
+printed is the first one (measure does not concatenate responses).
+
 ### Stream Mode
 
 Long-lived streaming endpoints are exercised with the `stream` subcommand:
@@ -181,7 +184,9 @@ Output is split across three orthogonal axes:
 - `-o, --output text|json|raw` — the whole-stdout contract. `json` emits
   newline-delimited envelopes with a stable schema (`-v`/`-vv` never change which
   fields appear); `raw` writes payload bytes verbatim with nothing added (in
-  measure mode `raw` requires `--text` or `--rpc-method`).
+  measure mode `raw` requires `--text` or `--rpc-method`). With `--rpc-method` the
+  response frame is decoded before output, so `raw` emits compact JSON rather than
+  byte-for-byte wire content.
 - `--body auto|compact` — human body rendering (text output only). `auto`
   pretty-prints; `compact` puts each message on one line.
 - `--clip` — clips each rendered line to the terminal width with a trailing `...`

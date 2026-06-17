@@ -106,18 +106,16 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, errors.New("mutually exclusive messaging flags: use --text or --rpc-method")
 	}
 
+	if c.timeout < 0 {
+		return nil, nil, errors.New("--timeout must be zero or greater")
+	}
+	if c.closeTimeout < 0 {
+		return nil, nil, errors.New("--close-timeout must be zero or greater")
+	}
+
 	// Axis purity: --body/--clip/-q/-v/-vv are text-only; reject under json/raw.
-	if output != app.OutputText {
-		var bad []string
-		for _, f := range textOnlyFlags {
-			if set[f.name] {
-				bad = append(bad, f.display)
-			}
-		}
-		if len(bad) > 0 {
-			return nil, nil, fmt.Errorf("%s only applies to text output (use -o text)",
-				strings.Join(bad, ", "))
-		}
+	if err := validateTextOnlyFlags(output, set); err != nil {
+		return nil, nil, err
 	}
 
 	// Raw measure has no payload to emit without a message.
@@ -147,6 +145,23 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		app.WithMode(mode),
 	}
 	return opts, target, nil
+}
+
+// validateTextOnlyFlags rejects --body/--clip/-q/-v/-vv when output is not text.
+func validateTextOnlyFlags(output app.Output, set map[string]bool) error {
+	if output == app.OutputText {
+		return nil
+	}
+	var bad []string
+	for _, f := range textOnlyFlags {
+		if set[f.name] {
+			bad = append(bad, f.display)
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("%s only applies to text output (use -o text)", strings.Join(bad, ", "))
+	}
+	return nil
 }
 
 // setFlagNames returns the set of flag names explicitly provided on the command line.
