@@ -81,6 +81,18 @@ func TestMeasureFlags(t *testing.T) {
 		assert.Contains(t, err.Error(), "only applies to text output")
 	})
 
+	t.Run("quiet long form accepted and quiets", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"--quiet", "example.com"})
+		require.NoError(t, err)
+		assert.True(t, client.Quiet())
+	})
+
+	t.Run("quiet long form under json rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "json", "--quiet", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
+
 	t.Run("raw measure without message rejected", func(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-o", "raw", "example.com"})
 		require.Error(t, err)
