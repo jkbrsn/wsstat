@@ -53,6 +53,23 @@ check_teardown_bound() {
 	[[ "$ms" -lt 2500 ]]
 }
 
+# check_stream_raw_clean asserts `stream -o raw` emits only verbatim payload
+# bytes: the concatenated JSON frames, with no "Streaming subscription events"
+# header and no "Subscription summary" block. Frames are undelimited, so a clean
+# run is exactly N adjacent JSON objects.
+check_stream_raw_clean() {
+	local out
+	out=$("$WSSTAT" stream -o raw -t sub -c 3 "$WS_URL/stream?rate=10" 2>/dev/null)
+	if grep -q "Streaming subscription events\|Subscription summary" <<<"$out"; then
+		return 1
+	fi
+	if [[ $HAVE_JQ -eq 1 ]]; then
+		jq -es 'length == 3 and all(.[]; .method == "subscription")' <<<"$out" >/dev/null
+	else
+		[[ -n "$out" ]]
+	fi
+}
+
 # check_wss_verify_ca fetches the mock's self-signed cert over the plain port and
 # trusts it via SSL_CERT_FILE, then dials wss:// WITHOUT -insecure. This is the
 # only case that exercises a successful *verifying* TLS handshake end-to-end (the
@@ -107,6 +124,7 @@ check "resolve override"   "$WSSTAT" -t hi -resolve "mock:17080:127.0.0.1" "ws:/
 check "stream once"        "$WSSTAT" stream --once -t sub "$WS_URL/stream?rate=10"
 check "stream bounded"     "$WSSTAT" stream -t sub -c 3 "$WS_URL/stream?rate=10"
 check "buffer size"        "$WSSTAT" stream -b 8 -t sub -c 3 "$WS_URL/stream?rate=10"
+check "stream raw clean"   check_stream_raw_clean
 check "summary-interval"   check_summary_interval
 
 # --- Failure & edge paths ---------------------------------------------------
