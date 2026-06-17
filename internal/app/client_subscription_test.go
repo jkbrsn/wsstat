@@ -14,7 +14,7 @@ import (
 
 func TestSubscriptionJSONOutput(t *testing.T) {
 	t.Run("message metadata", func(t *testing.T) {
-		client := &Client{format: formatJSON}
+		client := &Client{output: OutputJSON}
 		msg := wsstat.SubscriptionMessage{
 			MessageType: wsstat.TextMessage,
 			Data:        []byte(`{"foo":"bar"}`),
@@ -35,7 +35,7 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 	})
 
 	t.Run("quiet omits metadata", func(t *testing.T) {
-		client := &Client{format: formatJSON, quiet: true}
+		client := &Client{output: OutputJSON, quiet: true}
 		msg := wsstat.SubscriptionMessage{Data: []byte("plain"), Received: time.Unix(0, 0).UTC()}
 		output := captureStdoutFrom(t, func() error {
 			return client.printSubscriptionMessage(1, msg)
@@ -60,7 +60,7 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 				MeanInterArrival: 20 * time.Millisecond,
 			},
 		}
-		client := &Client{format: formatJSON}
+		client := &Client{output: OutputJSON}
 		output := captureStdoutFrom(t, func() error {
 			client.printSubscriptionSummary(res.URL, res)
 			return nil
@@ -88,7 +88,7 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 
 	c := &Client{
 		count:       2,
-		subscribe:   true,
+		mode:        ModeStream,
 		textMessage: "start",
 		quiet:       true,
 	}
@@ -115,7 +115,7 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	defer server.cleanup()
 
 	c := &Client{
-		subscribe:   true,
+		mode:        ModeStream,
 		textMessage: "start",
 		quiet:       true,
 	}
@@ -175,13 +175,30 @@ func TestPrintSubscriptionMessageLevels(t *testing.T) {
 }
 
 func TestPrintSubscriptionMessageRaw(t *testing.T) {
+	// Raw writes payload bytes verbatim: no label, no added newline, undelimited.
 	msg := wsstat.SubscriptionMessage{Data: []byte("raw"), Received: time.Now()}
-	c := &Client{format: "raw"}
+	c := &Client{output: OutputRaw}
 
 	output := captureStdoutFrom(t, func() error {
 		return c.printSubscriptionMessage(1, msg)
 	})
-	assert.Equal(t, "raw\n", output)
+	assert.Equal(t, "raw", output)
+}
+
+func TestPrintSubscriptionMessageRawBinary(t *testing.T) {
+	// Binary payloads must pass through uncorrupted (no injected delimiter).
+	data := []byte{0x00, 0x01, 0xff, 0x0a, 0x42}
+	msg := wsstat.SubscriptionMessage{
+		MessageType: wsstat.BinaryMessage,
+		Data:        data,
+		Received:    time.Now(),
+	}
+	c := &Client{output: OutputRaw}
+
+	output := captureStdoutFrom(t, func() error {
+		return c.printSubscriptionMessage(1, msg)
+	})
+	assert.Equal(t, string(data), output)
 }
 
 func TestPrintSubscriptionMessageCompact(t *testing.T) {
@@ -192,7 +209,7 @@ func TestPrintSubscriptionMessageCompact(t *testing.T) {
 	}
 
 	t.Run("default level is one line", func(t *testing.T) {
-		c := &Client{format: formatCompact}
+		c := &Client{body: BodyCompact}
 		output := captureStdoutFrom(t, func() error {
 			return c.printSubscriptionMessage(3, msg)
 		})
@@ -203,7 +220,7 @@ func TestPrintSubscriptionMessageCompact(t *testing.T) {
 	})
 
 	t.Run("verbose level collapses to one line with byte count", func(t *testing.T) {
-		c := &Client{format: formatCompact, verbosityLevel: 1}
+		c := &Client{body: BodyCompact, verbosityLevel: 1}
 		output := captureStdoutFrom(t, func() error {
 			return c.printSubscriptionMessage(3, msg)
 		})
@@ -214,7 +231,7 @@ func TestPrintSubscriptionMessageCompact(t *testing.T) {
 	})
 
 	t.Run("non-JSON payload falls back to raw bytes", func(t *testing.T) {
-		c := &Client{format: formatCompact}
+		c := &Client{body: BodyCompact}
 		plain := wsstat.SubscriptionMessage{Data: []byte("hello"), Received: msg.Received}
 		output := captureStdoutFrom(t, func() error {
 			return c.printSubscriptionMessage(1, plain)

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestClientValidate exercises the validation logic for burst and mutually-exclusive flags.
+// TestClientValidate exercises the validation logic for counts and mutually-exclusive flags.
 func TestClientValidate(t *testing.T) {
 	t.Run("negative count", func(t *testing.T) {
 		c := &Client{count: -1}
@@ -30,38 +30,52 @@ func TestClientValidate(t *testing.T) {
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("subscribe unlimited allowed", func(t *testing.T) {
-		c := &Client{subscribe: true}
+	t.Run("stream unlimited allowed", func(t *testing.T) {
+		c := &Client{mode: ModeStream}
 		require.NoError(t, c.Validate())
 		assert.Equal(t, 0, c.Count())
 	})
 
-	t.Run("subscribe with explicit count ok", func(t *testing.T) {
-		c := &Client{count: 3, subscribe: true}
+	t.Run("stream with explicit count ok", func(t *testing.T) {
+		c := &Client{count: 3, mode: ModeStream}
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("subscribe once coerces to one", func(t *testing.T) {
-		c := &Client{subscribeOnce: true}
+	t.Run("stream once with count 0 ok", func(t *testing.T) {
+		c := &Client{mode: ModeStream, once: true}
 		require.NoError(t, c.Validate())
-		assert.True(t, c.subscribe)
-		assert.Equal(t, 1, c.Count())
 	})
 
-	t.Run("subscribe once forbids alternative counts", func(t *testing.T) {
-		c := &Client{count: 2, subscribeOnce: true}
+	t.Run("stream once with count 1 ok", func(t *testing.T) {
+		c := &Client{mode: ModeStream, once: true, count: 1}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("stream once forbids count > 1", func(t *testing.T) {
+		c := &Client{mode: ModeStream, once: true, count: 2}
 		assert.Error(t, c.Validate())
 	})
 
-	t.Run("invalid format", func(t *testing.T) {
-		c := &Client{format: "xml"}
+	t.Run("invalid output", func(t *testing.T) {
+		c := &Client{output: "xml"}
 		assert.Error(t, c.Validate())
 	})
 
-	t.Run("json format allowed", func(t *testing.T) {
-		c := &Client{format: "json"}
+	t.Run("json output allowed", func(t *testing.T) {
+		c := &Client{output: "json"}
 		require.NoError(t, c.Validate())
-		assert.Equal(t, formatJSON, c.Format())
+		assert.Equal(t, OutputJSON, c.Output())
+	})
+
+	t.Run("invalid body", func(t *testing.T) {
+		c := &Client{body: "truncate"}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("compact body allowed", func(t *testing.T) {
+		c := &Client{body: "compact"}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, BodyCompact, c.Body())
 	})
 
 	t.Run("negative buffer", func(t *testing.T) {
@@ -89,20 +103,14 @@ func TestValidateComplexCombinations(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name:    "subscribe once with explicit count 1",
-			client:  Client{subscribeOnce: true, count: 1},
-			wantErr: false,
+			name:   "stream once with count 1",
+			client: Client{mode: ModeStream, once: true, count: 1},
 		},
 		{
-			name:    "subscribe once with count 2 fails",
-			client:  Client{subscribeOnce: true, count: 2},
+			name:    "stream once with count 2 fails",
+			client:  Client{mode: ModeStream, once: true, count: 2},
 			wantErr: true,
-			errMsg:  "count must equal 1",
-		},
-		{
-			name:    "subscribe and subscribeOnce both set",
-			client:  Client{subscribe: true, subscribeOnce: true},
-			wantErr: false,
+			errMsg:  "--once",
 		},
 		{
 			name:    "text and rpc method both set",
@@ -111,74 +119,60 @@ func TestValidateComplexCombinations(t *testing.T) {
 			errMsg:  "mutually exclusive",
 		},
 		{
-			name:    "valid json format with quiet",
-			client:  Client{format: "json", quiet: true},
-			wantErr: false,
+			name:   "valid json output with quiet",
+			client: Client{output: "json", quiet: true},
 		},
 		{
-			name:    "auto format normalizes",
-			client:  Client{format: "AUTO"},
-			wantErr: false,
+			name:   "text output normalizes",
+			client: Client{output: "TEXT"},
 		},
 		{
-			name:    "raw format is valid",
-			client:  Client{format: "raw"},
-			wantErr: false,
+			name:   "raw output is valid",
+			client: Client{output: "raw"},
 		},
 		{
-			name:    "compact format is valid",
-			client:  Client{format: "compact"},
-			wantErr: false,
+			name:   "compact body is valid",
+			client: Client{body: "compact"},
 		},
 		{
-			name:    "truncate format is valid",
-			client:  Client{format: "truncate"},
-			wantErr: false,
+			name:   "color always is valid",
+			client: Client{colorMode: "always"},
 		},
 		{
-			name:    "color always is valid",
-			client:  Client{colorMode: "always"},
-			wantErr: false,
+			name:   "color never is valid",
+			client: Client{colorMode: "never"},
 		},
 		{
-			name:    "color never is valid",
-			client:  Client{colorMode: "never"},
-			wantErr: false,
+			name:   "empty output defaults to text",
+			client: Client{output: ""},
 		},
 		{
-			name:    "empty format defaults to auto",
-			client:  Client{format: ""},
-			wantErr: false,
+			name:   "empty body defaults to auto",
+			client: Client{body: ""},
 		},
 		{
-			name:    "empty color defaults to auto",
-			client:  Client{colorMode: ""},
-			wantErr: false,
+			name:   "empty color defaults to auto",
+			client: Client{colorMode: ""},
 		},
 		{
-			name:    "zero buffer is valid",
-			client:  Client{buffer: 0},
-			wantErr: false,
+			name:   "zero buffer is valid",
+			client: Client{buffer: 0},
 		},
 		{
-			name:    "positive buffer is valid",
-			client:  Client{buffer: 100},
-			wantErr: false,
+			name:   "positive buffer is valid",
+			client: Client{buffer: 100},
 		},
 		{
-			name:    "subscribe with count 0 is valid",
-			client:  Client{subscribe: true, count: 0},
-			wantErr: false,
+			name:   "stream with count 0 is valid",
+			client: Client{mode: ModeStream, count: 0},
 		},
 		{
-			name:    "non-subscribe with count 0 coerces to 1",
-			client:  Client{count: 0},
-			wantErr: false,
+			name:   "measure with count 0 coerces to 1",
+			client: Client{count: 0},
 		},
 		{
-			name:    "verbosity levels are unrestricted",
-			client:  Client{verbosityLevel: 10},
-			wantErr: false,
+			name:   "verbosity levels are unrestricted",
+			client: Client{verbosityLevel: 10},
 		},
 	}
 
@@ -200,39 +194,33 @@ func TestValidateComplexCombinations(t *testing.T) {
 //revive:enable:function-length
 
 func TestValidateDefaults(t *testing.T) {
-	t.Run("count defaults to 1 in non-subscribe mode", func(t *testing.T) {
+	t.Run("count defaults to 1 in measure mode", func(t *testing.T) {
 		c := &Client{count: 0}
 		require.NoError(t, c.Validate())
 		assert.Equal(t, 1, c.count)
 	})
 
-	t.Run("count stays 0 in subscribe mode", func(t *testing.T) {
-		c := &Client{count: 0, subscribe: true}
+	t.Run("count stays 0 in stream mode", func(t *testing.T) {
+		c := &Client{count: 0, mode: ModeStream}
 		require.NoError(t, c.Validate())
 		assert.Equal(t, 0, c.count)
 	})
 
-	t.Run("format defaults to auto", func(t *testing.T) {
-		c := &Client{format: ""}
+	t.Run("output defaults to text", func(t *testing.T) {
+		c := &Client{output: ""}
 		require.NoError(t, c.Validate())
-		assert.Equal(t, formatAuto, c.format)
+		assert.Equal(t, OutputText, c.output)
+	})
+
+	t.Run("body defaults to auto", func(t *testing.T) {
+		c := &Client{body: ""}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, BodyAuto, c.body)
 	})
 
 	t.Run("color mode defaults to auto", func(t *testing.T) {
 		c := &Client{colorMode: ""}
 		require.NoError(t, c.Validate())
 		assert.Equal(t, "auto", c.colorMode)
-	})
-
-	t.Run("subscribeOnce implies subscribe", func(t *testing.T) {
-		c := &Client{subscribeOnce: true}
-		require.NoError(t, c.Validate())
-		assert.True(t, c.subscribe)
-	})
-
-	t.Run("subscribeOnce sets count to 1 if zero", func(t *testing.T) {
-		c := &Client{subscribeOnce: true, count: 0}
-		require.NoError(t, c.Validate())
-		assert.Equal(t, 1, c.count)
 	})
 }

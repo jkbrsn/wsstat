@@ -25,7 +25,7 @@
 // Stream events from a WebSocket server:
 //
 //	client := app.NewClient(
-//	    app.WithSubscription(true),
+//	    app.WithMode(app.ModeStream),
 //	    app.WithCount(10),
 //	    app.WithTextMessage("subscribe"),
 //	)
@@ -50,7 +50,7 @@ import (
 // Client measures the latency of a WebSocket connection and manages subscription streams.
 // Use NewClient with functional options to create and configure a Client.
 //
-// Fields are private; use accessor methods (Count(), Format(), etc.) to read configuration,
+// Fields are private; use accessor methods (Count(), Output(), etc.) to read configuration,
 // or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
@@ -61,16 +61,18 @@ type Client struct {
 	textMessage string            // Text message
 
 	// Output
-	format    Format // Output formatting mode: auto, compact, json, or raw
+	output    Output // whole-stdout contract: text, json, or raw
+	body      Body   // body rendering (text output): auto or compact
+	clip      bool   // clip each rendered line to terminal width (text output)
 	colorMode string // Color behavior: "auto", "always", or "never"
 
 	// Verbosity
 	quiet          bool // suppress request/timing output
 	verbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
 
-	// Subscription mode
-	subscribe       bool
-	subscribeOnce   bool
+	// Mode
+	mode            Mode // measure or stream
+	once            bool // stream: exit after the first event
 	buffer          int
 	summaryInterval time.Duration
 
@@ -89,7 +91,9 @@ type Option func(*Client)
 func NewClient(opts ...Option) *Client {
 	c := &Client{
 		count:     1,
-		format:    formatAuto,
+		output:    OutputText,
+		body:      BodyAuto,
+		mode:      ModeMeasure,
 		colorMode: "auto",
 	}
 	for _, opt := range opts {
@@ -124,9 +128,19 @@ func WithTextMessage(msg string) Option {
 	return func(c *Client) { c.textMessage = msg }
 }
 
-// WithFormat sets the output format (auto, compact, json, or raw).
-func WithFormat(format Format) Option {
-	return func(c *Client) { c.format = format }
+// WithOutput sets the whole-stdout contract (text, json, or raw).
+func WithOutput(output Output) Option {
+	return func(c *Client) { c.output = output }
+}
+
+// WithBodyRender sets the body rendering for text output (auto or compact).
+func WithBodyRender(body Body) Option {
+	return func(c *Client) { c.body = body }
+}
+
+// WithClip enables clipping each rendered line to terminal width (text output).
+func WithClip(clip bool) Option {
+	return func(c *Client) { c.clip = clip }
 }
 
 // WithColorMode sets color output behavior (auto, always, or never).
@@ -144,14 +158,14 @@ func WithVerbosity(level int) Option {
 	return func(c *Client) { c.verbosityLevel = level }
 }
 
-// WithSubscription enables subscription mode.
-func WithSubscription(subscribe bool) Option {
-	return func(c *Client) { c.subscribe = subscribe }
+// WithMode sets the operation mode (measure or stream).
+func WithMode(mode Mode) Option {
+	return func(c *Client) { c.mode = mode }
 }
 
-// WithSubscriptionOnce enables one-shot subscription mode.
-func WithSubscriptionOnce(once bool) Option {
-	return func(c *Client) { c.subscribeOnce = once }
+// WithStreamOnce makes stream mode exit after the first event.
+func WithStreamOnce(once bool) Option {
+	return func(c *Client) { c.once = once }
 }
 
 // WithBuffer sets the subscription delivery buffer size.
@@ -183,8 +197,14 @@ func WithCloseGrace(d time.Duration) Option {
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
-// Format returns the configured output format.
-func (c *Client) Format() Format { return c.format }
+// Output returns the configured output contract.
+func (c *Client) Output() Output { return c.output }
+
+// Body returns the configured body rendering.
+func (c *Client) Body() Body { return c.body }
+
+// Once reports whether stream mode exits after the first event.
+func (c *Client) Once() bool { return c.once }
 
 // ColorMode returns the configured color mode.
 func (c *Client) ColorMode() string { return c.colorMode }
@@ -264,12 +284,12 @@ func (c *Client) MeasureLatency(
 // Validation includes:
 //   - Ensures count is non-negative
 //   - Verifies text and rpc-method are not both set (mutually exclusive)
-//   - Validates format is "auto", "compact", "truncate", "json", or "raw"
+//   - Normalizes the output ("text"/"json"/"raw") and body ("auto"/"compact") enums
 //   - Validates colorMode is "auto", "always", or "never"
 //   - Ensures buffer and summaryInterval are non-negative
-//   - Enforces subscribe-once requires count == 1
 //
-// This method also normalizes configuration (e.g., sets count=1 default in non-subscribe mode).
+// Mode-specific count bounds are validated by the caller (cmd) before construction;
+// this method only applies the measure-mode default (count=1 when unset).
 func (c *Client) Validate() error {
 	if c.count < 0 {
 		return errors.New("count must be zero or greater")
@@ -279,11 +299,17 @@ func (c *Client) Validate() error {
 		return errors.New("mutually exclusive messaging flags")
 	}
 
-	format, err := ParseFormat(string(c.format))
+	output, err := ParseOutput(string(c.output))
 	if err != nil {
 		return err
 	}
-	c.format = format
+	c.output = output
+
+	body, err := ParseBody(string(c.body))
+	if err != nil {
+		return err
+	}
+	c.body = body
 
 	c.colorMode = strings.TrimSpace(strings.ToLower(c.colorMode))
 	if c.colorMode == "" {
@@ -301,17 +327,10 @@ func (c *Client) Validate() error {
 		return errors.New("summary-interval must be zero or greater")
 	}
 
-	if c.subscribeOnce {
-		c.subscribe = true
-		if c.count == 0 {
-			c.count = 1
+	if c.mode == ModeStream {
+		if c.once && c.count > 1 {
+			return errors.New("count must be 0 or 1 when --once is set")
 		}
-		if c.count != 1 {
-			return errors.New("count must equal 1 when subscribe-once is enabled")
-		}
-	}
-
-	if c.subscribe {
 		return nil
 	}
 

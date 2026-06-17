@@ -98,17 +98,20 @@ func (*Client) printJSONLine(payload any) error {
 
 // printSubscriptionMessage prints a subscription message.
 func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMessage) error {
-	if c.format == formatJSON {
+	switch c.output {
+	case OutputJSON:
 		return c.printJSONLine(c.subscriptionMessageJSON(index, msg))
+	case OutputRaw:
+		return writeRaw(msg.Data)
 	}
 
 	payload := string(msg.Data)
-	if c.quiet || c.format == formatRaw {
+	if c.quiet {
 		fmt.Println(payload)
 		return nil
 	}
 
-	singleLine := c.format == formatCompact || c.format == formatTruncate
+	singleLine := c.body == BodyCompact
 	timestamp := msg.Received.Format(time.RFC3339Nano)
 	if c.verbosityLevel >= 1 {
 		if singleLine {
@@ -117,14 +120,14 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 				body = formatted
 			}
 			line := fmt.Sprintf("[%04d @ %s] %d bytes %s", index, timestamp, msg.Size, body)
-			fmt.Println(c.clipLine(line))
+			fmt.Println(c.clipBody(line))
 			return nil
 		}
 		fmt.Printf("[%04d @ %s] %d bytes\n", index, timestamp, msg.Size)
 		if formatted, err := renderJSON(msg.Data, false); err == nil {
-			fmt.Println(formatted)
+			fmt.Println(c.clipBody(formatted))
 		} else {
-			fmt.Println(payload)
+			fmt.Println(c.clipBody(payload))
 		}
 		fmt.Println()
 		return nil
@@ -135,26 +138,44 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 		body = formatted
 	}
 	line := fmt.Sprintf("[%04d @ %s] %s", index, timestamp, body)
-	fmt.Println(c.clipLine(line))
+	fmt.Println(c.clipBody(line))
 	return nil
 }
 
-// truncMarker is appended to lines clipped by the truncate format.
+// truncMarker is appended to lines clipped to terminal width.
 const truncMarker = "..."
 
-// clipLine clips s to the terminal width with a trailing marker when the
-// truncate format is active and stdout is a terminal. For any other format, or
-// when the width cannot be determined (e.g. piped/redirected output), s is
-// returned unchanged so truncate degrades to the same output as compact.
-func (c *Client) clipLine(s string) string {
-	if c.format != formatTruncate {
+// writeRaw writes payload bytes to stdout verbatim: no label, color, or trailing
+// newline. Used by the raw output contract in both measure and stream modes.
+func writeRaw(b []byte) error {
+	if _, err := os.Stdout.Write(b); err != nil {
+		return fmt.Errorf("failed to write raw output: %w", err)
+	}
+	return nil
+}
+
+// clipBody clips each line of a (possibly multi-line) rendered body to the
+// terminal width when --clip is set and stdout is a terminal. When clipping is
+// disabled or the width cannot be determined (e.g. piped/redirected output), s
+// is returned unchanged.
+func (c *Client) clipBody(s string) string {
+	if !c.clip {
 		return s
 	}
 	width := terminalWidth()
 	if width <= 0 {
 		return s
 	}
-	return clipToWidth(s, width)
+	return clipLines(s, width)
+}
+
+// clipLines clips each line of a (possibly multi-line) string to width columns.
+func clipLines(s string, width int) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = clipToWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // terminalWidth returns the column count of stdout, or 0 when stdout is not a
@@ -194,7 +215,7 @@ func clipToWidth(s string, width int) string {
 
 // printSubscriptionSummary prints a subscription summary.
 func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result) {
-	if c.format == formatJSON {
+	if c.output == OutputJSON {
 		_ = c.printJSONLine(c.subscriptionSummaryJSON(target, result))
 		if c.verbosityLevel >= 1 {
 			_ = c.PrintTimingResults(target, &MeasurementResult{Result: result})
@@ -389,7 +410,9 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 	if c.quiet {
 		return nil
 	}
-	if c.format == formatJSON {
+	// JSON puts request details in the timing envelope; raw emits payload bytes
+	// only. Both suppress the human request-detail block.
+	if c.output == OutputJSON || c.output == OutputRaw {
 		return nil
 	}
 
@@ -412,10 +435,11 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 }
 
 // PrintResponse prints the WebSocket server response to stdout.
-// Output format depends on client configuration:
-//   - JSON mode: outputs structured JSON with schema_version
-//   - raw mode: outputs response as-is without labels
-//   - auto mode: outputs with "Response:" label, formats JSON-RPC prettily
+// Output depends on the configured output contract:
+//   - json: structured JSON envelope with schema_version
+//   - raw: payload bytes verbatim, no label/color/newline
+//   - text: "Response:" label; JSON-RPC bodies rendered per --body (auto pretty,
+//     compact one-line)
 //
 // Does nothing if result is nil or result.Response is nil.
 func (c *Client) PrintResponse(result *MeasurementResult) {
@@ -425,13 +449,17 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 
 	response := result.Response
 
-	if c.format == formatJSON {
+	switch c.output {
+	case OutputJSON:
 		_ = c.printJSONLine(responseOutputJSON{
 			Schema:    JSONSchemaVersion,
 			Type:      "response",
 			RPCMethod: c.rpcMethod,
 			Payload:   normalizeResponseForJSON(response),
 		})
+		return
+	case OutputRaw:
+		_ = writeRaw(rawResponseBytes(response))
 		return
 	}
 
@@ -442,22 +470,46 @@ func (c *Client) PrintResponse(result *MeasurementResult) {
 		baseMessage = ""
 	}
 
-	if c.format == formatRaw {
-		fmt.Printf("%s%v\n", baseMessage, response)
-	} else if responseMap, ok := response.(map[string]any); ok {
+	compact := c.body == BodyCompact
+	if responseMap, ok := response.(map[string]any); ok {
 		if _, isJSON := responseMap["jsonrpc"]; isJSON || c.rpcMethod != "" {
 			responseJSON, err := json.Marshal(responseMap)
 			if err != nil {
 				fmt.Printf("could not marshal response '%v' to JSON: %v", responseMap, err)
+				return
 			}
-			fmt.Printf("%s%s\n", baseMessage, responseJSON)
+			body := string(responseJSON)
+			if formatted, ferr := renderJSON(responseJSON, compact); ferr == nil {
+				body = formatted
+			}
+			fmt.Printf("%s%s\n", baseMessage, c.clipBody(body))
 		} else {
 			fmt.Printf("%s%v\n", baseMessage, responseMap)
 		}
 	} else if responseArray, ok := response.([]any); ok {
 		fmt.Printf("%s%v\n", baseMessage, responseArray)
 	} else if responseBytes, ok := response.([]byte); ok {
-		fmt.Printf("%s%s\n", baseMessage, string(responseBytes))
+		fmt.Printf("%s%s\n", baseMessage, c.clipBody(string(responseBytes)))
+	} else {
+		fmt.Printf("%s%v\n", baseMessage, c.clipBody(fmt.Sprintf("%v", response)))
+	}
+}
+
+// rawResponseBytes renders a measured response as verbatim bytes for the raw
+// output contract. Structured (JSON-RPC) responses are marshaled compactly.
+func rawResponseBytes(v any) []byte {
+	switch r := v.(type) {
+	case []byte:
+		return r
+	case string:
+		return []byte(r)
+	case json.RawMessage:
+		return []byte(r)
+	default:
+		if b, err := json.Marshal(r); err == nil {
+			return b
+		}
+		return []byte(fmt.Sprintf("%v", r))
 	}
 }
 
@@ -477,8 +529,12 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 		return nil
 	}
 
-	if c.format == formatJSON {
+	if c.output == OutputJSON {
 		return c.printJSONLine(c.buildTimingSummaryFromResult(u, result.Result))
+	}
+	// Raw emits payload bytes only; no timing report.
+	if c.output == OutputRaw {
+		return nil
 	}
 
 	switch {
