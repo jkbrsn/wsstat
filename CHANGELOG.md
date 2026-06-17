@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING (CLI):** `-subscribe`, `-subscribe-once` (and `-s`), `-format`/`-f`, and `-no-tls`. See the migration table above.
 - **BREAKING:** `ReadPong()`. coder's `Ping` is a synchronous round-trip, so `PingPong()` now records the ping/pong timings directly and the separate `ReadPong` step no longer exists.
 
+### Fixed
+
+- `stream -o raw` now emits payload bytes only. The `Streaming subscription events` header, per-tick blank lines, and `Subscription summary` blocks no longer leak into raw stream output (only `-o json` had been special-cased, so raw fell through to the human text path). Raw is now verbatim in both measure and stream modes, matching the documented contract.
+- `stream --once` now rejects an explicitly-set `-c`/`--count` instead of silently overriding it. `--once` always yields exactly one event, so combining it with a count is a configuration error rather than a no-op.
+- `--quiet` is now accepted as the long form of `-q`. Previously only `-q` parsed even though the help text advertised `--quiet`; `--quiet` is also rejected under `-o json|raw`, the same as `-q`.
+- `--clip` now applies to every text response body shape. Non-JSON-RPC map and array responses were printed unclipped; clipping now composes uniformly across all rendered bodies.
+
 ## [2.2.2] - 2026-06-16
 
 ### Fixed
