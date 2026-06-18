@@ -280,4 +280,35 @@ func TestPrintResponseBodyRendering(t *testing.T) {
 		assert.Contains(t, output, "\"result\":\"0x1\"", "compact has no spaces")
 		assert.Equal(t, 1, strings.Count(output, "\n"), "compact is one line")
 	})
+
+	// A text echo of JSON (not JSON-RPC) reaches PrintResponse as a plain string;
+	// --body must still shape it, matching how stream messages are rendered.
+	t.Run("auto pretty-prints a plain-JSON text response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
+		result := &MeasurementResult{Response: `{"foo":"bar"}`}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "\"foo\": \"bar\"", "auto indents the body")
+		assert.Greater(t, strings.Count(output, "\n"), 1, "auto is multi-line")
+	})
+
+	t.Run("compact one-lines a multi-line-JSON text response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyCompact, colorMode: "never"}
+		result := &MeasurementResult{Response: "{\n  \"foo\": \"bar\"\n}"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "\"foo\":\"bar\"", "compact has no spaces")
+		assert.Equal(t, 1, strings.Count(output, "\n"), "compact is one line")
+	})
+
+	t.Run("non-JSON text response printed as-is", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
+		result := &MeasurementResult{Response: "pong"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "Response: pong")
+	})
 }
