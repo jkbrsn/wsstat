@@ -5,7 +5,7 @@ VERSION := $(shell cat VERSION)
 VERSION_LABEL ?= $(VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION_LABEL}"
 
-.PHONY: build build-all build-multi build-os-arch fmt lint test smoke explain
+.PHONY: build build-all build-multi build-os-arch fmt lint test smoke soak explain
 
 .DEFAULT_GOAL := explain
 
@@ -25,6 +25,7 @@ explain:
 	@echo "  lint            - Run linter (golangci-lint)."
 	@echo "  test            - Run tests."
 	@echo "  smoke           - Run the dev-stack smoke test (Docker mock + host binary)."
+	@echo "  soak            - Run the dev-stack soak test: full CLI flag-combination matrix."
 	@echo "  explain         - Display this help message."
 
 # Number of times to run burst tests, default 1
@@ -68,3 +69,6 @@ test:
 
 smoke:
 	@./dev/run.sh
+
+soak:
+	@./dev/run.sh soak
