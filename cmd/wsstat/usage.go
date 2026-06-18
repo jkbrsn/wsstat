@@ -45,7 +45,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "      --body <string>            text body rendering: auto, compact [default: auto]")
 	fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
 	fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
-	fmt.Fprintln(w, "  -v                             increase verbosity (level 1)")
+	fmt.Fprintln(w, "  -v, --verbose                  increase verbosity (level 1)")
 	fmt.Fprintln(w, "  -vv                            increase verbosity (level 2)")
 	fmt.Fprintln(w, "      --color <string>           color output: auto, always, never [default: auto]")
 	fmt.Fprintln(w)
