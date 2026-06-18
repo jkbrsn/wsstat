@@ -9,7 +9,19 @@ import (
 
 // revive:disable:line-length-limit table-driven test rows
 
-func TestCheckRemovedFlags(t *testing.T) {
+// buildDispatch mirrors main's args[0] dispatch so removed-flag detection is
+// exercised on the same FlagSet the real run path uses.
+func buildDispatch(args []string) error {
+	var err error
+	if len(args) > 0 && args[0] == "stream" {
+		_, _, err = buildStream(args[1:])
+	} else {
+		_, _, err = buildMeasure(args)
+	}
+	return err
+}
+
+func TestRemovedFlagsRejected(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -26,14 +38,17 @@ func TestCheckRemovedFlags(t *testing.T) {
 		{name: "format with equals", args: []string{"--format=json", "example.com"}, wantErr: true, hint: "-o"},
 		{name: "format short", args: []string{"-f", "raw", "example.com"}, wantErr: true, hint: "-o"},
 		{name: "no-tls", args: []string{"-no-tls", "example.com"}, wantErr: true, hint: "ws://"},
-		{name: "current flags ok", args: []string{"-o", "json", "-v", "example.com"}, wantErr: false},
+		// A removed-flag name passed as a flag *value* must not be misread as the flag.
+		{name: "removed name as text value ok", args: []string{"-t", "-s", "example.com"}, wantErr: false},
+		{name: "format name as text value ok", args: []string{"--text", "-format", "example.com"}, wantErr: false},
+		{name: "current flags ok", args: []string{"-o", "json", "example.com"}, wantErr: false},
 		{name: "stream subcommand ok", args: []string{"stream", "--once", "example.com"}, wantErr: false},
 		{name: "bare url ok", args: []string{"example.com"}, wantErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkRemovedFlags(tt.args)
+			err := buildDispatch(tt.args)
 			if !tt.wantErr {
 				assert.NoError(t, err)
 				return

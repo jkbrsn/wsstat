@@ -469,8 +469,8 @@ func (c *Client) PrintRequestDetails(result *MeasurementResult) error {
 //   - raw: payload bytes verbatim, no label/color/newline (structured JSON-RPC
 //     responses are re-marshaled compactly, since the original frame bytes are
 //     decoded before reaching this layer)
-//   - text: "Response:" label; JSON-RPC bodies rendered per --body (auto pretty,
-//     compact one-line)
+//   - text: "Response:" label; any JSON body (JSON-RPC or plain) rendered per
+//     --body (auto pretty, compact one-line), non-JSON printed as-is
 //
 // Does nothing if result is nil or result.Response is nil.
 func (c *Client) PrintResponse(result *MeasurementResult) error {
@@ -502,7 +502,18 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 	clip := func(s string) string { return c.clipBodyWithPrefix(s, prefixWidth) }
 
 	compact := c.body == BodyCompact
+	// renderBody applies --body (auto pretty / compact one-line) to any JSON
+	// payload, falling back to the plain text when it is not JSON. This matches
+	// how stream messages are rendered, so a measured response that happens to be
+	// JSON (not only JSON-RPC) is shaped by --body too.
+	renderBody := func(data []byte, fallback string) string {
+		if formatted, ferr := renderJSON(data, compact); ferr == nil {
+			return formatted
+		}
+		return fallback
+	}
 	var err error
+	emit := func(body string) { _, err = fmt.Printf("%s%s\n", baseMessage, clip(body)) }
 	switch v := response.(type) {
 	case map[string]any:
 		if _, isJSON := v["jsonrpc"]; isJSON || c.rpcMethod != "" {
@@ -510,20 +521,18 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 			if merr != nil {
 				return fmt.Errorf("failed to marshal response: %w", merr)
 			}
-			body := string(responseJSON)
-			if formatted, ferr := renderJSON(responseJSON, compact); ferr == nil {
-				body = formatted
-			}
-			_, err = fmt.Printf("%s%s\n", baseMessage, clip(body))
+			emit(renderBody(responseJSON, string(responseJSON)))
 		} else {
-			_, err = fmt.Printf("%s%s\n", baseMessage, clip(fmt.Sprintf("%v", v)))
+			emit(fmt.Sprintf("%v", v))
 		}
 	case []any:
-		_, err = fmt.Printf("%s%s\n", baseMessage, clip(fmt.Sprintf("%v", v)))
+		emit(fmt.Sprintf("%v", v))
 	case []byte:
-		_, err = fmt.Printf("%s%s\n", baseMessage, clip(string(v)))
+		emit(renderBody(v, string(v)))
+	case string:
+		emit(renderBody([]byte(v), v))
 	default:
-		_, err = fmt.Printf("%s%v\n", baseMessage, clip(fmt.Sprintf("%v", v)))
+		emit(fmt.Sprintf("%v", v))
 	}
 	if err != nil {
 		return fmt.Errorf("failed to write response: %w", err)

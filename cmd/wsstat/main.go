@@ -38,7 +38,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app"
@@ -62,10 +61,6 @@ var removedFlags = map[string]string{
 
 func main() {
 	args := os.Args[1:]
-
-	if err := checkRemovedFlags(args); err != nil {
-		fail(err)
-	}
 
 	var err error
 	switch {
@@ -103,25 +98,33 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// checkRemovedFlags scans args for flags removed in v3 and returns a targeted
-// migration error. It is a best-effort pre-scan: a removed flag name passed as a
-// value (e.g. --text -format) may produce a false positive, which is acceptable
-// for a breaking release.
-func checkRemovedFlags(args []string) error {
-	for _, a := range args {
-		if a == "--" {
-			break
-		}
-		if len(a) < 2 || a[0] != '-' {
-			continue
-		}
-		name := strings.TrimLeft(a, "-")
-		name, _, _ = strings.Cut(name, "=")
-		if hint, ok := removedFlags[name]; ok {
-			return fmt.Errorf("-%s was removed in v3; %s", name, hint)
-		}
+// registerRemoved registers v2 flags dropped in v3 as inert vars on fs, matching
+// their v2 arity (bool vs value-taking) so the parser consumes any value and never
+// misreads a following argument (e.g. the "-s" in `-t -s` stays the text payload).
+// Whether one was actually used is reported by removedFlagError after Parse.
+func registerRemoved(fs *flag.FlagSet) {
+	for _, name := range []string{"subscribe", "s", "subscribe-once", "no-tls"} {
+		fs.Bool(name, false, "removed in v3")
 	}
-	return nil
+	for _, name := range []string{"format", "f"} {
+		fs.String(name, "", "removed in v3")
+	}
+}
+
+// removedFlagError returns a targeted migration error if any flag removed in v3
+// was explicitly set on fs. Detection runs after Parse, so it sees only genuine
+// flag tokens, never values that merely look like a removed flag.
+func removedFlagError(fs *flag.FlagSet) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if err != nil {
+			return
+		}
+		if hint, ok := removedFlags[f.Name]; ok {
+			err = fmt.Errorf("-%s was removed in v3; %s", f.Name, hint)
+		}
+	})
+	return err
 }
 
 // interruptContext returns a context canceled on the first SIGINT/SIGTERM, beginning a
@@ -151,12 +154,16 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("measure", flag.ContinueOnError)
 	var cf commonFlags
 	registerCommon(fs, &cf)
+	registerRemoved(fs)
 	count := fs.Int("c", 1, "number of interactions to perform (>= 1)")
 	fs.IntVar(count, "count", 1, "number of interactions to perform (>= 1)")
 	fs.Usage = func() { printMeasureUsage(fs.Output()) }
 
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, parseErr(err)
+	}
+	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
 	}
 
 	opts, target, err := resolveCommon(fs, &cf, app.ModeMeasure)
@@ -181,6 +188,7 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("stream", flag.ContinueOnError)
 	var cf commonFlags
 	registerCommon(fs, &cf)
+	registerRemoved(fs)
 	count := fs.Int("c", 0, "number of events to receive; 0 = unlimited")
 	fs.IntVar(count, "count", 0, "number of events to receive; 0 = unlimited")
 	once := fs.Bool("once", false, "exit after the first event")
@@ -192,6 +200,9 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, parseErr(err)
+	}
+	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
 	}
 
 	opts, target, err := resolveCommon(fs, &cf, app.ModeStream)

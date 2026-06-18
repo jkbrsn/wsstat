@@ -51,6 +51,7 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.BoolVar(&c.quiet, "q", false, "suppress all output except the response")
 	fs.BoolVar(&c.quiet, "quiet", false, "suppress all output except the response")
 	fs.BoolVar(&c.v1, "v", false, "increase verbosity (level 1)")
+	fs.BoolVar(&c.v1, "verbose", false, "increase verbosity (level 1)")
 	fs.BoolVar(&c.v2, "vv", false, "increase verbosity (level 2)")
 
 	fs.BoolVar(&c.insecure, "k", false, "skip TLS certificate verification")
@@ -69,6 +70,7 @@ var textOnlyFlags = []struct{ name, display string }{
 	{"q", "-q"},
 	{"quiet", "--quiet"},
 	{"v", "-v"},
+	{"verbose", "--verbose"},
 	{"vv", "-vv"},
 }
 
