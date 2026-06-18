@@ -107,8 +107,13 @@ func (c *Client) printSubscriptionMessage(index int, msg wsstat.SubscriptionMess
 
 	payload := string(msg.Data)
 	if c.quiet {
-		// Quiet prints the payload only; --body/--clip rendering does not apply.
-		fmt.Println(payload)
+		// Quiet prints the payload only (no index/timestamp/size chrome), but still
+		// honors --body and --clip so rendering matches measure mode's PrintResponse.
+		body := payload
+		if formatted, err := renderJSON(msg.Data, c.body == BodyCompact); err == nil {
+			body = formatted
+		}
+		fmt.Println(c.clipBody(body))
 		return nil
 	}
 
