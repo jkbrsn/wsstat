@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithCloseGrace(d)` library option (and the `--close-timeout` CLI flag) bounding how long `Close()` waits for the peer's closing-handshake echo before forcing teardown. The library option defaults to 3s and treats `0` as immediate teardown; the CLI flag forwards only positive values, so `--close-timeout 0` keeps the 3s default (the handshake is capped at 5s either way).
 - The CLI now force-quits on a second interrupt: the first `Ctrl-C` (SIGINT/SIGTERM) begins a graceful shutdown bounded by close-grace, and a second immediately exits with code 130. Lets a teardown stuck on a non-echoing peer always be escaped.
 - (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, and a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`.
+- (dev) `dev/soak-test.sh` (and `make soak`): a structured flag-combination soak complementing the per-feature `smoke-test.sh`. Drives every flag in each mode (both aliases), asserts every validation rule actually rejects (a combination that should error but exits 0 is flagged as a silent accept), and checks the observable effect of flags that could be silently ignored, including `--clip`/`--color auto` under a real PTY via `dev/pty-run.py`.
 
 ### Changed
 

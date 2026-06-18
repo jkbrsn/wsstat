@@ -62,6 +62,11 @@ var removedFlags = map[string]string{
 func main() {
 	args := os.Args[1:]
 
+	// Dispatch keys on args[0] only. Scanning past leading flags for a subcommand
+	// is unsafe with stdlib flag: it can't know which -x tokens consume a following
+	// value, so a flag value could be mistaken for a command (e.g. `wsstat -t stream
+	// <url>` would misread the text message "stream" as the stream subcommand).
+	// Consequence: global flags cannot precede the subcommand (the go test rule).
 	var err error
 	switch {
 	case len(args) == 0:

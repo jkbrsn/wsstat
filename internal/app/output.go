@@ -153,6 +153,11 @@ const truncMarker = "..."
 
 // writeRaw writes payload bytes to stdout verbatim: no label, color, or trailing
 // newline. Used by the raw output contract in both measure and stream modes.
+//
+// Raw adds nothing, ever. Payloads may be binary frames, so any injected delimiter
+// (e.g. a per-frame newline) would corrupt them and is ambiguous for text payloads
+// that contain newlines. Stream frames are therefore concatenated undelimited; the
+// JSON output contract (one NDJSON envelope per frame) is the parseable path.
 func writeRaw(b []byte) error {
 	if _, err := os.Stdout.Write(b); err != nil {
 		return fmt.Errorf("failed to write raw output: %w", err)
