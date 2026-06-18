@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 
 func TestSubscriptionJSONOutput(t *testing.T) {
 	t.Run("message metadata", func(t *testing.T) {
-		client := &Client{format: formatJSON}
+		client := &Client{output: OutputJSON}
 		msg := wsstat.SubscriptionMessage{
 			MessageType: wsstat.TextMessage,
 			Data:        []byte(`{"foo":"bar"}`),
@@ -33,15 +34,25 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 		assert.Equal(t, "bar", inner["foo"])
 	})
 
-	t.Run("quiet omits metadata", func(t *testing.T) {
-		client := &Client{format: formatJSON, quiet: true}
-		msg := wsstat.SubscriptionMessage{Data: []byte("plain"), Received: time.Unix(0, 0).UTC()}
+	t.Run("schema stable under quiet", func(t *testing.T) {
+		// JSON envelopes carry the same fields regardless of verbosity: quiet must
+		// not drop metadata, so downstream parsers see a stable schema.
+		client := &Client{output: OutputJSON, quiet: true}
+		msg := wsstat.SubscriptionMessage{
+			MessageType: wsstat.TextMessage,
+			Data:        []byte("plain"),
+			Received:    time.Unix(0, 0).UTC(),
+			Size:        len("plain"),
+		}
 		output := captureStdoutFrom(t, func() error {
 			return client.printSubscriptionMessage(1, msg)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "subscription_message", payload["type"])
-		assert.NotContains(t, payload, "index")
+		assert.EqualValues(t, 1, payload["index"])
+		assert.Equal(t, msg.Received.Format(time.RFC3339Nano), payload["timestamp"])
+		assert.EqualValues(t, msg.Size, payload["size"])
+		assert.Equal(t, "text", payload["message_type"])
 		assert.Equal(t, "plain", payload["payload"])
 	})
 
@@ -59,7 +70,7 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 				MeanInterArrival: 20 * time.Millisecond,
 			},
 		}
-		client := &Client{format: formatJSON}
+		client := &Client{output: OutputJSON}
 		output := captureStdoutFrom(t, func() error {
 			client.printSubscriptionSummary(res.URL, res)
 			return nil
@@ -87,7 +98,7 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 
 	c := &Client{
 		count:       2,
-		subscribe:   true,
+		mode:        ModeStream,
 		textMessage: "start",
 		quiet:       true,
 	}
@@ -114,7 +125,7 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	defer server.cleanup()
 
 	c := &Client{
-		subscribe:   true,
+		mode:        ModeStream,
 		textMessage: "start",
 		quiet:       true,
 	}
@@ -174,13 +185,99 @@ func TestPrintSubscriptionMessageLevels(t *testing.T) {
 }
 
 func TestPrintSubscriptionMessageRaw(t *testing.T) {
+	// Raw writes payload bytes verbatim: no label, no added newline, undelimited.
 	msg := wsstat.SubscriptionMessage{Data: []byte("raw"), Received: time.Now()}
-	c := &Client{format: "raw"}
+	c := &Client{output: OutputRaw}
 
 	output := captureStdoutFrom(t, func() error {
 		return c.printSubscriptionMessage(1, msg)
 	})
-	assert.Equal(t, "raw\n", output)
+	assert.Equal(t, "raw", output)
+}
+
+func TestPrintSubscriptionMessageRawBinary(t *testing.T) {
+	// Binary payloads must pass through uncorrupted (no injected delimiter).
+	data := []byte{0x00, 0x01, 0xff, 0x0a, 0x42}
+	msg := wsstat.SubscriptionMessage{
+		MessageType: wsstat.BinaryMessage,
+		Data:        data,
+		Received:    time.Now(),
+	}
+	c := &Client{output: OutputRaw}
+
+	output := captureStdoutFrom(t, func() error {
+		return c.printSubscriptionMessage(1, msg)
+	})
+	assert.Equal(t, string(data), output)
+}
+
+func TestStreamSubscriptionRawIsByteClean(t *testing.T) {
+	// Raw stream output must be verbatim payload bytes only: no "Streaming
+	// subscription events" header, no summary block, no inter-frame newlines.
+	// Runs non-quiet so the human-chrome paths are exercised and proven inert.
+	server := newSubscriptionTestServer(t)
+	defer server.cleanup()
+
+	c := &Client{
+		count:       2,
+		mode:        ModeStream,
+		output:      OutputRaw,
+		textMessage: "start",
+	}
+	require.NoError(t, c.Validate())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	output := captureStdoutFrom(t, func() error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- c.StreamSubscription(ctx, server.wsURL) }()
+		<-server.ready
+		server.events <- "event-1"
+		server.events <- "event-2"
+		return <-errCh
+	})
+
+	assert.Equal(t, "event-1event-2", output)
+}
+
+func TestPrintSubscriptionMessageCompact(t *testing.T) {
+	msg := wsstat.SubscriptionMessage{
+		Data:     []byte("{\n  \"foo\": \"bar\",\n  \"n\": 1\n}"),
+		Received: time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC),
+		Size:     27,
+	}
+
+	t.Run("default level is one line", func(t *testing.T) {
+		c := &Client{body: BodyCompact}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Equal(t,
+			"[0003 @ 2024-01-02T03:04:05.000000006Z] {\"foo\":\"bar\",\"n\":1}\n",
+			output)
+		assert.Equal(t, 1, strings.Count(output, "\n"))
+	})
+
+	t.Run("verbose level collapses to one line with byte count", func(t *testing.T) {
+		c := &Client{body: BodyCompact, verbosityLevel: 1}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(3, msg)
+		})
+		assert.Equal(t,
+			"[0003 @ 2024-01-02T03:04:05.000000006Z] 27 bytes {\"foo\":\"bar\",\"n\":1}\n",
+			output)
+		assert.Equal(t, 1, strings.Count(output, "\n"))
+	})
+
+	t.Run("non-JSON payload falls back to raw bytes", func(t *testing.T) {
+		c := &Client{body: BodyCompact}
+		plain := wsstat.SubscriptionMessage{Data: []byte("hello"), Received: msg.Received}
+		output := captureStdoutFrom(t, func() error {
+			return c.printSubscriptionMessage(1, plain)
+		})
+		assert.Equal(t, "[0001 @ 2024-01-02T03:04:05.000000006Z] hello\n", output)
+	})
 }
 
 func TestOpenSubscription(t *testing.T) {

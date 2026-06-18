@@ -8,23 +8,23 @@
 // # Basic Usage
 //
 //	wsstat example.org
-//	wsstat -text "ping" wss://echo.example.com
-//	wsstat -rpc-method eth_blockNumber wss://rpc.example.com/ws
+//	wsstat -t "ping" wss://echo.example.com
+//	wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 //
-// # Subscription Mode
+// # Stream Mode
 //
-// For long-lived streaming endpoints, use -subscribe to keep the connection
-// open and forward incoming frames to stdout:
+// For long-lived streaming endpoints, use the stream subcommand to keep the
+// connection open and forward incoming frames to stdout:
 //
-//	wsstat -subscribe -text '{"method":"subscribe"}' wss://stream.example.com
-//	wsstat -subscribe-once -text '{"method":"ticker"}' wss://api.example.com
+//	wsstat stream -t '{"method":"subscribe"}' wss://stream.example.com
+//	wsstat stream --once -t '{"method":"ticker"}' wss://api.example.com
 //
 // # Architecture
 //
 // The package is organized into:
-//   - main.go: Entry point, flag definitions, and usage text
-//   - config.go: Configuration parsing, validation, and URL handling
-//   - flags.go: Custom flag.Value implementations for headers, counts, and verbosity
+//   - main.go: Entry point, subcommand dispatch, run paths, and usage text
+//   - config.go: Shared flag registration, validation, and URL handling
+//   - flags.go: Custom flag.Value implementations for headers and resolve overrides
 //
 // All business logic is delegated to the internal/app package, keeping cmd/wsstat
 // focused on CLI concerns (parsing, validation, help text, and error formatting).
@@ -32,8 +32,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -41,67 +43,93 @@ import (
 	"github.com/jkbrsn/wsstat/v3/internal/app"
 )
 
-// revive:disable:line-length-limit allow flags
+var version = "unknown"
 
-var (
-	// Input
-	countFlag        = newTrackedIntFlag(1)
-	headerArguments  headerList
-	resolveOverrides resolveList
-	rpcMethod        = flag.String("rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
-	textMessage      = flag.String("text", "", "text message to send")
-	subscribe        = flag.Bool("subscribe", false, "stream events until interrupted")
-	subscribeOnce    = flag.Bool("subscribe-once", false, "subscribe and exit after the first event")
-	bufferSize       = flag.Int("buffer", 0, "subscription delivery buffer size (messages)")
-	summaryInterval  = flag.Duration("summary-interval", 0, "print subscription summaries every interval (e.g., 1s, 5m, 1h); 0 disables")
-	timeout          = flag.Duration("timeout", 0, "read/dial timeout (e.g., 30s, 1m); 0 uses default (5s)")
-	closeTimeout     = flag.Duration("close-timeout", 0, "max wait for the peer's close echo before forcing teardown (e.g., 1s, 2s); 0 uses default (3s); capped at 5s")
+// errUsageShown signals that a FlagSet already printed its own error and usage,
+// so main should exit without printing anything further.
+var errUsageShown = errors.New("usage shown")
 
-	// Output
-	formatOption = flag.String("format", "auto", "output format: auto, json, or raw")
-
-	// General/meta
-	showVersion = flag.Bool("version", false, "print the program version")
-	version     = "unknown"
-
-	// Connection behavior
-	insecure = flag.Bool("insecure", false, "skip TLS certificate verification")
-	noTLS    = flag.Bool("no-tls", false, "assume ws:// when input URL lacks scheme (default wss://)")
-	colorArg = flag.String("color", "auto", "color output: auto, always, or never")
-
-	// Verbosity
-	quiet = flag.Bool("q", false, "quiet all output but the response")
-	v1    = flag.Bool("v", false, "increase verbosity (level 1)")
-	v2    = flag.Bool("vv", false, "increase verbosity (level 2)")
-)
-
-func init() {
-	// Double registration: short and long forms point to same variable
-	flag.Var(&countFlag, "count", "number of interactions to perform; 0 means unlimited when subscribing")
-	flag.Var(&countFlag, "c", "number of interactions to perform; 0 means unlimited when subscribing")
-	flag.Var(&headerArguments, "H", "HTTP header to include with the request (repeatable; format: Key: Value)")
-	flag.Var(&headerArguments, "header", "HTTP header to include with the request (repeatable; format: Key: Value)")
-	flag.Var(&resolveOverrides, "resolve", "resolve host:port to address (repeatable; format: HOST:PORT:ADDRESS)")
-	flag.StringVar(textMessage, "t", "", "text message to send")
-	flag.BoolVar(subscribe, "s", false, "stream events until interrupted")
-	flag.IntVar(bufferSize, "b", 0, "subscription delivery buffer size (messages)")
-	flag.StringVar(formatOption, "f", "auto", "output format: auto, json, or raw")
-	flag.BoolVar(quiet, "quiet", false, "quiet all output but the response")
-	flag.BoolVar(v1, "verbose", false, "increase verbosity (level 1)")
-	flag.BoolVar(insecure, "k", false, "skip TLS certificate verification")
-
-	flag.Usage = printUsage
+// removedFlags maps v2 flags dropped in v3 to a targeted migration hint.
+var removedFlags = map[string]string{
+	"subscribe":      "use the `stream` subcommand: wsstat stream <url>",
+	"s":              "use the `stream` subcommand: wsstat stream <url>",
+	"subscribe-once": "use `stream --once`: wsstat stream --once <url>",
+	"format":         "use -o (text|json|raw), --body, and/or --clip",
+	"f":              "use -o (text|json|raw), --body, and/or --clip",
+	"no-tls":         "type a ws:// URL instead",
 }
 
 func main() {
-	flag.Parse()
-	if err := run(); err != nil {
-		if err == errVersionRequested {
-			os.Exit(0)
-		}
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	args := os.Args[1:]
+
+	// Dispatch keys on args[0] only. Scanning past leading flags for a subcommand
+	// is unsafe with stdlib flag: it can't know which -x tokens consume a following
+	// value, so a flag value could be mistaken for a command (e.g. `wsstat -t stream
+	// <url>` would misread the text message "stream" as the stream subcommand).
+	// Consequence: global flags cannot precede the subcommand (the go test rule).
+	var err error
+	switch {
+	case len(args) == 0:
+		printTopUsage(os.Stderr)
+		os.Exit(2)
+	case args[0] == "stream":
+		err = runStream(args[1:])
+	case args[0] == "measure":
+		err = runMeasure(args[1:])
+	case args[0] == "--version" || args[0] == "-version":
+		fmt.Printf("Version: %s\n", version)
+		return
+	case args[0] == "help" || args[0] == "-h" || args[0] == "--help":
+		printTopUsage(os.Stdout)
+		return
+	default:
+		err = runMeasure(args) // bare form: measure
 	}
+
+	switch {
+	case err == nil, errors.Is(err, flag.ErrHelp):
+		return
+	case errors.Is(err, errUsageShown):
+		os.Exit(2)
+	default:
+		fail(err)
+	}
+}
+
+// fail prints err to stderr and exits with status 1.
+func fail(err error) {
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	// revive:disable-next-line:deep-exit single CLI error exit point
+	os.Exit(1)
+}
+
+// registerRemoved registers v2 flags dropped in v3 as inert vars on fs, matching
+// their v2 arity (bool vs value-taking) so the parser consumes any value and never
+// misreads a following argument (e.g. the "-s" in `-t -s` stays the text payload).
+// Whether one was actually used is reported by removedFlagError after Parse.
+func registerRemoved(fs *flag.FlagSet) {
+	for _, name := range []string{"subscribe", "s", "subscribe-once", "no-tls"} {
+		fs.Bool(name, false, "removed in v3")
+	}
+	for _, name := range []string{"format", "f"} {
+		fs.String(name, "", "removed in v3")
+	}
+}
+
+// removedFlagError returns a targeted migration error if any flag removed in v3
+// was explicitly set on fs. Detection runs after Parse, so it sees only genuine
+// flag tokens, never values that merely look like a removed flag.
+func removedFlagError(fs *flag.FlagSet) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if err != nil {
+			return
+		}
+		if hint, ok := removedFlags[f.Name]; ok {
+			err = fmt.Errorf("-%s was removed in v3; %s", f.Name, hint)
+		}
+	})
+	return err
 }
 
 // interruptContext returns a context canceled on the first SIGINT/SIGTERM, beginning a
@@ -126,126 +154,140 @@ func interruptContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-func run() error {
-	cfg, err := parseConfig()
-	if err != nil {
-		if err == errVersionRequested {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "Error parsing input: %v\n\n", err)
-		flag.Usage()
-		return err
+// buildMeasure parses measure-mode args and returns a validated client and target.
+func buildMeasure(args []string) (*app.Client, *url.URL, error) {
+	fs := flag.NewFlagSet("measure", flag.ContinueOnError)
+	var cf commonFlags
+	registerCommon(fs, &cf)
+	registerRemoved(fs)
+	count := fs.Int("c", 1, "number of interactions to perform (>= 1)")
+	fs.IntVar(count, "count", 1, "number of interactions to perform (>= 1)")
+	fs.Usage = func() { printMeasureUsage(fs.Output()) }
+
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, parseErr(err)
+	}
+	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
 	}
 
-	ws := app.NewClient(
-		app.WithCount(cfg.Count),
-		app.WithHeaders(cfg.Headers),
-		app.WithResolves(cfg.Resolves),
-		app.WithRPCMethod(cfg.RPCMethod),
-		app.WithTextMessage(cfg.TextMessage),
-		app.WithFormat(cfg.Format),
-		app.WithColorMode(cfg.ColorMode),
-		app.WithQuiet(cfg.Quiet),
-		app.WithVerbosity(cfg.Verbosity),
-		app.WithSubscription(cfg.Subscribe),
-		app.WithSubscriptionOnce(cfg.SubscribeOnce),
-		app.WithBuffer(cfg.BufferSize),
-		app.WithSummaryInterval(cfg.SummaryInterval),
-		app.WithInsecure(cfg.Insecure),
-		app.WithTimeout(cfg.Timeout),
-		app.WithCloseGrace(cfg.CloseTimeout),
+	opts, target, err := resolveCommon(fs, &cf, app.ModeMeasure)
+	if err != nil {
+		return nil, nil, err
+	}
+	if *count < 1 {
+		return nil, nil, errors.New("count must be greater than 0")
+	}
+	opts = append(opts, app.WithCount(*count))
+
+	client := app.NewClient(opts...)
+	if err := client.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	return client, target, nil
+}
+
+// buildStream parses stream-mode args and returns a validated client and target.
+// Whether --once was requested is available via client.Once().
+func buildStream(args []string) (*app.Client, *url.URL, error) {
+	fs := flag.NewFlagSet("stream", flag.ContinueOnError)
+	var cf commonFlags
+	registerCommon(fs, &cf)
+	registerRemoved(fs)
+	count := fs.Int("c", 0, "number of events to receive; 0 = unlimited")
+	fs.IntVar(count, "count", 0, "number of events to receive; 0 = unlimited")
+	once := fs.Bool("once", false, "exit after the first event")
+	buffer := fs.Int("b", 0, "delivery buffer size (messages)")
+	fs.IntVar(buffer, "buffer", 0, "delivery buffer size (messages)")
+	summary := fs.Duration("summary-interval", 0,
+		"print stat summaries every interval (e.g., 5s, 1m); 0 disables")
+	fs.Usage = func() { printStreamUsage(fs.Output()) }
+
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, parseErr(err)
+	}
+	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
+	}
+
+	opts, target, err := resolveCommon(fs, &cf, app.ModeStream)
+	if err != nil {
+		return nil, nil, err
+	}
+	if *count < 0 {
+		return nil, nil, errors.New("count must be zero or greater")
+	}
+	if *once {
+		set := setFlagNames(fs)
+		if set["c"] || set["count"] {
+			return nil, nil, errors.New("--count cannot be combined with --once")
+		}
+	}
+	if *summary > 0 {
+		if out, _ := app.ParseOutput(cf.output); out == app.OutputRaw {
+			return nil, nil, errors.New("--summary-interval has no effect with -o raw")
+		}
+	}
+	opts = append(opts,
+		app.WithCount(*count),
+		app.WithStreamOnce(*once),
+		app.WithBuffer(*buffer),
+		app.WithSummaryInterval(*summary),
 	)
 
-	if err := ws.Validate(); err != nil {
-		return fmt.Errorf("invalid settings: %w", err)
+	client := app.NewClient(opts...)
+	if err := client.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	return client, target, nil
+}
+
+// parseErr maps a FlagSet parse error to the appropriate sentinel: ErrHelp passes
+// through (help already printed), anything else became errUsageShown.
+func parseErr(err error) error {
+	if errors.Is(err, flag.ErrHelp) {
+		return flag.ErrHelp
+	}
+	return errUsageShown
+}
+
+func runMeasure(args []string) error {
+	client, target, err := buildMeasure(args)
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := interruptContext()
 	defer cancel()
 
-	if cfg.SubscribeOnce {
-		return ws.StreamSubscriptionOnce(ctx, cfg.TargetURL)
-	}
-
-	if cfg.Subscribe {
-		return ws.StreamSubscription(ctx, cfg.TargetURL)
-	}
-
-	result, err := ws.MeasureLatency(ctx, cfg.TargetURL)
+	result, err := client.MeasureLatency(ctx, target)
 	if err != nil {
 		return fmt.Errorf("measuring latency: %w", err)
 	}
 
-	if !cfg.Quiet {
-		if err = ws.PrintRequestDetails(result); err != nil {
-			return fmt.Errorf("printing request details: %w", err)
-		}
-
-		if err = ws.PrintTimingResults(cfg.TargetURL, result); err != nil {
-			return fmt.Errorf("printing timing results: %w", err)
-		}
+	if err := client.PrintRequestDetails(result); err != nil {
+		return fmt.Errorf("printing request details: %w", err)
 	}
-
-	ws.PrintResponse(result)
+	if err := client.PrintTimingResults(target, result); err != nil {
+		return fmt.Errorf("printing timing results: %w", err)
+	}
+	if err := client.PrintResponse(result); err != nil {
+		return fmt.Errorf("printing response: %w", err)
+	}
 	return nil
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, "wsstat %s\n", version)
-	fmt.Fprintln(os.Stderr, "Measure latency on WebSocket connections")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "USAGE:")
-	fmt.Fprintln(os.Stderr, "  wsstat [options] <url>")
-	fmt.Fprintln(os.Stderr, "  wsstat -subscribe [options] <url>")
-	fmt.Fprintln(os.Stderr)
+func runStream(args []string) error {
+	client, target, err := buildStream(args)
+	if err != nil {
+		return err
+	}
 
-	fmt.Fprintln(os.Stderr, "General:")
-	fmt.Fprintln(os.Stderr, "  -c, --count <int>              number of interactions [default: 1; unlimited when subscribing]")
-	fmt.Fprintln(os.Stderr, "      --version                  print program version and exit")
-	fmt.Fprintln(os.Stderr)
+	ctx, cancel := interruptContext()
+	defer cancel()
 
-	fmt.Fprintln(os.Stderr, "Input (choose one):")
-	fmt.Fprintln(os.Stderr, "      --rpc-method <string>      JSON-RPC method name to send (with id=1, jsonrpc=2.0)")
-	fmt.Fprintln(os.Stderr, "  -t, --text <string>            text message to send")
-	fmt.Fprintln(os.Stderr)
-
-	fmt.Fprintln(os.Stderr, "Subscription:")
-	fmt.Fprintln(os.Stderr, "  -s, --subscribe                stream events until interrupted")
-	fmt.Fprintln(os.Stderr, "      --subscribe-once           subscribe and exit after the first event")
-	fmt.Fprintln(os.Stderr, "  -b, --buffer <int>             subscription delivery buffer size in messages [default: 0]")
-	fmt.Fprintln(os.Stderr, "      --summary-interval <duration>")
-	fmt.Fprintln(os.Stderr, "                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]")
-	fmt.Fprintln(os.Stderr)
-
-	fmt.Fprintln(os.Stderr, "Connection:")
-	fmt.Fprintln(os.Stderr, "  -H, --header <string>          HTTP header to include with request (repeatable; format: \"Key: Value\")")
-	fmt.Fprintln(os.Stderr, "      --resolve <string>         resolve host:port to specific address (repeatable; format: \"HOST:PORT:ADDRESS\")")
-	fmt.Fprintln(os.Stderr, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
-	fmt.Fprintln(os.Stderr, "      --no-tls                   assume ws:// when URL lacks scheme [default: wss://]")
-	fmt.Fprintln(os.Stderr, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
-	fmt.Fprintln(os.Stderr, "      --close-timeout <duration> max wait for the peer's close echo before forcing teardown [default: 3s; capped at 5s]")
-	fmt.Fprintln(os.Stderr, "      --color <string>           color output mode: auto, always, never [default: auto]")
-	fmt.Fprintln(os.Stderr)
-
-	fmt.Fprintln(os.Stderr, "Output:")
-	fmt.Fprintln(os.Stderr, "  -q, --quiet                    suppress all output except response")
-	fmt.Fprintln(os.Stderr, "  -v, --verbose                  increase verbosity (level 1)")
-	fmt.Fprintln(os.Stderr, "  -vv                            increase verbosity (level 2)")
-	fmt.Fprintln(os.Stderr, "  -f, --format <string>          output format: auto, json, raw [default: auto]")
-	fmt.Fprintln(os.Stderr)
-
-	fmt.Fprintln(os.Stderr, "Verbosity Levels:")
-	fmt.Fprintln(os.Stderr, "  (default)                      minimal request info with summary timings")
-	fmt.Fprintln(os.Stderr, "  -v                             adds target/TLS summaries and timing diagram")
-	fmt.Fprintln(os.Stderr, "  -vv                            includes full TLS certificates and headers")
-	fmt.Fprintln(os.Stderr)
-
-	fmt.Fprintln(os.Stderr, "Examples:")
-	fmt.Fprintln(os.Stderr, "  wsstat wss://echo.example.com")
-	fmt.Fprintln(os.Stderr, "  wsstat -t \"ping\" wss://echo.example.com")
-	fmt.Fprintln(os.Stderr, "  wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws")
-	fmt.Fprintln(os.Stderr, "  wsstat --subscribe --summary-interval 5s wss://stream.example.com/feed")
-	fmt.Fprintln(os.Stderr, "  wsstat -H \"Authorization: Bearer TOKEN\" -H \"Origin: https://foo\" wss://api.example.com/ws")
-	fmt.Fprintln(os.Stderr, "  wsstat --resolve example.com:443:127.0.0.1 wss://example.com/ws")
-	fmt.Fprintln(os.Stderr, "  wsstat --insecure -vv wss://self-signed.example.com")
+	if client.Once() {
+		return client.StreamSubscriptionOnce(ctx, target)
+	}
+	return client.StreamSubscription(ctx, target)
 }

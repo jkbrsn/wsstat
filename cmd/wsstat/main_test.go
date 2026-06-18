@@ -1,90 +1,81 @@
 package main
 
 import (
-	"flag"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestRunIntegration(t *testing.T) {
-	// Save original state
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
+// revive:disable:line-length-limit table-driven test rows
 
-	resetTestState := func() {
-		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+// buildDispatch mirrors main's args[0] dispatch so removed-flag detection is
+// exercised on the same FlagSet the real run path uses.
+func buildDispatch(args []string) error {
+	var err error
+	if len(args) > 0 && args[0] == "stream" {
+		_, _, err = buildStream(args[1:])
+	} else {
+		_, _, err = buildMeasure(args)
+	}
+	return err
+}
 
-		// Reset all flag pointers
-		noTLS = flag.Bool("no-tls", false, "")
-		colorArg = flag.String("color", "auto", "")
-		quiet = flag.Bool("q", false, "")
-		showVersion = flag.Bool("version", false, "")
-		textMessage = flag.String("text", "", "")
-		rpcMethod = flag.String("rpc-method", "", "")
-		formatOption = flag.String("format", "auto", "")
-		subscribe = flag.Bool("subscribe", false, "")
-		subscribeOnce = flag.Bool("subscribe-once", false, "")
-		bufferSize = flag.Int("buffer", 0, "")
-		summaryInterval = flag.Duration("summary-interval", 0, "")
-		v1 = flag.Bool("v", false, "")
-		v2 = flag.Bool("vv", false, "")
+func TestRemovedFlagsRejected(t *testing.T) {
+	t.Parallel()
 
-		countFlag = newTrackedIntFlag(1)
-		headerArguments = headerList{}
-
-		flag.Var(&countFlag, "count", "")
-		flag.Var(&headerArguments, "H", "")
-		flag.Var(&headerArguments, "header", "")
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr bool
+		hint    string
+	}{
+		{name: "subscribe", args: []string{"-subscribe", "example.com"}, wantErr: true, hint: "stream"},
+		{name: "subscribe long form", args: []string{"--subscribe", "example.com"}, wantErr: true, hint: "stream"},
+		{name: "subscribe short", args: []string{"-s", "example.com"}, wantErr: true, hint: "stream"},
+		{name: "subscribe-once", args: []string{"-subscribe-once", "example.com"}, wantErr: true, hint: "stream --once"},
+		{name: "format", args: []string{"-format", "json", "example.com"}, wantErr: true, hint: "-o"},
+		{name: "format with equals", args: []string{"--format=json", "example.com"}, wantErr: true, hint: "-o"},
+		{name: "format short", args: []string{"-f", "raw", "example.com"}, wantErr: true, hint: "-o"},
+		{name: "no-tls", args: []string{"-no-tls", "example.com"}, wantErr: true, hint: "ws://"},
+		// A removed-flag name passed as a flag *value* must not be misread as the flag.
+		{name: "removed name as text value ok", args: []string{"-t", "-s", "example.com"}, wantErr: false},
+		{name: "format name as text value ok", args: []string{"--text", "-format", "example.com"}, wantErr: false},
+		{name: "current flags ok", args: []string{"-o", "json", "example.com"}, wantErr: false},
+		{name: "stream subcommand ok", args: []string{"stream", "--once", "example.com"}, wantErr: false},
+		{name: "bare url ok", args: []string{"example.com"}, wantErr: false},
 	}
 
-	t.Run("version flag returns special error", func(t *testing.T) {
-		resetTestState()
-		os.Args = []string{"wsstat", "-version"}
-		_ = flag.CommandLine.Parse(os.Args[1:])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := buildDispatch(tt.args)
+			if !tt.wantErr {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "removed in v3")
+			assert.Contains(t, err.Error(), tt.hint)
+		})
+	}
+}
 
-		err := run()
-		assert.ErrorIs(t, err, errVersionRequested)
+// TestDispatchRouting verifies the build paths reached by each dispatch branch.
+// The os.Exit branches (no-args, --version, help) are exercised by the binary, not here.
+func TestDispatchRouting(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bare form parses as measure", func(t *testing.T) {
+		client, target, err := buildMeasure([]string{"wss://example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "wss://example.com", target.String())
+		assert.Equal(t, 1, client.Count())
 	})
 
-	t.Run("missing URL returns error", func(t *testing.T) {
-		resetTestState()
-		os.Args = []string{"wsstat"}
-		_ = flag.CommandLine.Parse(os.Args[1:])
-
-		err := run()
-		assert.Error(t, err)
+	t.Run("stream subcommand args parse", func(t *testing.T) {
+		client, target, err := buildStream([]string{"--once", "wss://example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "wss://example.com", target.String())
+		assert.True(t, client.Once())
 	})
-
-	t.Run("invalid URL returns error", func(t *testing.T) {
-		resetTestState()
-		os.Args = []string{"wsstat", "ht!tp://invalid"}
-		_ = flag.CommandLine.Parse(os.Args[1:])
-
-		err := run()
-		assert.Error(t, err)
-	})
-
-	t.Run("quiet and verbose conflict returns error", func(t *testing.T) {
-		resetTestState()
-		os.Args = []string{"wsstat", "-q", "-v", "example.com"}
-		_ = flag.CommandLine.Parse(os.Args[1:])
-
-		err := run()
-		assert.Error(t, err)
-	})
-
-	t.Run("invalid header format returns error", func(t *testing.T) {
-		resetTestState()
-		os.Args = []string{"wsstat", "-H", "InvalidHeader", "example.com"}
-		_ = flag.CommandLine.Parse(os.Args[1:])
-
-		err := run()
-		assert.Error(t, err)
-	})
-
-	// Note: We can't easily test successful runs without mocking the internal/app.Client
-	// or setting up a real WebSocket server. The error path coverage above is sufficient
-	// for integration testing at the cmd level.
 }

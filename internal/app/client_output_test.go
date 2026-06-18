@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app/color"
@@ -173,7 +175,7 @@ func TestPrintTimingResultsVerbosityLevels(t *testing.T) {
 func TestPrintTimingResultsJSON(t *testing.T) {
 	base := sampleTimingResult(t)
 	client := &Client{
-		format: formatJSON,
+		output: OutputJSON,
 		count:  2,
 	}
 	result := &MeasurementResult{Result: base}
@@ -197,15 +199,14 @@ func TestPrintTimingResultsJSON(t *testing.T) {
 func TestPrintResponseJSON(t *testing.T) {
 	t.Run("map payload", func(t *testing.T) {
 		client := &Client{
-			format:    formatJSON,
+			output:    OutputJSON,
 			rpcMethod: "eth_blockNumber",
 		}
 		result := &MeasurementResult{
 			Response: map[string]any{"jsonrpc": "2.0", "result": "0x1"},
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "response", payload["type"])
@@ -216,17 +217,98 @@ func TestPrintResponseJSON(t *testing.T) {
 
 	t.Run("plain string payload", func(t *testing.T) {
 		client := &Client{
-			format: formatJSON,
+			output: OutputJSON,
 		}
 		result := &MeasurementResult{
 			Response: "hello world",
 		}
 		output := captureStdoutFrom(t, func() error {
-			client.PrintResponse(result)
-			return nil
+			return client.PrintResponse(result)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "response", payload["type"])
 		assert.Equal(t, "hello world", payload["payload"])
+	})
+}
+
+func TestPrintResponseRaw(t *testing.T) {
+	t.Run("string verbatim, no label or newline", func(t *testing.T) {
+		client := &Client{output: OutputRaw}
+		result := &MeasurementResult{Response: "hello world"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Equal(t, "hello world", output)
+	})
+
+	t.Run("json-rpc map marshaled verbatim", func(t *testing.T) {
+		client := &Client{output: OutputRaw, rpcMethod: "eth_blockNumber"}
+		result := &MeasurementResult{
+			Response: map[string]any{"jsonrpc": "2.0", "result": "0x1"},
+		}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.NotContains(t, output, "Response:")
+		assert.False(t, strings.HasSuffix(output, "\n"), "raw adds no trailing newline")
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal([]byte(output), &decoded))
+		assert.Equal(t, "0x1", decoded["result"])
+	})
+}
+
+func TestPrintResponseBodyRendering(t *testing.T) {
+	response := map[string]any{"jsonrpc": "2.0", "result": "0x1"}
+
+	t.Run("auto pretty-prints the measured response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
+		result := &MeasurementResult{Response: response}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "Response: ")
+		assert.Contains(t, output, "\"result\": \"0x1\"", "auto indents the body")
+		assert.Greater(t, strings.Count(output, "\n"), 1, "auto is multi-line")
+	})
+
+	t.Run("compact one-lines the measured response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyCompact, colorMode: "never"}
+		result := &MeasurementResult{Response: response}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "\"result\":\"0x1\"", "compact has no spaces")
+		assert.Equal(t, 1, strings.Count(output, "\n"), "compact is one line")
+	})
+
+	// A text echo of JSON (not JSON-RPC) reaches PrintResponse as a plain string;
+	// --body must still shape it, matching how stream messages are rendered.
+	t.Run("auto pretty-prints a plain-JSON text response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
+		result := &MeasurementResult{Response: `{"foo":"bar"}`}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "\"foo\": \"bar\"", "auto indents the body")
+		assert.Greater(t, strings.Count(output, "\n"), 1, "auto is multi-line")
+	})
+
+	t.Run("compact one-lines a multi-line-JSON text response", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyCompact, colorMode: "never"}
+		result := &MeasurementResult{Response: "{\n  \"foo\": \"bar\"\n}"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "\"foo\":\"bar\"", "compact has no spaces")
+		assert.Equal(t, 1, strings.Count(output, "\n"), "compact is one line")
+	})
+
+	t.Run("non-JSON text response printed as-is", func(t *testing.T) {
+		client := &Client{output: OutputText, body: BodyAuto, colorMode: "never"}
+		result := &MeasurementResult{Response: "pong"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintResponse(result)
+		})
+		assert.Contains(t, output, "Response: pong")
 	})
 }

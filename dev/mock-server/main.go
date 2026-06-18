@@ -152,7 +152,7 @@ type rpcRequest struct {
 }
 
 // echoBehavior echoes every frame back unchanged, preserving the message type.
-// Serves -text, -count bursts, default ping/pong, -resolve, -f, and verbosity.
+// Serves --text, --count bursts, default ping/pong, --resolve, -o/--body/--clip, and verbosity.
 func echoBehavior(_ *http.Request, conn *websocket.Conn) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	ctx := context.Background()
@@ -296,15 +296,15 @@ func pushBehavior(r *http.Request, conn *websocket.Conn) {
 
 // streamBehavior waits for an initial subscribe frame, then pumps JSON
 // notifications until the client disconnects or an optional ?count is reached.
-// ?rate sets notifications per second (default 1). Serves -subscribe,
-// -subscribe-once, -summary-interval, and -buffer.
+// ?rate sets notifications per second (default 1). Serves the stream
+// subcommand, --once, --summary-interval, and --buffer.
 func streamBehavior(r *http.Request, conn *websocket.Conn) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Realistic subscription model: stream only starts after the client's first
-	// frame. wsstat sends nothing for a bare -subscribe (empty payload), so the
+	// frame. wsstat sends nothing for a bare `stream` (empty payload), so the
 	// smoke cases always pass an initial -t payload.
 	if _, _, err := conn.Read(ctx); err != nil {
 		return

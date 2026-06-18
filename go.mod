@@ -8,6 +8,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/term v0.44.0
 )
 
 require (

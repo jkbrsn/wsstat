@@ -1,13 +1,14 @@
 package main
 
 import (
-	"flag"
-	"os"
 	"testing"
 
+	"github.com/jkbrsn/wsstat/v3/internal/app"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// revive:disable:line-length-limit table-driven test rows
 
 func TestParseWSURI(t *testing.T) {
 	t.Parallel()
@@ -15,316 +16,190 @@ func TestParseWSURI(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		noTLS    bool
 		expected string
 		wantErr  bool
 	}{
-		{
-			name:     "full wss URL",
-			input:    "wss://example.com/path",
-			expected: "wss://example.com/path",
-		},
-		{
-			name:     "full ws URL",
-			input:    "ws://example.com/path",
-			expected: "ws://example.com/path",
-		},
-		{
-			name:     "no scheme defaults to wss",
-			input:    "example.com/path",
-			noTLS:    false,
-			expected: "wss://example.com/path",
-		},
-		{
-			name:     "no scheme with noTLS defaults to ws",
-			input:    "example.com/path",
-			noTLS:    true,
-			expected: "ws://example.com/path",
-		},
-		{
-			name:     "localhost without scheme",
-			input:    "localhost:8080",
-			expected: "wss://localhost:8080",
-		},
-		{
-			name:    "invalid URL",
-			input:   "ht!tp://invalid",
-			wantErr: true,
-		},
+		{name: "full wss URL", input: "wss://example.com/path", expected: "wss://example.com/path"},
+		{name: "full ws URL", input: "ws://example.com/path", expected: "ws://example.com/path"},
+		{name: "no scheme defaults to wss", input: "example.com/path", expected: "wss://example.com/path"},
+		{name: "localhost without scheme", input: "localhost:8080", expected: "wss://localhost:8080"},
+		{name: "invalid URL", input: "ht!tp://invalid", wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			oldNoTLS := *noTLS
-			defer func() { *noTLS = oldNoTLS }()
-			*noTLS = tt.noTLS
-
 			result, err := parseWSURI(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
 			}
-
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.String())
 		})
 	}
 }
 
-func TestResolveCountValue(t *testing.T) {
+func TestMeasureFlags(t *testing.T) {
 	t.Parallel()
 
-	origCount := countFlag
-	defer func() {
-		countFlag = origCount
-	}()
+	t.Run("bare url defaults", func(t *testing.T) {
+		client, target, err := buildMeasure([]string{"example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "wss://example.com", target.String())
+		assert.Equal(t, 1, client.Count())
+		assert.Equal(t, app.OutputText, client.Output())
+		assert.Equal(t, app.BodyAuto, client.Body())
+	})
 
-	tests := []struct {
-		name          string
-		subscribe     bool
-		subscribeOnce bool
-		countSet      bool
-		countValue    int
-		expected      int
-	}{
-		{
-			name:       "no flags, default count",
-			countValue: 1,
-			expected:   1,
-		},
-		{
-			name:       "subscribe without count set",
-			subscribe:  true,
-			countValue: 1,
-			expected:   0,
-		},
-		{
-			name:       "subscribe with count set",
-			subscribe:  true,
-			countSet:   true,
-			countValue: 5,
-			expected:   5,
-		},
-		{
-			name:          "subscribe-once",
-			subscribeOnce: true,
-			countValue:    1,
-			expected:      1,
-		},
-		{
-			name:          "subscribe-once with count set",
-			subscribeOnce: true,
-			countSet:      true,
-			countValue:    3,
-			expected:      3,
-		},
-	}
+	t.Run("count", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"-c", "5", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, 5, client.Count())
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			countFlag = newTrackedIntFlag(tt.countValue)
-			if tt.countSet {
-				require.NoError(t, (&countFlag).Set(string(rune(tt.countValue+'0'))))
-			}
+	t.Run("count below one rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-c", "0", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "count must be greater than 0")
+	})
 
-			result := resolveCountValue(tt.subscribe, tt.subscribeOnce)
-			assert.Equal(t, tt.expected, result)
+	t.Run("text and rpc-method conflict", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-t", "hi", "--rpc-method", "m", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("text-only flag under json rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "json", "-q", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
+
+	t.Run("body under json rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "json", "--body", "compact", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
+
+	t.Run("quiet long form accepted and quiets", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"--quiet", "example.com"})
+		require.NoError(t, err)
+		assert.True(t, client.Quiet())
+	})
+
+	t.Run("quiet long form under json rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "json", "--quiet", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
+
+	t.Run("raw measure without message rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-o", "raw", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires --text or --rpc-method")
+	})
+
+	t.Run("raw measure with text ok", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"-o", "raw", "-t", "hi", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, app.OutputRaw, client.Output())
+	})
+
+	t.Run("invalid color rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--color", "purple", "example.com"})
+		require.Error(t, err)
+	})
+
+	t.Run("negative timeout rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--timeout", "-1s", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--timeout must be zero or greater")
+	})
+
+	t.Run("negative close-timeout rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--close-timeout", "-2s", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--close-timeout must be zero or greater")
+	})
+
+	t.Run("quiet and verbose conflict", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-q", "-v", "example.com"})
+		require.Error(t, err)
+	})
+
+	t.Run("missing url rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one URL")
+	})
+
+	t.Run("stray positional rejected (global flag before subcommand)", func(t *testing.T) {
+		// `wsstat -v stream url` dispatches to measure with two positionals.
+		_, _, err := buildMeasure([]string{"-v", "stream", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one URL")
+	})
+
+	t.Run("headers accumulate", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{
+			"-H", "Auth: Bearer token", "-H", "Origin: https://foo.com", "example.com",
 		})
-	}
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+	})
 }
 
-// revive:disable:function-length test setup requires saving/restoring many flags
-func TestParseConfig(t *testing.T) {
-	// These tests need to manipulate global flag state, so we can't run them in parallel
-	// Save and restore original values
-	origArgs := os.Args
-	origNoTLS := *noTLS
-	origColorArg := *colorArg
-	origQuiet := *quiet
-	origShowVersion := *showVersion
-	origTextMessage := *textMessage
-	origRPCMethod := *rpcMethod
-	origFormatOption := *formatOption
-	origSubscribe := *subscribe
-	origSubscribeOnce := *subscribeOnce
-	origBufferSize := *bufferSize
-	origV1 := *v1
-	origV2 := *v2
-	origInsecure := *insecure
-	origCountFlag := countFlag
-	origHeaderArguments := headerArguments
+func TestStreamFlags(t *testing.T) {
+	t.Parallel()
 
-	defer func() {
-		os.Args = origArgs
-		*noTLS = origNoTLS
-		*colorArg = origColorArg
-		*quiet = origQuiet
-		*showVersion = origShowVersion
-		*textMessage = origTextMessage
-		*rpcMethod = origRPCMethod
-		*formatOption = origFormatOption
-		*subscribe = origSubscribe
-		*subscribeOnce = origSubscribeOnce
-		*bufferSize = origBufferSize
-		*v1 = origV1
-		*v2 = origV2
-		*insecure = origInsecure
-		countFlag = origCountFlag
-		headerArguments = origHeaderArguments
-	}()
+	t.Run("bare url is unlimited", func(t *testing.T) {
+		client, target, err := buildStream([]string{"example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "wss://example.com", target.String())
+		assert.Equal(t, 0, client.Count())
+		assert.False(t, client.Once())
+	})
 
-	resetFlags := func() {
-		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	t.Run("count", func(t *testing.T) {
+		client, _, err := buildStream([]string{"-c", "3", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, 3, client.Count())
+	})
 
-		// Reset all flag values
-		noTLS = flag.Bool("no-tls", false, "")
-		colorArg = flag.String("color", "auto", "")
-		quiet = flag.Bool("q", false, "")
-		showVersion = flag.Bool("version", false, "")
-		textMessage = flag.String("text", "", "")
-		rpcMethod = flag.String("rpc-method", "", "")
-		formatOption = flag.String("format", "auto", "")
-		subscribe = flag.Bool("subscribe", false, "")
-		subscribeOnce = flag.Bool("subscribe-once", false, "")
-		bufferSize = flag.Int("buffer", 0, "")
-		summaryInterval = flag.Duration("summary-interval", 0, "")
-		v1 = flag.Bool("v", false, "")
-		v2 = flag.Bool("vv", false, "")
-		insecure = flag.Bool("insecure", false, "")
+	t.Run("once", func(t *testing.T) {
+		client, _, err := buildStream([]string{"--once", "example.com"})
+		require.NoError(t, err)
+		assert.True(t, client.Once())
+	})
 
-		countFlag = newTrackedIntFlag(1)
-		headerArguments = headerList{}
+	t.Run("once with explicit count rejected", func(t *testing.T) {
+		for _, c := range []string{"0", "1", "5"} {
+			_, _, err := buildStream([]string{"--once", "-c", c, "example.com"})
+			require.Errorf(t, err, "--once -c %s should be rejected", c)
+			assert.Contains(t, err.Error(), "--once")
+		}
+	})
 
-		// Re-register custom flags
-		flag.Var(&countFlag, "count", "")
-		flag.Var(&headerArguments, "H", "")
-		flag.Var(&headerArguments, "header", "")
-		flag.BoolVar(insecure, "k", false, "")
-	}
+	t.Run("json output allowed without message", func(t *testing.T) {
+		client, _, err := buildStream([]string{"-o", "json", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, app.OutputJSON, client.Output())
+	})
 
-	tests := []struct {
-		name      string
-		args      []string
-		wantErr   bool
-		errIs     error
-		checkFunc func(*testing.T, *Config)
-	}{
-		{
-			name:    "version flag",
-			args:    []string{"cmd", "-version"},
-			wantErr: true,
-			errIs:   errVersionRequested,
-		},
-		{
-			name:    "quiet and verbose conflict",
-			args:    []string{"cmd", "-q", "-v", "example.com"},
-			wantErr: true,
-		},
-		{
-			name:    "text and rpc-method conflict",
-			args:    []string{"cmd", "-text", "hello", "-rpc-method", "test", "example.com"},
-			wantErr: true,
-		},
-		{
-			name:    "no arguments",
-			args:    []string{"cmd"},
-			wantErr: true,
-		},
-		{
-			name:    "too many arguments",
-			args:    []string{"cmd", "example.com", "extra"},
-			wantErr: true,
-		},
-		{
-			name:    "invalid color option",
-			args:    []string{"cmd", "-color", "invalid", "example.com"},
-			wantErr: true,
-		},
-		{
-			name: "valid basic config",
-			args: []string{"cmd", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.Equal(t, "wss://example.com", cfg.TargetURL.String())
-				assert.Equal(t, 1, cfg.Count)
-				assert.Equal(t, "auto", cfg.Format)
-				assert.Equal(t, "auto", cfg.ColorMode)
-				assert.False(t, cfg.Quiet)
-				assert.Equal(t, 0, cfg.Verbosity)
-			},
-		},
-		{
-			name: "with headers",
-			args: []string{
-				"cmd", "-H", "Auth: Bearer token",
-				"-H", "Origin: https://foo.com", "example.com",
-			},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.Len(t, cfg.Headers, 2)
-				assert.Contains(t, cfg.Headers, "Auth: Bearer token")
-				assert.Contains(t, cfg.Headers, "Origin: https://foo.com")
-			},
-		},
-		{
-			name: "subscribe mode without count",
-			args: []string{"cmd", "-subscribe", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.True(t, cfg.Subscribe)
-				assert.Equal(t, 0, cfg.Count) // unlimited
-			},
-		},
-		{
-			name: "subscribe mode with count",
-			args: []string{"cmd", "-subscribe", "-count", "5", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.True(t, cfg.Subscribe)
-				assert.Equal(t, 5, cfg.Count)
-			},
-		},
-		{
-			name: "insecure flag",
-			args: []string{"cmd", "-insecure", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.True(t, cfg.Insecure)
-			},
-		},
-		{
-			name: "insecure flag short form",
-			args: []string{"cmd", "-k", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.True(t, cfg.Insecure)
-			},
-		},
-		{
-			name: "insecure flag not set",
-			args: []string{"cmd", "example.com"},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				assert.False(t, cfg.Insecure)
-			},
-		},
-	}
+	t.Run("raw output allowed without message", func(t *testing.T) {
+		client, _, err := buildStream([]string{"-o", "raw", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, app.OutputRaw, client.Output())
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags()
-			os.Args = tt.args
-			_ = flag.CommandLine.Parse(tt.args[1:]) // parse flags for test
+	t.Run("verbose under json rejected", func(t *testing.T) {
+		_, _, err := buildStream([]string{"-o", "json", "-v", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only applies to text output")
+	})
 
-			cfg, err := parseConfig()
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				if tt.errIs != nil {
-					assert.ErrorIs(t, err, tt.errIs)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, cfg)
-
-			if tt.checkFunc != nil {
-				tt.checkFunc(t, cfg)
-			}
-		})
-	}
+	t.Run("buffer", func(t *testing.T) {
+		_, _, err := buildStream([]string{"-b", "10", "example.com"})
+		require.NoError(t, err)
+	})
 }

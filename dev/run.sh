@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Bring up the wsstat dev stack (Dockerized mock WS server) and run the smoke
-# suite against a host-built ./bin/wsstat.
+# Bring up the wsstat dev stack (Dockerized mock WS server) and run a test suite
+# against a host-built ./bin/wsstat.
 # Usage: ./dev/run.sh        build mock, build wsstat, run smoke-test.sh, tear down
+#        ./dev/run.sh smoke  same as the default
+#        ./dev/run.sh soak   run the combination soak (soak-test.sh) instead
 #        ./dev/run.sh up     leave the mock running for manual wsstat invocations
 set -euo pipefail
 
@@ -44,6 +46,19 @@ echo "==> Building wsstat..."
 cd "$REPO_DIR"
 make build
 
-echo "==> Running smoke test..."
-echo ""
-WS_URL="ws://localhost:17080" "$SCRIPT_DIR/smoke-test.sh"
+case "${1:-smoke}" in
+	soak)
+		echo "==> Running soak test (combination matrix)..."
+		echo ""
+		WS_URL="ws://localhost:17080" "$SCRIPT_DIR/soak-test.sh"
+		;;
+	smoke|"")
+		echo "==> Running smoke test..."
+		echo ""
+		WS_URL="ws://localhost:17080" "$SCRIPT_DIR/smoke-test.sh"
+		;;
+	*)
+		echo "ERROR: unknown mode '$1' (expected: smoke, soak, up)" >&2
+		exit 2
+		;;
+esac

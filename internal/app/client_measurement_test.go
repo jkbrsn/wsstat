@@ -181,14 +181,14 @@ func TestMeasurePing(t *testing.T) {
 
 func TestProcessTextResponse(t *testing.T) {
 	t.Run("keeps plain text", func(t *testing.T) {
-		result, err := processTextResponse("not json", formatAuto)
+		result, err := processTextResponse("not json", OutputText)
 		require.NoError(t, err)
 		assert.Equal(t, "not json", result)
 	})
 
 	t.Run("decodes json rpc", func(t *testing.T) {
 		payload := `{"jsonrpc":"2.0","result":"ok"}`
-		result, err := processTextResponse(payload, formatAuto)
+		result, err := processTextResponse(payload, OutputText)
 		require.NoError(t, err)
 		asMap, ok := result.(map[string]any)
 		assert.True(t, ok, "expected JSON-RPC response to decode into a map, got %T", result)
@@ -197,21 +197,21 @@ func TestProcessTextResponse(t *testing.T) {
 
 	t.Run("extracts first element from array", func(t *testing.T) {
 		input := []string{"first", "second", "third"}
-		result, err := processTextResponse(input, formatAuto)
+		result, err := processTextResponse(input, OutputText)
 		require.NoError(t, err)
 		assert.Equal(t, "first", result)
 	})
 
 	t.Run("respects raw format", func(t *testing.T) {
 		payload := `{"jsonrpc":"2.0","result":"ok"}`
-		result, err := processTextResponse(payload, formatRaw)
+		result, err := processTextResponse(payload, OutputRaw)
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
 	})
 
 	t.Run("json format parses like auto", func(t *testing.T) {
 		payload := `{"jsonrpc":"2.0","result":"ok"}`
-		result, err := processTextResponse(payload, formatJSON)
+		result, err := processTextResponse(payload, OutputJSON)
 		require.NoError(t, err)
 		asMap, ok := result.(map[string]any)
 		assert.True(t, ok, "expected JSON-RPC response to decode into a map, got %T", result)

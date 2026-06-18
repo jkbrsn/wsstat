@@ -105,7 +105,7 @@ func (c *Client) runSubscriptionLoop(
 			}
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
-			if c.format != formatJSON {
+			if c.output == OutputText {
 				fmt.Println()
 			}
 		}
@@ -128,8 +128,10 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 	return wsstat.TextMessage, nil, nil
 }
 
-// subscriptionMessageJSON builds a subscription message.
-func (c *Client) subscriptionMessageJSON(
+// subscriptionMessageJSON builds a subscription message envelope.
+// JSON output is schema-stable: every envelope carries the same fields
+// regardless of verbosity (quiet is rejected under -o json at the CLI layer).
+func (*Client) subscriptionMessageJSON(
 	index int,
 	msg wsstat.SubscriptionMessage,
 ) subscriptionMessageJSON {
@@ -137,18 +139,15 @@ func (c *Client) subscriptionMessageJSON(
 	if !ok {
 		payload = string(msg.Data)
 	}
-	output := subscriptionMessageJSON{
-		Schema:  JSONSchemaVersion,
-		Type:    "subscription_message",
-		Payload: payload,
+	return subscriptionMessageJSON{
+		Schema:      JSONSchemaVersion,
+		Type:        "subscription_message",
+		Index:       index,
+		Timestamp:   msg.Received.Format(time.RFC3339Nano),
+		Size:        msg.Size,
+		MessageType: messageTypeLabel(msg.MessageType),
+		Payload:     payload,
 	}
-	if !c.quiet {
-		output.Index = index
-		output.Timestamp = msg.Received.Format(time.RFC3339Nano)
-		output.Size = msg.Size
-		output.MessageType = messageTypeLabel(msg.MessageType)
-	}
-	return output
 }
 
 // subscriptionSummaryJSON builds a subscription summary.
@@ -213,7 +212,7 @@ func (c *Client) StreamSubscription(ctx context.Context, target *url.URL) error 
 			<-subscription.Done()
 			return err
 		}
-		if c.format != formatJSON {
+		if c.output == OutputText {
 			fmt.Println()
 			fmt.Println(c.colorizeOrange("Streaming subscription events"))
 		}
@@ -247,7 +246,7 @@ func (c *Client) StreamSubscriptionOnce(ctx context.Context, target *url.URL) er
 		}
 	}
 
-	if c.format != formatJSON {
+	if c.output == OutputText {
 		fmt.Println()
 	}
 	return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
