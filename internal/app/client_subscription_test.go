@@ -34,15 +34,25 @@ func TestSubscriptionJSONOutput(t *testing.T) {
 		assert.Equal(t, "bar", inner["foo"])
 	})
 
-	t.Run("quiet omits metadata", func(t *testing.T) {
+	t.Run("schema stable under quiet", func(t *testing.T) {
+		// JSON envelopes carry the same fields regardless of verbosity: quiet must
+		// not drop metadata, so downstream parsers see a stable schema.
 		client := &Client{output: OutputJSON, quiet: true}
-		msg := wsstat.SubscriptionMessage{Data: []byte("plain"), Received: time.Unix(0, 0).UTC()}
+		msg := wsstat.SubscriptionMessage{
+			MessageType: wsstat.TextMessage,
+			Data:        []byte("plain"),
+			Received:    time.Unix(0, 0).UTC(),
+			Size:        len("plain"),
+		}
 		output := captureStdoutFrom(t, func() error {
 			return client.printSubscriptionMessage(1, msg)
 		})
 		payload := decodeJSONLine(t, output)
 		assert.Equal(t, "subscription_message", payload["type"])
-		assert.NotContains(t, payload, "index")
+		assert.EqualValues(t, 1, payload["index"])
+		assert.Equal(t, msg.Received.Format(time.RFC3339Nano), payload["timestamp"])
+		assert.EqualValues(t, msg.Size, payload["size"])
+		assert.Equal(t, "text", payload["message_type"])
 		assert.Equal(t, "plain", payload["payload"])
 	})
 
