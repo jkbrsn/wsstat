@@ -207,6 +207,11 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 			return nil, nil, errors.New("--count cannot be combined with --once")
 		}
 	}
+	if *summary > 0 {
+		if out, _ := app.ParseOutput(cf.output); out == app.OutputRaw {
+			return nil, nil, errors.New("--summary-interval has no effect with -o raw")
+		}
+	}
 	opts = append(opts,
 		app.WithCount(*count),
 		app.WithStreamOnce(*once),
