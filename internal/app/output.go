@@ -165,6 +165,14 @@ func writeRaw(b []byte) error {
 // disabled or the width cannot be determined (e.g. piped/redirected output), s
 // is returned unchanged.
 func (c *Client) clipBody(s string) string {
+	return c.clipBodyWithPrefix(s, 0)
+}
+
+// clipBodyWithPrefix behaves like clipBody but reserves prefixWidth columns on
+// the first line for a label printed before the body (e.g. a colored "Response: "
+// that cannot itself be clipped without corrupting its ANSI codes). Continuation
+// lines of a multi-line body get the full width.
+func (c *Client) clipBodyWithPrefix(s string, prefixWidth int) string {
 	if !c.clip {
 		return s
 	}
@@ -172,7 +180,17 @@ func (c *Client) clipBody(s string) string {
 	if width <= 0 {
 		return s
 	}
-	return clipLines(s, width)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		w := width
+		if i == 0 {
+			if w -= prefixWidth; w < 0 {
+				w = 0
+			}
+		}
+		lines[i] = clipToWidth(line, w)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // clipLines clips each line of a (possibly multi-line) string to width columns.
@@ -474,12 +492,14 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 		return writeRaw(rawResponseBytes(response))
 	}
 
-	label := c.colorizeOrange("Response")
-	baseMessage := label + ": "
-
+	const labelText = "Response: "
+	baseMessage := c.colorizeOrange("Response") + ": "
+	prefixWidth := utf8.RuneCountInString(labelText)
 	if c.quiet {
 		baseMessage = ""
+		prefixWidth = 0
 	}
+	clip := func(s string) string { return c.clipBodyWithPrefix(s, prefixWidth) }
 
 	compact := c.body == BodyCompact
 	var err error
@@ -494,16 +514,16 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 			if formatted, ferr := renderJSON(responseJSON, compact); ferr == nil {
 				body = formatted
 			}
-			_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(body))
+			_, err = fmt.Printf("%s%s\n", baseMessage, clip(body))
 		} else {
-			_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
+			_, err = fmt.Printf("%s%s\n", baseMessage, clip(fmt.Sprintf("%v", v)))
 		}
 	case []any:
-		_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
+		_, err = fmt.Printf("%s%s\n", baseMessage, clip(fmt.Sprintf("%v", v)))
 	case []byte:
-		_, err = fmt.Printf("%s%s\n", baseMessage, c.clipBody(string(v)))
+		_, err = fmt.Printf("%s%s\n", baseMessage, clip(string(v)))
 	default:
-		_, err = fmt.Printf("%s%v\n", baseMessage, c.clipBody(fmt.Sprintf("%v", v)))
+		_, err = fmt.Printf("%s%v\n", baseMessage, clip(fmt.Sprintf("%v", v)))
 	}
 	if err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
