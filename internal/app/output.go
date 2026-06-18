@@ -559,7 +559,7 @@ func rawResponseBytes(v any) []byte {
 		if b, err := json.Marshal(r); err == nil {
 			return b
 		}
-		return []byte(fmt.Sprintf("%v", r))
+		return fmt.Appendf(nil, "%v", r)
 	}
 }
 

@@ -38,7 +38,7 @@ func TestClipToWidth(t *testing.T) {
 func TestClipLinesMultiLine(t *testing.T) {
 	body := "{\n  \"aaaaaaaaaaaaaaaaaaaa\": \"bbbbbbbbbbbbbbbbbbbb\"\n}"
 	got := clipLines(body, 10)
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		assert.LessOrEqual(t, utf8.RuneCountInString(line), 10)
 	}
 	parts := strings.Split(got, "\n")
