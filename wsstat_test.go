@@ -1076,6 +1076,101 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 		})
 	}
 }
+// TestWithSubprotocols verifies that an offered subprotocol is negotiated and surfaced in
+// Result.Subprotocol.
+func TestWithSubprotocols(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+			Subprotocols:       []string{"chat.v1"},
+		})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		for {
+			mt, msg, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			if err := conn.Write(ctx, mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New(WithSubprotocols([]string{"chat.v1"}))
+	defer ws.Close()
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+
+	result := ws.ExtractResult()
+	assert.Equal(t, "chat.v1", result.Subprotocol)
+}
+
+// TestWithCompression verifies that enabling compression negotiates permessage-deflate and that
+// the negotiated extension is surfaced in Result.Compression.
+func TestWithCompression(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+			CompressionMode:    websocket.CompressionContextTakeover,
+		})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		for {
+			mt, msg, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			if err := conn.Write(ctx, mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New(WithCompression(true))
+	defer ws.Close()
+	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+
+	result := ws.ExtractResult()
+	assert.Contains(t, result.Compression, "permessage-deflate")
+}
+
+func TestWithReadLimit(t *testing.T) {
+	message := []byte("this message comfortably exceeds the tiny read limit")
+
+	t.Run("message above limit errors", func(t *testing.T) {
+		ws := New(WithReadLimit(8))
+		defer ws.Close()
+		require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+		ws.WriteMessage(TextMessage, message)
+		_, _, err := ws.ReadMessage()
+		require.Error(t, err)
+	})
+
+	t.Run("negative limit disables the cap", func(t *testing.T) {
+		ws := New(WithReadLimit(-1))
+		defer ws.Close()
+		require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+		ws.WriteMessage(TextMessage, message)
+		_, got, err := ws.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, message, got)
+	})
+}
+
 func TestWithResolves(t *testing.T) {
 	t.Run("basic resolve override", func(t *testing.T) {
 		// Create WSStat with resolve override pointing to localhost
@@ -1098,8 +1193,8 @@ func TestWithResolves(t *testing.T) {
 
 		result := ws.ExtractResult()
 		assert.Equal(t, targetURL, result.URL)
-		// Note: result.IPs contains the result of a separate IP lookup
-		// done after connection, not the override IP
+		// result.IPs holds the actually-connected address, which is the override.
+		assert.Equal(t, []string{"127.0.0.1"}, result.IPs)
 	})
 
 	t.Run("multiple hosts", func(t *testing.T) {

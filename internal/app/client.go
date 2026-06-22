@@ -54,11 +54,12 @@ import (
 // or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
-	count       int               // Nr of interactions; 0 means unlimited in subscription mode
-	headers     []string          // HTTP headers for connection establishment ("Key: Value")
-	resolves    map[string]string // DNS resolution overrides: "host:port" → "address"
-	rpcMethod   string            // JSON-RPC method (no params)
-	textMessage string            // Text message
+	count        int               // Nr of interactions; 0 means unlimited in subscription mode
+	headers      []string          // HTTP headers for connection establishment ("Key: Value")
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	rpcMethod    string            // JSON-RPC method (no params)
+	textMessage  string            // Text message
+	subprotocols []string          // WebSocket subprotocols to negotiate
 
 	// Output
 	output    Output // whole-stdout contract: text, json, or raw
@@ -82,6 +83,9 @@ type Client struct {
 	// Timeouts
 	timeout    time.Duration // read/dial timeout; 0 means use library default
 	closeGrace time.Duration // close-handshake echo wait; 0 means use library default
+
+	// Limits
+	readLimit int64 // max inbound message size; 0 uses library default, -1 disables
 }
 
 // Option configures a Client.
@@ -194,6 +198,17 @@ func WithCloseGrace(d time.Duration) Option {
 	return func(c *Client) { c.closeGrace = d }
 }
 
+// WithReadLimit sets the max inbound message size in bytes. Zero uses the library default
+// (16 MiB); a negative value disables the limit.
+func WithReadLimit(n int64) Option {
+	return func(c *Client) { c.readLimit = n }
+}
+
+// WithSubprotocols sets the WebSocket subprotocols to offer during the handshake.
+func WithSubprotocols(subprotocols []string) Option {
+	return func(c *Client) { c.subprotocols = subprotocols }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -238,6 +253,14 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 
 	if c.closeGrace > 0 {
 		opts = append(opts, wsstat.WithCloseGrace(c.closeGrace))
+	}
+
+	if c.readLimit != 0 {
+		opts = append(opts, wsstat.WithReadLimit(c.readLimit))
+	}
+
+	if len(c.subprotocols) > 0 {
+		opts = append(opts, wsstat.WithSubprotocols(c.subprotocols))
 	}
 
 	return opts

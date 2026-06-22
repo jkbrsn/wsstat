@@ -203,3 +203,32 @@ func TestStreamFlags(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+func TestParseReadLimit(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"1024", 1024, false},
+		{"512K", 512 << 10, false},
+		{"16M", 16 << 20, false},
+		{"4m", 4 << 20, false},
+		{"-1", -1, false},
+		{"-5", -1, false},
+		{"bad", 0, true},
+		{"12X", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseReadLimit(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

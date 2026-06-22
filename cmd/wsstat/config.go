@@ -5,10 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app"
+)
+
+const (
+	decimalBase  = 10      // base for parsing decimal integer flag values
+	int64BitSize = 64      // bit size for strconv.ParseInt into int64
+	bytesPerKiB  = 1 << 10 // multiplier for the K suffix on --max-message-size
+	bytesPerMiB  = 1 << 20 // multiplier for the M suffix on --max-message-size
 )
 
 // revive:disable:line-length-limit flag descriptions
@@ -32,6 +40,9 @@ type commonFlags struct {
 
 	timeout      time.Duration
 	closeTimeout time.Duration
+
+	maxMessageSize string
+	subprotocol    string
 }
 
 // registerCommon registers the shared flags onto fs, binding them to c.
@@ -60,6 +71,10 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.DurationVar(&c.timeout, "timeout", 0, "read/dial timeout (e.g., 30s, 1m); 0 uses default (5s)")
 	fs.DurationVar(&c.closeTimeout, "close-timeout", 0,
 		"max wait for the peer's close echo before forcing teardown; 0 uses default (3s); capped at 5s")
+	fs.StringVar(&c.maxMessageSize, "max-message-size", "",
+		"max inbound message size, e.g. 512K or 16M; empty uses default (16M); -1 disables the limit")
+	fs.StringVar(&c.subprotocol, "subprotocol", "",
+		"WebSocket subprotocol(s) to negotiate, in preference order (comma-separated)")
 }
 
 // textOnlyFlags maps the internal flag names rejected under json/raw output to
@@ -117,6 +132,11 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, errors.New("--close-timeout must be zero or greater")
 	}
 
+	readLimit, err := parseReadLimit(c.maxMessageSize)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Axis purity: --body/--clip/-q/-v/-vv are text-only; reject under json/raw.
 	if err := validateTextOnlyFlags(output, set); err != nil {
 		return nil, nil, err
@@ -146,9 +166,50 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		app.WithInsecure(c.insecure),
 		app.WithTimeout(c.timeout),
 		app.WithCloseGrace(c.closeTimeout),
+		app.WithReadLimit(readLimit),
+		app.WithSubprotocols(splitCSV(c.subprotocol)),
 		app.WithMode(mode),
 	}
 	return opts, target, nil
+}
+
+// splitCSV splits a comma-separated value into trimmed, non-empty parts. Returns nil for empty.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// parseReadLimit parses a --max-message-size value into a byte count. An empty string yields 0
+// (library default); a negative value yields -1 (unlimited). A trailing K or M (case-insensitive)
+// multiplies by 1024 or 1024*1024.
+func parseReadLimit(s string) (int64, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return 0, nil
+	}
+	mult := int64(1)
+	digits := trimmed
+	switch trimmed[len(trimmed)-1] {
+	case 'K', 'k':
+		mult, digits = bytesPerKiB, trimmed[:len(trimmed)-1]
+	case 'M', 'm':
+		mult, digits = bytesPerMiB, trimmed[:len(trimmed)-1]
+	default:
+		// No unit suffix; the whole string is a byte count.
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(digits), decimalBase, int64BitSize)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --max-message-size %q: want a byte count like 512K or 16M, or -1", s)
+	}
+	if n < 0 {
+		return -1, nil
+	}
+	return n * mult, nil
 }
 
 // validateTextOnlyFlags rejects --body/--clip/-q/-v/-vv when output is not text.

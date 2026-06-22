@@ -58,6 +58,8 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(w, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
 	fmt.Fprintln(w, "      --close-timeout <duration> max wait for the peer's close echo [default: 3s; capped at 5s]")
+	fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
+	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
 }
 
 // printMeasureUsage prints usage for the measure subcommand.

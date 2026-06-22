@@ -34,6 +34,9 @@ const (
 	defaultChanBufferSize = 8
 	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
 	defaultSubscriptionBufferSize = 32
+	// defaultReadLimit bounds a single inbound message (16 MiB). Covers realistic payloads
+	// while keeping coder's OOM guard; raise or disable via WithReadLimit.
+	defaultReadLimit = 16 << 20
 
 	// TextMessage denotes a UTF-8 encoded text message (e.g. JSON). Numerically identical to
 	// websocket.MessageText so the public int-based API stays stable across the transport swap.
@@ -93,10 +96,14 @@ type WSStat struct {
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout    time.Duration
-	closeGrace time.Duration
-	tlsConf    *tls.Config
-	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
+	timeout      time.Duration
+	closeGrace   time.Duration
+	tlsConf      *tls.Config
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	readLimit    int64             // max inbound message size; -1 disables the limit
+	subprotocols []string          // WebSocket subprotocols to negotiate
+	headers      http.Header       // headers merged into every handshake
+	compress     bool              // negotiate permessage-deflate
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -112,6 +119,10 @@ func New(opts ...Option) *WSStat {
 	}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	// Resolve the read limit: 0 (unset) uses the default; negative disables the limit.
+	if cfg.readLimit == 0 {
+		cfg.readLimit = defaultReadLimit
 	}
 
 	result := &Result{}
@@ -130,6 +141,10 @@ func New(opts ...Option) *WSStat {
 		closeGrace:                cfg.closeGrace,
 		tlsConf:                   cfg.tlsConfig,
 		resolves:                  cfg.resolves,
+		readLimit:                 cfg.readLimit,
+		subprotocols:              cfg.subprotocols,
+		headers:                   cfg.headers,
+		compress:                  cfg.compress,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
@@ -342,15 +357,41 @@ func (ws *WSStat) writePump() {
 }
 
 // Dial establishes a new WebSocket connection using the custom dialer defined in this package.
-// If required, specify custom headers to merge with the default headers.
+// If required, specify custom headers to merge with the default headers. It dials with a
+// background context; use DialContext to bind the connection to a caller-supplied context.
 // Sets times: dialStart, wsHandshakeDone
 func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
+	return ws.DialContext(context.Background(), targetURL, customHeaders)
+}
+
+// DialContext establishes a new WebSocket connection bound to ctx. Canceling ctx (or calling
+// Close) tears down the connection and unblocks in-flight reads and writes. If required, specify
+// custom headers to merge with the default headers.
+// Sets times: dialStart, wsHandshakeDone
+func (ws *WSStat) DialContext(
+	ctx context.Context, targetURL *url.URL, customHeaders http.Header,
+) error {
+	// Install the connection context from the caller, replacing the placeholder created in New so
+	// the pumps and read/write paths honor caller cancellation and deadlines.
+	ws.cancel()
+	ws.ctx, ws.cancel = context.WithCancel(ctx)
+
 	ws.result.URL = targetURL
-	headers := cloneHeaders(customHeaders)
+	// Option headers form the base; headers passed to this call override them per key.
+	headers := cloneHeaders(ws.headers)
+	for name, values := range customHeaders {
+		headers[name] = append([]string(nil), values...)
+	}
+	compression := websocket.CompressionDisabled
+	if ws.compress {
+		compression = websocket.CompressionContextTakeover
+	}
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := websocket.Dial(ws.ctx, targetURL.String(), &websocket.DialOptions{
-		HTTPClient: ws.httpClient,
-		HTTPHeader: headers,
+		HTTPClient:      ws.httpClient,
+		HTTPHeader:      headers,
+		Subprotocols:    ws.subprotocols,
+		CompressionMode: compression,
 	})
 	if err != nil {
 		if resp != nil {
@@ -363,43 +404,9 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
 	}
 	ws.timings.wsHandshakeDone = time.Now()
-	conn.SetReadLimit(-1) // restore unlimited-read behavior (coder defaults to 32 KiB)
+	conn.SetReadLimit(ws.readLimit) // bound a single message; negative disables the limit
 	ws.conn.Store(conn)
-
-	// Lookup IP before starting pumps so slow DNS doesn't let idle read deadlines
-	// close the connection and cancel the context while we wait. If a resolve
-	// override is present, use it and skip DNS entirely.
-	overrideIP := ""
-	if ws.resolves != nil {
-		host := strings.ToLower(targetURL.Hostname())
-		port := targetURL.Port()
-		if port == "" {
-			switch targetURL.Scheme {
-			case "wss":
-				port = "443"
-			case "ws":
-				port = "80"
-			default:
-				// Unknown scheme; leave port empty to skip override lookup
-			}
-		}
-		if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
-			overrideIP = ip
-		}
-	}
-
-	if overrideIP != "" {
-		ws.result.IPs = []string{overrideIP}
-	} else {
-		ips, err := net.LookupIP(targetURL.Hostname())
-		if err != nil {
-			return fmt.Errorf("failed IP lookup: %v", err)
-		}
-		ws.result.IPs = make([]string, len(ips))
-		for i, ip := range ips {
-			ws.result.IPs[i] = ip.String()
-		}
-	}
+	// Result.IPs was set to the connected address by the transport during the handshake.
 
 	// Start the read and write pumps after successful setup
 	ws.wgPumps.Add(2)
@@ -409,6 +416,10 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	// Capture request and response headers
 	ws.result.RequestHeaders = applyDefaultHeaders(headers)
 	ws.result.ResponseHeaders = resp.Header
+
+	// Capture the negotiated subprotocol and compression extension.
+	ws.result.Subprotocol = conn.Subprotocol()
+	ws.result.Compression = resp.Header.Get("Sec-WebSocket-Extensions")
 
 	return nil
 }
@@ -742,7 +753,7 @@ func newHTTPClient(
 				return nil, err
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, nil, capture)
+			return dialWithAddresses(ctx, network, target, timeout, timings, result, nil, capture)
 		},
 
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -773,7 +784,7 @@ func newHTTPClient(
 				return tlsConn, nil
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, wrap, capture)
+			return dialWithAddresses(ctx, network, target, timeout, timings, result, wrap, capture)
 		},
 	}
 
@@ -828,6 +839,7 @@ func dialWithAddresses(
 	target dialTarget,
 	timeout time.Duration,
 	timings *wsTimings,
+	result *Result,
 	wrap func(net.Conn) (net.Conn, error),
 	capture func(net.Conn),
 ) (net.Conn, error) {
@@ -841,6 +853,9 @@ func dialWithAddresses(
 		}
 
 		timings.tcpConnected = time.Now()
+		// Record the actually-connected address. Overwritten per attempt so the value
+		// reflects the IP whose connection is ultimately returned.
+		result.IPs = []string{ip}
 
 		// Capture the raw conn (not the TLS wrapper) so Close can force the underlying
 		// socket shut; closing it unblocks coder's read regardless of the TLS layer.
@@ -882,12 +897,16 @@ type Option func(*options)
 
 // options stores the configuration for a WSStat instance.
 type options struct {
-	tlsConfig  *tls.Config
-	timeout    time.Duration
-	closeGrace time.Duration
-	bufferSize int
-	logger     zerolog.Logger
-	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
+	tlsConfig    *tls.Config
+	timeout      time.Duration
+	closeGrace   time.Duration
+	bufferSize   int
+	logger       zerolog.Logger
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	readLimit    int64             // max inbound message size; 0 uses the default, -1 disables
+	subprotocols []string          // WebSocket subprotocols to negotiate
+	headers      http.Header       // headers merged into every handshake
+	compress     bool              // negotiate permessage-deflate
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -915,4 +934,27 @@ func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConf
 // Map key format: "host:port", value: "ip_address".
 func WithResolves(resolves map[string]string) Option {
 	return func(o *options) { o.resolves = resolves }
+}
+
+// WithReadLimit bounds the size in bytes of a single inbound message. A value of 0 keeps the
+// default (16 MiB); a negative value disables the limit (use with care: an unbounded message
+// can exhaust memory). Defaults to 16 MiB.
+func WithReadLimit(n int64) Option { return func(o *options) { o.readLimit = n } }
+
+// WithSubprotocols sets the WebSocket subprotocols to offer during the handshake, in preference
+// order. The negotiated value is reported in Result.Subprotocol.
+func WithSubprotocols(subprotocols []string) Option {
+	return func(o *options) { o.subprotocols = subprotocols }
+}
+
+// WithHeaders sets HTTP headers merged into every handshake request. Headers passed directly to
+// Dial/DialContext take precedence over these on a per-key basis.
+func WithHeaders(headers http.Header) Option {
+	return func(o *options) { o.headers = headers }
+}
+
+// WithCompression enables negotiation of the permessage-deflate extension. Disabled by default.
+// The negotiated extension is reported in Result.Compression.
+func WithCompression(enabled bool) Option {
+	return func(o *options) { o.compress = enabled }
 }

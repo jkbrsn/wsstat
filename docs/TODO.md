@@ -87,13 +87,10 @@ Contract-freezing (breaking if deferred past the tag):
   6. Add `WithHeaders(http.Header)` option.
   - Done when: `go build ./...` + tests green, no `MeasureLatency*`/`Dial` symbols remain, and the
     race + error-path tests (below) cover the new funcs.
-- [ ] **`WithSubprotocols([]string)` + `--subprotocol`**: thread into `DialOptions.Subprotocols`
-      (the only `Dial` call site sets just `HTTPClient`/`HTTPHeader`, `wsstat.go:351`). Add a new
-      `Result.Subprotocol string` field populated from coder's `Conn.Subprotocol()` (a frozen-struct
-      addition, so do it now). Without negotiation wsstat can't connect to graphql-ws/mqtt/ocpp/wamp.
-  - Done when: a measure against a server that requires a subprotocol connects and reports the
-    negotiated value.
-- [ ] **`WithReadLimit(int64)` + `--max-message-size`**: replace the unconditional
+- [x] **`WithSubprotocols([]string)` + `--subprotocol`** (Batch 1): threaded into
+      `DialOptions.Subprotocols`; `Result.Subprotocol` populated from `Conn.Subprotocol()`. Covered by
+      `TestWithSubprotocols`.
+- [x] **`WithReadLimit(int64)` + `--max-message-size`** (Batch 1): replace the unconditional
       `conn.SetReadLimit(-1)` (`wsstat.go:366`, removes coder's 32 KiB OOM guard) with a bounded
       default that callers can raise.
   - **Decided**: default 16 MiB. `WithReadLimit(n)`: `n > 0` sets the cap, `n < 0` (`-1`) disables
@@ -132,13 +129,10 @@ Correctness:
     `Result` and atomic-swap a `*Result` pointer.
   - Done when: a new `-race` test calling `ExtractResult` in a loop concurrently with `Close` passes
     (the existing suite doesn't cover this, which is why the race is latent).
-- [ ] **Connection leak** in `Dial`: `conn` is stored at `wsstat.go:367` but a subsequent
-      `net.LookupIP` failure (`:394`) returns without closing it and before the pumps start, so the
-      socket leaks until the caller calls `Close()`. The CLI is shielded (app closes on dial error);
-      direct library users following the documented contract are not.
-  - Preferred fix: drop the redundant post-handshake `net.LookupIP` entirely (the transport already
-    resolved the host) and populate `Result.IPs` from the dial target — removes the leak window
-    *and* a second DNS round-trip, and dovetails with the "record actually-dialed IP" polish item.
+- [x] **Connection leak** in `Dial` (Batch 1): dropped the redundant post-handshake `net.LookupIP`;
+      `Result.IPs` is now set from the connected address inside the transport's `dialWithAddresses`.
+      Removes the leak window *and* the second DNS round-trip, and subsumes the "record actually-dialed
+      IP" polish item below.
 
 Contract completeness:
 
@@ -198,12 +192,15 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 - [ ] Measurement API reshape — **decided** ([ADR 0002](./decisions/0002-measurement-api-shape.md));
       the single biggest lever on this grade. Execution is tracked as a release blocker above.
-- [ ] `DialContext(ctx, ...)` public method on `WSStat` (`Dial` at `wsstat.go:347` only uses the
-      internal background ctx). Prerequisite for collapsing the wrapper goroutine shuttle.
-- [ ] `WithCompression` / permessage-deflate toggle mapping to `DialOptions.CompressionMode`
-      (`wsstat.go:351`); reflect the negotiated mode in `Result`. Keep disabled by default.
-- [ ] Record the actually-dialed remote IP in `Result.IPs` (today `wsstat.go:394` dumps the full
-      `net.LookupIP` set, not the connected address) + a `WithIPVersion`/family-preference option.
+      Batch 1 landed reshape steps 1 (`DialContext`) and 6 (`WithHeaders`); steps 2-5 (one-shots,
+      wrapper deletion, `Dial` removal) are Batch 2.
+- [x] `DialContext(ctx, ...)` public method on `WSStat` (Batch 1): caller ctx is installed as the
+      connection context, so the pumps and read/write paths honor caller cancellation/deadline.
+- [x] `WithCompression` / permessage-deflate toggle (Batch 1): maps to `DialOptions.CompressionMode`,
+      disabled by default; negotiated extension reflected in `Result.Compression`. Covered by
+      `TestWithCompression`.
+- [x] Record the actually-dialed remote IP in `Result.IPs` (Batch 1; done via the connection-leak
+      fix). Still open: a `WithIPVersion`/family-preference option (deferred, not yet needed).
 - [ ] `WithProxy(*url.URL)` / `--proxy` instead of env-only `http.ProxyFromEnvironment`
       (`wsstat.go:735`), or document proxying as env-driven.
 - [ ] Decide on `OneHitMessage` (non-JSON, `wsstat.go:505`): zero in-tree callers — keep as

@@ -31,6 +31,8 @@ type CertificateDetails struct {
 type Result struct {
 	IPs             []string             // IP addresses of the WebSocket connection
 	URL             *url.URL             // URL of the WebSocket connection
+	Subprotocol     string               // Negotiated WebSocket subprotocol ("" if none)
+	Compression     string               // Negotiated Sec-WebSocket-Extensions value ("" if none)
 	RequestHeaders  http.Header          // Headers of the initial request
 	ResponseHeaders http.Header          // Headers of the response
 	TLSState        *tls.ConnectionState // State of the TLS connection
