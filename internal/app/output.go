@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -309,13 +308,13 @@ func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Printf(
 		"%s: %s (%d %s)\n",
 		rttString,
-		c.colorizeOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
+		c.colorizeOrange(msString(result.MessageRTT)+"ms"),
 		result.MessageCount,
 		msgCountString)
 	fmt.Printf(
 		printValueTemp,
 		"Total time",
-		c.colorizeOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
+		c.colorizeOrange(msString(result.TotalTime)+"ms"))
 	fmt.Println()
 }
 

@@ -51,21 +51,21 @@ type timingTLSJSON struct {
 }
 
 type timingDurationsJSON struct {
-	DNSLookup     *int64 `json:"dns_lookup,omitempty"`
-	TCPConnection *int64 `json:"tcp_connection,omitempty"`
-	TLSHandshake  *int64 `json:"tls_handshake,omitempty"`
-	WSHandshake   *int64 `json:"ws_handshake,omitempty"`
-	MessageRTT    *int64 `json:"message_rtt,omitempty"`
-	Total         *int64 `json:"total,omitempty"`
+	DNSLookup     *float64 `json:"dns_lookup,omitempty"`
+	TCPConnection *float64 `json:"tcp_connection,omitempty"`
+	TLSHandshake  *float64 `json:"tls_handshake,omitempty"`
+	WSHandshake   *float64 `json:"ws_handshake,omitempty"`
+	MessageRTT    *float64 `json:"message_rtt,omitempty"`
+	Total         *float64 `json:"total,omitempty"`
 }
 
 type timingTimelineJSON struct {
-	DNSLookupDone        *int64 `json:"dns_lookup_done,omitempty"`
-	TCPConnected         *int64 `json:"tcp_connected,omitempty"`
-	TLSHandshakeDone     *int64 `json:"tls_handshake_done,omitempty"`
-	WSHandshakeDone      *int64 `json:"ws_handshake_done,omitempty"`
-	FirstMessageResponse *int64 `json:"first_message_response,omitempty"`
-	Total                *int64 `json:"total,omitempty"`
+	DNSLookupDone        *float64 `json:"dns_lookup_done,omitempty"`
+	TCPConnected         *float64 `json:"tcp_connected,omitempty"`
+	TLSHandshakeDone     *float64 `json:"tls_handshake_done,omitempty"`
+	WSHandshakeDone      *float64 `json:"ws_handshake_done,omitempty"`
+	FirstMessageResponse *float64 `json:"first_message_response,omitempty"`
+	Total                *float64 `json:"total,omitempty"`
 }
 
 type responseOutputJSON struct {
@@ -79,8 +79,8 @@ type subscriptionSummaryJSON struct {
 	Schema        string                  `json:"schema_version"`
 	Type          string                  `json:"type"`
 	Target        *timingTargetJSON       `json:"target,omitempty"`
-	FirstEventMs  *int64                  `json:"first_event_ms,omitempty"`
-	LastEventMs   *int64                  `json:"last_event_ms,omitempty"`
+	FirstEventMs  *float64                `json:"first_event_ms,omitempty"`
+	LastEventMs   *float64                `json:"last_event_ms,omitempty"`
 	TotalMessages int                     `json:"total_messages"`
 	Subscriptions []subscriptionEntryJSON `json:"subscriptions,omitempty"`
 }
@@ -89,9 +89,9 @@ type subscriptionEntryJSON struct {
 	ID                 string `json:"id"`
 	Messages           uint64 `json:"messages"`
 	Bytes              uint64 `json:"bytes"`
-	FirstEventMs       *int64 `json:"first_event_ms,omitempty"`
-	LastEventMs        *int64 `json:"last_event_ms,omitempty"`
-	MeanInterArrivalMs *int64 `json:"mean_inter_arrival_ms,omitempty"`
+	FirstEventMs       *float64 `json:"first_event_ms,omitempty"`
+	LastEventMs        *float64 `json:"last_event_ms,omitempty"`
+	MeanInterArrivalMs *float64 `json:"mean_inter_arrival_ms,omitempty"`
 	Error              string `json:"error,omitempty"`
 }
 

@@ -71,7 +71,7 @@ Ordered by the suggested sequencing (contract-freezers first, docs/release hygie
 
 Contract-freezing (breaking if deferred past the tag):
 
-- [ ] **Timing precision**: stop truncating phase durations to whole ms. Touch `formatDuration`
+- [x] **Timing precision**: stop truncating phase durations to whole ms. Touch `formatDuration`
       (`internal/app/formatting.go:25`, integer `d/time.Millisecond`), `msPtr` (`:48`,
       `d.Milliseconds()`), the right-padded text variant (`:18`), and the text RTT/Total call sites
       (`internal/app/output.go:309,315`, `.Milliseconds()`).
@@ -317,8 +317,11 @@ Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-
 
 - [x] `--debug` flag wiring the core's existing zerolog `Debug` logs to stderr, decoupled from
       `-v`/`-vv` output verbosity (the app never calls `WithLogger`).
-- [ ] Publish a versioned JSON output schema (docs/ JSON Schema + per-type version semantics) once
-      the schema-versioning blocker decision is made.
+- [x] Publish a versioned JSON output schema: `docs/schema/wsstat-output-v1.schema.json` (draft
+      2020-12, all five record types) + `docs/schema/README.md` for the version semantics; the
+      single-monotonic-version + float-ms precision contract is recorded in
+      [ADR 0003](./decisions/0003-json-output-schema-and-timing-precision.md). `TestSchemaDocDrift`
+      pins the schema's version/record-type set to the code.
 
 ## Pre-tag / merge cleanup
 

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wsstat help measure` / `wsstat help stream` now print that subcommand's usage (previously `help <anything>` always printed the top-level usage).
 - `NO_COLOR` is now documented in the help text (it already forced color off under `--color auto`).
 - `--debug` flag wiring the core's zerolog debug logs to stderr, independent of the `-v`/`-vv` output verbosity (which only shape stdout). Off by default; safe to combine with any `-o` mode or `-q` since it never touches the stdout output contract.
+- **Published JSON output schema.** `docs/schema/wsstat-output-v1.schema.json` (draft 2020-12) validates a single `-o json` NDJSON record across all five types (`timing`, `response`, `subscription_summary`, `subscription_message`, `error`); `docs/schema/README.md` documents the version semantics. `schema_version` is a single monotonic version for the whole output family: a breaking change to any record bumps it (`1.0` -> `2.0`); additive optional fields do not. The schema is intentionally open so additive fields still validate. A drift test pins the schema's version and record-type set to the code. See [ADR 0003](./docs/decisions/0003-json-output-schema-and-timing-precision.md).
 
 ### Changed
 
@@ -48,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING (CLI):** the URL scheme is now allowlisted to `ws`/`wss` at parse time. `http://`/`https://` (and any other scheme) are rejected with `unsupported scheme "...": use ws:// or wss://` instead of being silently dialed as plaintext by the lenient underlying dialer. Scheme-less input still defaults to `wss://`.
 - **Exit codes normalized.** Post-parse argument/validation errors now exit `2` (matching flag-parse errors) instead of `1`, reserving `1` for genuine runtime/network failures. The full table (`0` success, `1` runtime, `2` usage, `130` interrupt) is documented in `wsstat -h` and the README.
 - Dropped the `github.com/jkbrsn/jsonrpc` dependency (and its transitive `github.com/bytedance/sonic` JIT/asm surface). The CLI only built a fixed JSON-RPC request and decoded the reply, so both are now handled inline with the standard library `encoding/json`. No CLI behavior change; the binary no longer links a runtime code-generation library.
+- **Sub-millisecond timing precision.** Phase durations now render as float milliseconds at microsecond resolution (rounded to 3 decimals) instead of truncating to whole ms, in both text and `-o json` output. A sub-millisecond phase (e.g. a `ws://localhost` dial) now shows non-zero. The JSON `durations_ms`/`timeline_ms` (and subscription `*_ms`) values are now `number` rather than integer; consumers must not assume integer values. Key names and the nil-for-zero semantics are unchanged, so this is part of `schema_version` `1.0` (no bump). See [ADR 0003](./docs/decisions/0003-json-output-schema-and-timing-precision.md).
 
 ### Removed
 
