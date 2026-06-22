@@ -38,6 +38,10 @@ type Result struct {
 	TLSState        *tls.ConnectionState // State of the TLS connection
 	MessageCount    int                  // Number of messages sent and received
 
+	// InvalidUTF8Frames counts inbound text frames that failed UTF-8 validation. Always 0
+	// unless WithValidateUTF8 is set (coder/websocket does not validate text frames itself).
+	InvalidUTF8Frames int
+
 	// Subscription statistics captured when long-lived streams are active.
 	Subscriptions          map[string]SubscriptionStats // Metrics by subscription ID
 	SubscriptionFirstEvent time.Duration                // Time until first subscription event

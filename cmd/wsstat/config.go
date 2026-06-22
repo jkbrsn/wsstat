@@ -45,6 +45,7 @@ type commonFlags struct {
 
 	maxMessageSize string
 	subprotocol    string
+	validateUTF8   bool
 }
 
 // registerCommon registers the shared flags onto fs, binding them to c.
@@ -80,6 +81,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 		"max inbound message size, e.g. 512K or 16M; empty uses default (16M); -1 disables the limit")
 	fs.StringVar(&c.subprotocol, "subprotocol", "",
 		"WebSocket subprotocol(s) to negotiate, in preference order (comma-separated)")
+	fs.BoolVar(&c.validateUTF8, "validate-utf8", false,
+		"validate UTF-8 on inbound text frames and warn on violations (coder/websocket skips this)")
 }
 
 // textOnlyFlags maps the internal flag names rejected under json/raw output to
@@ -186,6 +189,7 @@ func buildCommonOptions(
 		app.WithCloseGrace(c.closeTimeout),
 		app.WithReadLimit(readLimit),
 		app.WithSubprotocols(splitCSV(c.subprotocol)),
+		app.WithValidateUTF8(c.validateUTF8),
 		app.WithMode(mode),
 	}
 }

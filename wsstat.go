@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/rs/zerolog"
@@ -40,6 +41,10 @@ const (
 	// maxErrBodyBytes caps how much of a failed-handshake response body is read into the
 	// returned error, so a hostile server cannot reflect an unbounded body into it.
 	maxErrBodyBytes = 4 << 10
+
+	// maxCloseReasonBytes is the largest close-handshake reason CloseWith accepts: the RFC 6455
+	// control-frame payload limit (125 bytes) minus the 2-byte close code.
+	maxCloseReasonBytes = 123
 
 	// TextMessage denotes a UTF-8 encoded text message (e.g. JSON). Numerically identical to
 	// websocket.MessageText so the public int-based API stays stable across the transport swap.
@@ -129,6 +134,12 @@ type WSStat struct {
 	subprotocols []string          // WebSocket subprotocols to negotiate
 	headers      http.Header       // headers merged into every handshake
 	compress     bool              // negotiate permessage-deflate
+	validateUTF8 bool              // validate UTF-8 on inbound text frames
+	invalidUTF8  atomic.Int64      // count of text frames that failed UTF-8 validation
+
+	// Close-handshake frame, settable via CloseWith before teardown.
+	closeStatus atomic.Int64           // handshake close code (default StatusNormalClosure)
+	closeReason atomic.Pointer[string] // handshake close reason (nil means empty)
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -170,10 +181,12 @@ func New(opts ...Option) *WSStat {
 		subprotocols:              cfg.subprotocols,
 		headers:                   cfg.headers,
 		compress:                  cfg.compress,
+		validateUTF8:              cfg.validateUTF8,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
+	ws.closeStatus.Store(int64(websocket.StatusNormalClosure))
 	// Built after ws so the transport can hand the raw conn back via captureNetConn.
 	ws.httpClient = newHTTPClient(
 		result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves, ws.captureNetConn,
@@ -283,6 +296,8 @@ func (ws *WSStat) calculateResultLocked() {
 		ws.result.MessageCount += subMessages
 	}
 
+	ws.result.InvalidUTF8Frames = int(ws.invalidUTF8.Load())
+
 	// If the WSStat is not yet closed, set the total time to the current time
 	if ws.timings.closeDone.IsZero() {
 		ws.result.TotalTime = time.Since(ws.timings.dialStart)
@@ -323,6 +338,14 @@ func (ws *WSStat) readPump() {
 				ws.log.Debug().Msg("Context done, dropping error read")
 			}
 			return
+		}
+
+		// coder/websocket performs no UTF-8 validation on text frames (RFC 6455 §5.6);
+		// when opted in, flag invalid payloads via the logger and the Result counter rather
+		// than failing the connection, since this is a measurement tool.
+		if ws.validateUTF8 && messageType == TextMessage && !utf8.Valid(p) {
+			ws.invalidUTF8.Add(1)
+			ws.log.Warn().Int("bytes", len(p)).Msg("received text frame with invalid UTF-8")
 		}
 
 		// Message read successfully, dispatch if not handled by subscription
@@ -655,10 +678,15 @@ func (ws *WSStat) ExtractResult() *Result {
 // so on timeout the raw socket is forced shut, which unblocks coder's read and lets the
 // close goroutine return instead of stalling the full 5s.
 func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
+	status := websocket.StatusCode(ws.closeStatus.Load())
+	reason := ""
+	if p := ws.closeReason.Load(); p != nil {
+		reason = *p
+	}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		if err := conn.Close(status, reason); err != nil {
 			ws.log.Debug().Err(err).Msg("close handshake")
 		}
 	}()
@@ -675,6 +703,56 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 		}
 		<-closed
 	}
+}
+
+// Close-code bounds for CloseWith validation (RFC 6455 §7.4). closeCodeReserved (1004) is
+// reserved; the 3000-4999 range is for registered/private application use. The 1005/1006/1015
+// codes are local-only sentinels (via coder's StatusNoStatusRcvd/AbnormalClosure/TLSHandshake)
+// that must never be sent on the wire.
+const (
+	closeCodeReserved websocket.StatusCode = 1004
+	closeCodeAppMin   websocket.StatusCode = 3000
+	closeCodeAppMax   websocket.StatusCode = 4999
+)
+
+// validCloseCode reports whether code is a close status that may be sent on the wire. Mirrors
+// coder/websocket's internal validation, leaving 1000-1011 (minus the local-only codes) and
+// the 3000-4999 application range.
+func validCloseCode(code int) bool {
+	c := websocket.StatusCode(code)
+	switch c {
+	case closeCodeReserved, websocket.StatusNoStatusRcvd,
+		websocket.StatusAbnormalClosure, websocket.StatusTLSHandshake:
+		return false
+	}
+	if c >= websocket.StatusNormalClosure && c <= websocket.StatusBadGateway {
+		return true
+	}
+	return c >= closeCodeAppMin && c <= closeCodeAppMax
+}
+
+// CloseWith closes the connection sending a chosen close code and reason in the RFC 6455
+// closing handshake, instead of Close's default StatusNormalClosure (1000) with an empty
+// reason. code must be a sendable close status (1000-1003, 1007-1011, or 3000-4999) and
+// reason at most 123 bytes (the control-frame payload limit minus the 2-byte code); an invalid
+// code or over-long reason returns an error without closing. Returns ErrClosed if the
+// connection is already closing. Otherwise teardown proceeds exactly as Close, which it calls;
+// like Close it is idempotent, but the code/reason only take effect when CloseWith wins the
+// race to initiate the close.
+func (ws *WSStat) CloseWith(code int, reason string) error {
+	if ws.closed.Load() {
+		return ErrClosed
+	}
+	if !validCloseCode(code) {
+		return fmt.Errorf("wsstat: invalid close code %d", code)
+	}
+	if len(reason) > maxCloseReasonBytes {
+		return fmt.Errorf("wsstat: close reason exceeds %d bytes", maxCloseReasonBytes)
+	}
+	ws.closeStatus.Store(int64(code))
+	ws.closeReason.Store(&reason)
+	ws.Close()
+	return nil
 }
 
 // Close closes the WebSocket connection and cleans up the WSStat instance.
@@ -924,6 +1002,7 @@ type options struct {
 	subprotocols []string          // WebSocket subprotocols to negotiate
 	headers      http.Header       // headers merged into every handshake
 	compress     bool              // negotiate permessage-deflate
+	validateUTF8 bool              // validate UTF-8 on inbound text frames
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -975,4 +1054,12 @@ func WithHeaders(headers http.Header) Option {
 // The negotiated extension is reported in Result.Compression.
 func WithCompression(enabled bool) Option {
 	return func(o *options) { o.compress = enabled }
+}
+
+// WithValidateUTF8 enables UTF-8 validation of inbound text frames. coder/websocket performs
+// none (RFC 6455 §5.6 requires text payloads to be valid UTF-8); when enabled, an invalid text
+// frame is logged at warn level and counted in Result.InvalidUTF8Frames rather than failing the
+// connection. Disabled by default.
+func WithValidateUTF8(enabled bool) Option {
+	return func(o *options) { o.validateUTF8 = enabled }
 }

@@ -270,12 +270,19 @@ Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-
 
 ### WebSocket standards (B -> A; read-limit + subprotocols are blockers, these reach A)
 
-- [ ] Optional UTF-8 validation on `TextMessage` reads with a surfaced warning (coder skips it), or
-      at minimum the documented note above.
-- [ ] Allow closing with a chosen status/reason (`CloseWith(code, reason)` or a `Close` arg);
-      `gracefulClose` hardcodes 1000 (`wsstat.go:640`). (Also tracked under "Further ahead".)
-- [ ] Guard against `documentedDefaultHeaders` drift (`wsstat.go:56-67`): a test that fails if the
-      assumed `Sec-WebSocket-Version` changes, or label the map as "library defaults (not captured)".
+- [x] Optional UTF-8 validation on `TextMessage` reads with a surfaced warning: `WithValidateUTF8`
+      library option + `--validate-utf8` CLI flag. `readPump` runs `utf8.Valid` on inbound text
+      frames when enabled, logs a warn and counts into `Result.InvalidUTF8Frames` rather than
+      failing the connection; CLI surfaces it as a `warning:` line (text) and additive `warnings`
+      array (`-o json`). Covered by `TestWithValidateUTF8` + `TestPrintTimingResultsUTF8Warning`.
+      (The broader "document the standards posture" doc item below stays open.)
+- [x] Allow closing with a chosen status/reason: `CloseWith(code, reason)` sets the handshake
+      `closeStatus`/`closeReason` (atomics, read by `gracefulClose`) before delegating to `Close`;
+      validates the code (`validCloseCode`) and reason length (<=123 bytes). Covered by
+      `TestCloseWith`. (Subsumes the "custom close error/close code" item under "Further ahead".)
+- [x] Guard against `documentedDefaultHeaders` drift: `TestDocumentedDefaultHeadersDrift` captures
+      the handshake headers coder/websocket actually sends and asserts the map's assumed values
+      (incl. `Sec-WebSocket-Version: 13`) still match, failing on any future library drift.
 
 ### CLI UX (B -> A; JSON error envelope is a blocker, these reach A)
 
@@ -334,4 +341,4 @@ TODO + the ADRs + the architecture overview). Check for dangling references befo
   - JSON output enrichment: `--include headers,certs` / `--detail full` (keep `-o json` schema-stable)
 - Homebrew tap
   - Initially self-maintained, e.g. new repo `github.com/jkbrsn/homebrew-wsstat` + `brew tap-new jkbrsn/wsstat` etc.
-- Support setting a custom close error/close code
+- ~~Support setting a custom close error/close code~~ (done: `CloseWith(code, reason)`)

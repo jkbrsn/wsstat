@@ -88,6 +88,9 @@ type Client struct {
 
 	// Limits
 	readLimit int64 // max inbound message size; 0 uses library default, -1 disables
+
+	// Standards
+	validateUTF8 bool // validate UTF-8 on inbound text frames
 }
 
 // Option configures a Client.
@@ -224,6 +227,12 @@ func WithSubprotocols(subprotocols []string) Option {
 	return func(c *Client) { c.subprotocols = subprotocols }
 }
 
+// WithValidateUTF8 enables UTF-8 validation of inbound text frames. Invalid frames are counted
+// and surfaced as a warning rather than failing the connection.
+func WithValidateUTF8(enabled bool) Option {
+	return func(c *Client) { c.validateUTF8 = enabled }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -276,6 +285,10 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 
 	if len(c.subprotocols) > 0 {
 		opts = append(opts, wsstat.WithSubprotocols(c.subprotocols))
+	}
+
+	if c.validateUTF8 {
+		opts = append(opts, wsstat.WithValidateUTF8(true))
 	}
 
 	return opts

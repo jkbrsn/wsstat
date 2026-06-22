@@ -70,6 +70,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "      --close-timeout <duration> max wait for the peer's close echo [default: 3s; capped at 5s]")
 	fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
 	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
+	fmt.Fprintln(w, "      --validate-utf8            validate UTF-8 on inbound text frames; warn on violations")
 }
 
 // printMeasureUsage prints usage for the measure subcommand.

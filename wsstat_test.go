@@ -1272,3 +1272,145 @@ func TestDialTLS(t *testing.T) {
 	assert.Contains(t, out, "TLS handshake details")
 	assert.Contains(t, out, "wsstat-test")
 }
+
+// TestDocumentedDefaultHeadersDrift guards documentedDefaultHeaders against drift in the
+// underlying library: it captures the headers coder/websocket actually sends on the handshake
+// and fails if the assumed constant values (notably Sec-WebSocket-Version) no longer match, so
+// the -vv / %+v "library defaults" map cannot silently go stale across a transport upgrade.
+func TestDocumentedDefaultHeadersDrift(t *testing.T) {
+	gotHeaders := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders <- r.Header.Clone()
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.CloseNow()
+	}))
+	defer srv.Close()
+
+	target := &url.URL{Scheme: "ws", Host: srv.Listener.Addr().String(), Path: "/echo"}
+	ws := New()
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+	defer ws.Close()
+
+	var sent http.Header
+	select {
+	case sent = <-gotHeaders:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handshake headers were not captured")
+	}
+
+	for key, want := range documentedDefaultHeaders {
+		if key == "Sec-WebSocket-Key" {
+			// Nonce: dynamically generated per request, so only assert presence.
+			assert.NotEmpty(t, sent.Get(key), "handshake missing %s", key)
+			continue
+		}
+		assert.Equalf(t, want, sent.Values(key),
+			"documentedDefaultHeaders[%q] no longer matches what coder/websocket sends; "+
+				"update the map (and any -vv/%%+v docs that rely on it)", key)
+	}
+}
+
+// TestCloseWith verifies that CloseWith sends the chosen close code and reason in the closing
+// handshake, and that it validates its arguments.
+func TestCloseWith(t *testing.T) {
+	t.Run("sends chosen code and reason", func(t *testing.T) {
+		gotErr := make(chan error, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.CloseNow() }()
+			for {
+				if _, _, err := conn.Read(r.Context()); err != nil {
+					gotErr <- err
+					return
+				}
+			}
+		}))
+		defer srv.Close()
+
+		target := &url.URL{Scheme: "ws", Host: srv.Listener.Addr().String(), Path: "/echo"}
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+		require.NoError(t, ws.CloseWith(int(websocket.StatusGoingAway), "bye"))
+
+		select {
+		case err := <-gotErr:
+			assert.Equal(t, websocket.StatusGoingAway, websocket.CloseStatus(err))
+			var ce websocket.CloseError
+			require.ErrorAs(t, err, &ce)
+			assert.Equal(t, "bye", ce.Reason)
+		case <-time.After(2 * time.Second):
+			t.Fatal("server never observed the close frame")
+		}
+	})
+
+	t.Run("rejects invalid code", func(t *testing.T) {
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+		defer ws.Close()
+		assert.Error(t, ws.CloseWith(999, ""))
+		assert.Error(t, ws.CloseWith(int(websocket.StatusAbnormalClosure), "")) // 1006, local-only
+	})
+
+	t.Run("rejects over-long reason", func(t *testing.T) {
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+		defer ws.Close()
+		assert.Error(t, ws.CloseWith(int(websocket.StatusNormalClosure), strings.Repeat("x", 124)))
+	})
+
+	t.Run("returns ErrClosed after close", func(t *testing.T) {
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+		ws.Close()
+		assert.ErrorIs(t, ws.CloseWith(int(websocket.StatusNormalClosure), ""), ErrClosed)
+	})
+}
+
+// TestWithValidateUTF8 verifies that opt-in UTF-8 validation counts invalid inbound text frames
+// in Result.InvalidUTF8Frames, and that the default leaves it at zero.
+func TestWithValidateUTF8(t *testing.T) {
+	invalid := []byte{0xff, 0xfe, 0xfd}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		if err := conn.Write(r.Context(), websocket.MessageText, invalid); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	target := &url.URL{Scheme: "ws", Host: srv.Listener.Addr().String(), Path: "/echo"}
+
+	t.Run("counts invalid frames when enabled", func(t *testing.T) {
+		ws := New(WithValidateUTF8(true))
+		require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+		mt, p, err := ws.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, TextMessage, mt)
+		assert.Equal(t, invalid, p)
+		ws.Close()
+		assert.Equal(t, 1, ws.ExtractResult().InvalidUTF8Frames)
+	})
+
+	t.Run("ignores invalid frames when disabled", func(t *testing.T) {
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+		_, _, err := ws.ReadMessage()
+		require.NoError(t, err)
+		ws.Close()
+		assert.Equal(t, 0, ws.ExtractResult().InvalidUTF8Frames)
+	})
+}

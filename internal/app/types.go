@@ -29,6 +29,7 @@ type timingSummaryJSON struct {
 	Counts    timingCountsJSON    `json:"counts"`
 	Durations timingDurationsJSON `json:"durations_ms"`
 	Timeline  *timingTimelineJSON `json:"timeline_ms,omitempty"`
+	Warnings  []string            `json:"warnings,omitempty"`
 }
 
 type timingCountsJSON struct {

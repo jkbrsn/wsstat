@@ -238,6 +238,44 @@ func TestPrintTimingResultsJSON(t *testing.T) {
 	assert.Equal(t, base.URL.String(), target["url"])
 }
 
+func TestPrintTimingResultsUTF8Warning(t *testing.T) {
+	t.Run("json envelope", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		base.InvalidUTF8Frames = 2
+		client := &Client{output: OutputJSON, count: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		payload := decodeJSONLine(t, output)
+		warnings, ok := payload["warnings"].([]any)
+		require.True(t, ok, "warnings field missing: %v", payload)
+		require.Len(t, warnings, 1)
+		assert.Contains(t, warnings[0], "UTF-8")
+	})
+
+	t.Run("text output", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		base.InvalidUTF8Frames = 1
+		client := &Client{output: OutputText, count: 1, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		assert.Contains(t, output, "warning:")
+		assert.Contains(t, output, "UTF-8")
+	})
+
+	t.Run("absent when zero", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		client := &Client{output: OutputJSON, count: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		payload := decodeJSONLine(t, output)
+		_, ok := payload["warnings"]
+		assert.False(t, ok, "warnings should be omitted when there are none")
+	})
+}
+
 func TestPrintResponseJSON(t *testing.T) {
 	t.Run("map payload", func(t *testing.T) {
 		client := &Client{

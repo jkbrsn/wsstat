@@ -45,8 +45,19 @@ func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result)
 		if timeline := buildTimingTimeline(result); timeline != nil {
 			summary.Timeline = timeline
 		}
+		summary.Warnings = resultWarnings(result)
 	}
 	return summary
+}
+
+// resultWarnings collects non-fatal standards warnings surfaced from a measurement Result, for
+// display in both text and JSON output. Returns nil when there is nothing to warn about.
+func resultWarnings(result *wsstat.Result) []string {
+	if result == nil || result.InvalidUTF8Frames == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"%d inbound text frame(s) failed UTF-8 validation", result.InvalidUTF8Frames)}
 }
 
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
@@ -595,6 +606,10 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 	// Raw emits payload bytes only; no timing report.
 	if c.output == OutputRaw {
 		return nil
+	}
+
+	for _, warn := range resultWarnings(result.Result) {
+		fmt.Printf("%s %s\n", c.colorizeOrange("warning:"), warn)
 	}
 
 	switch {
