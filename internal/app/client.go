@@ -58,6 +58,7 @@ type Client struct {
 	headers      []string          // HTTP headers for connection establishment ("Key: Value")
 	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
 	rpcMethod    string            // JSON-RPC method (no params)
+	rpcVersion   string            // JSON-RPC version to speak: "2.0" (default) or "1.0"
 	textMessage  string            // Text message
 	subprotocols []string          // WebSocket subprotocols to negotiate
 
@@ -126,6 +127,13 @@ func WithResolves(resolves map[string]string) Option {
 // WithRPCMethod configures JSON-RPC method to send.
 func WithRPCMethod(method string) Option {
 	return func(c *Client) { c.rpcMethod = method }
+}
+
+// WithRPCVersion sets the JSON-RPC version to speak: "2.0" (default) or "1.0". 1.0 emits a
+// version-less request with a positional params array and relaxes response decoding to accept
+// 1.0 / version-less replies.
+func WithRPCVersion(version string) Option {
+	return func(c *Client) { c.rpcVersion = version }
 }
 
 // WithTextMessage configures a text message to send.

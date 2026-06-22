@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/jkbrsn/jsonrpc"
 	"github.com/jkbrsn/wsstat/v3"
 )
 
@@ -31,7 +30,7 @@ func (c *Client) measureText(
 		rawResponse = rawResponses[0]
 	}
 
-	processedResponse, err := processTextResponse(rawResponse, c.output)
+	processedResponse, err := processTextResponse(rawResponse, c.output, c.rpcVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +47,7 @@ func (c *Client) measureJSON(
 	target *url.URL,
 	header http.Header,
 ) (*MeasurementResult, error) {
-	req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
+	req := buildRPCRequest(c.rpcMethod, c.rpcVersion)
 	msgs := repeat[any](req, c.count)
 
 	opts := append(c.wsstatOptions(), wsstat.WithHeaders(header))
@@ -94,7 +93,7 @@ func (c *Client) measurePing(
 //
 // The response may be a []string from burst measurements; if so, only the first
 // element is processed.
-func processTextResponse(response any, output Output) (any, error) {
+func processTextResponse(response any, output Output, rpcVersion string) (any, error) {
 	// Extract first response from array if present
 	responseStr := extractFirstString(response)
 
@@ -106,7 +105,7 @@ func processTextResponse(response any, output Output) (any, error) {
 	default:
 		// Text/JSON: attempt parsing, fall back to raw
 		if str, ok := responseStr.(string); ok {
-			if decoded, err := decodeAsJSONRPC(str); err == nil {
+			if decoded, err := decodeAsJSONRPC(str, rpcVersion); err == nil {
 				return decoded, nil
 			}
 		}
@@ -128,7 +127,7 @@ func extractFirstString(response any) any {
 // Returns the decoded response as a map, or an error if:
 //   - the string is not valid JSON
 //   - the JSON is not a valid JSON-RPC 2.0 response
-func decodeAsJSONRPC(s string) (map[string]any, error) {
+func decodeAsJSONRPC(s string, rpcVersion string) (map[string]any, error) {
 	trimmed := strings.TrimSpace(s)
 
 	// Verify starts with JSON structure
@@ -136,14 +135,9 @@ func decodeAsJSONRPC(s string) (map[string]any, error) {
 		return nil, errors.New("not JSON")
 	}
 
-	resp, err := jsonrpc.DecodeResponse([]byte(trimmed))
+	decoded, err := decodeJSONRPCResponse([]byte(trimmed), rpcVersion)
 	if err != nil {
 		return nil, fmt.Errorf("decode failed: %w", err)
-	}
-
-	var decoded map[string]any
-	if err := resp.Unmarshal(&decoded); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %w", err)
 	}
 
 	return decoded, nil

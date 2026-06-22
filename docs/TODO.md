@@ -248,8 +248,11 @@ Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-
       an explicit `--show-secrets` opt-out (text-only flag). Covered by
       `TestPrintRequestDetailsMasksSecrets`. (Library `%+v` `printHeadersSection` left unmasked by
       design — out of CLI scope.)
-- [ ] Track a decision on the transitive `bytedance/sonic` JIT/asm surface pulled via
-      `jkbrsn/jsonrpc` (sonic-free build tag in jsonrpc, or drop the dep for the JSON-RPC subset used).
+- [x] Resolved the transitive `bytedance/sonic` JIT/asm surface (pulled via `jkbrsn/jsonrpc`) by
+      dropping the dependency entirely (option C). The two call sites (`measureJSON`/subscription
+      request build, text-response decode) now use an inline JSON-RPC 2.0 subset in
+      `internal/app/jsonrpc.go` over the stdlib `encoding/json`; `go.mod`/`go.sum` no longer reference
+      `jsonrpc` or `sonic`. Covered by `TestDecodeJSONRPCResponse`/`TestNewJSONRPCRequest`.
 
 ### Testing (B -> A; TLS + error-path tests are blockers, these reach A)
 

@@ -121,7 +121,7 @@ Some examples:
 # Basic request
 wsstat wss://echo.example.com
 
-# Send an RPC method
+# Send an RPC method (JSON-RPC 2.0 by default; --rpc-version 1.0 for legacy servers)
 wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 
 # Start a stream

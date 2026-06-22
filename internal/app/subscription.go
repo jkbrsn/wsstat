@@ -2,13 +2,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"slices"
 	"time"
 
-	"github.com/jkbrsn/jsonrpc"
 	"github.com/jkbrsn/wsstat/v3"
 )
 
@@ -118,8 +118,8 @@ func (c *Client) subscriptionPayload() (int, []byte, error) {
 		return wsstat.TextMessage, []byte(c.textMessage), nil
 	}
 	if c.rpcMethod != "" {
-		req := jsonrpc.NewRequestWithID(c.rpcMethod, nil, "1")
-		payload, err := req.MarshalJSON()
+		req := buildRPCRequest(c.rpcMethod, c.rpcVersion)
+		payload, err := json.Marshal(req)
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to marshal subscription payload: %w", err)
 		}

@@ -46,6 +46,7 @@ func printTopUsage(w io.Writer) {
 func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "Input (choose one):")
 	fmt.Fprintln(w, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
+	fmt.Fprintln(w, "      --rpc-version <string>     JSON-RPC version for --rpc-method: 2.0 or 1.0 [default: 2.0]")
 	fmt.Fprintln(w, "  -t, --text <string>            text message to send")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Output:")

@@ -72,6 +72,23 @@ func TestMeasureFlags(t *testing.T) {
 		assert.Contains(t, err.Error(), "mutually exclusive")
 	})
 
+	t.Run("rpc-version accepts 1.0 with rpc-method", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-method", "m", "--rpc-version", "1.0", "example.com"})
+		require.NoError(t, err)
+	})
+
+	t.Run("rpc-version rejects unknown value", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-method", "m", "--rpc-version", "3.0", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--rpc-version must be 1.0 or 2.0")
+	})
+
+	t.Run("rpc-version without a message rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-version", "1.0", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires --rpc-method or --text")
+	})
+
 	t.Run("text-only flag under json rejected", func(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-o", "json", "-q", "example.com"})
 		require.Error(t, err)

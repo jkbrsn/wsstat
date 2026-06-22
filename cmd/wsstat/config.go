@@ -25,19 +25,20 @@ const (
 // subcommand. Mode-specific flags (count, --once, --buffer, --summary-interval)
 // are registered separately by each command.
 type commonFlags struct {
-	headers   headerList
-	resolves  resolveList
-	rpcMethod string
-	text      string
-	output    string
-	body      string
-	color     string
+	headers     headerList
+	resolves    resolveList
+	rpcMethod   string
+	rpcVersion  string
+	text        string
+	output      string
+	body        string
+	color       string
 	clip        bool
 	showSecrets bool
 	quiet       bool
-	v1        bool
-	v2        bool
-	insecure  bool
+	v1          bool
+	v2          bool
+	insecure    bool
 
 	timeout      time.Duration
 	closeTimeout time.Duration
@@ -53,6 +54,7 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.Var(&c.resolves, "resolve", "resolve host:port to address (repeatable; format: \"HOST:PORT:ADDRESS\")")
 
 	fs.StringVar(&c.rpcMethod, "rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
+	fs.StringVar(&c.rpcVersion, "rpc-version", "2.0", "JSON-RPC version for --rpc-method: 2.0 or 1.0")
 	fs.StringVar(&c.text, "t", "", "text message to send")
 	fs.StringVar(&c.text, "text", "", "text message to send")
 
@@ -125,8 +127,9 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, errors.New("-q cannot be combined with -v or -vv")
 	}
 
-	if c.text != "" && c.rpcMethod != "" {
-		return nil, nil, errors.New("mutually exclusive messaging flags: use --text or --rpc-method")
+	rpcVersion, err := validateMessaging(c, set)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if c.timeout < 0 {
@@ -156,10 +159,20 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, err
 	}
 
-	opts := []app.Option{
+	opts := buildCommonOptions(c, mode, output, body, color, verbosity, rpcVersion, readLimit)
+	return opts, target, nil
+}
+
+// buildCommonOptions assembles the app options from the validated common flags and derived values.
+func buildCommonOptions(
+	c *commonFlags, mode app.Mode, output app.Output, body app.Body,
+	color string, verbosity int, rpcVersion string, readLimit int64,
+) []app.Option {
+	return []app.Option{
 		app.WithHeaders(c.headers.Values()),
 		app.WithResolves(c.resolves.Values()),
 		app.WithRPCMethod(c.rpcMethod),
+		app.WithRPCVersion(rpcVersion),
 		app.WithTextMessage(c.text),
 		app.WithOutput(output),
 		app.WithBodyRender(body),
@@ -175,13 +188,30 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		app.WithSubprotocols(splitCSV(c.subprotocol)),
 		app.WithMode(mode),
 	}
-	return opts, target, nil
+}
+
+// validateMessaging checks the messaging flags (--text / --rpc-method / --rpc-version) and
+// returns the resolved JSON-RPC version.
+func validateMessaging(c *commonFlags, set map[string]bool) (string, error) {
+	if c.text != "" && c.rpcMethod != "" {
+		return "", errors.New("mutually exclusive messaging flags: use --text or --rpc-method")
+	}
+	rpcVersion := strings.TrimSpace(c.rpcVersion)
+	switch rpcVersion {
+	case "1.0", "2.0":
+	default:
+		return "", errors.New("--rpc-version must be 1.0 or 2.0")
+	}
+	if set["rpc-version"] && c.rpcMethod == "" && c.text == "" {
+		return "", errors.New("--rpc-version requires --rpc-method or --text")
+	}
+	return rpcVersion, nil
 }
 
 // splitCSV splits a comma-separated value into trimmed, non-empty parts. Returns nil for empty.
 func splitCSV(s string) []string {
 	var out []string
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
 			out = append(out, trimmed)
 		}

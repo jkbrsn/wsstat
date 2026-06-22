@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JSON error envelope.** Under `-o json`, a runtime failure now prints a schema-stable `{"schema_version","type":"error","error"}` record to stdout (newline-terminated, matching the NDJSON data stream) instead of falling back to plain `Error:` text, so a `wsstat ... -o json | jq` pipeline stays parseable on the failure path. Usage errors still print plain text to stderr.
 - (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, and a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`.
 - `--show-secrets` flag: by default `-vv` now masks sensitive header values (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) as `[redacted]`; pass `--show-secrets` to print them. Text-only, like the other `-vv` flags.
+- `--rpc-version 1.0|2.0` flag (default `2.0`) for `--rpc-method`. `1.0` emits a legacy JSON-RPC 1.0 request (`{"id":1,"method":...,"params":[]}` — no `jsonrpc` field, integer id, positional params array) and relaxes response decoding to accept version-less / `1.0` replies (treating `"error":null` as absent, and `"result":null` beside a real error as absent). The encode path otherwise stays strict 2.0. Requires `--rpc-method` or `--text`.
 - (dev) `dev/soak-test.sh` (and `make soak`): a structured flag-combination soak complementing the per-feature `smoke-test.sh`. Drives every flag in each mode (both aliases), asserts every validation rule actually rejects (a combination that should error but exits 0 is flagged as a silent accept), and checks the observable effect of flags that could be silently ignored, including `--clip`/`--color auto` under a real PTY via `dev/pty-run.py`.
 
 ### Changed
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The public message-type API stays `int`-based via the new `wsstat.TextMessage` / `wsstat.BinaryMessage` constants (numerically identical to the previous values), so callers do not need to import the transport package.
 - **BREAKING (CLI):** the URL scheme is now allowlisted to `ws`/`wss` at parse time. `http://`/`https://` (and any other scheme) are rejected with `unsupported scheme "...": use ws:// or wss://` instead of being silently dialed as plaintext by the lenient underlying dialer. Scheme-less input still defaults to `wss://`.
 - **Exit codes normalized.** Post-parse argument/validation errors now exit `2` (matching flag-parse errors) instead of `1`, reserving `1` for genuine runtime/network failures. The full table (`0` success, `1` runtime, `2` usage, `130` interrupt) is documented in `wsstat -h` and the README.
+- Dropped the `github.com/jkbrsn/jsonrpc` dependency (and its transitive `github.com/bytedance/sonic` JIT/asm surface). The CLI only built a fixed JSON-RPC request and decoded the reply, so both are now handled inline with the standard library `encoding/json`. No CLI behavior change; the binary no longer links a runtime code-generation library.
 
 ### Removed
 
