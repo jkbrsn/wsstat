@@ -286,16 +286,22 @@ Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-
 
 ### CLI UX (B -> A; JSON error envelope is a blocker, these reach A)
 
-- [ ] Payload from stdin/file (`-t @file` / `-t @-`); stdin is currently ignored entirely.
-- [ ] Shell completion (`completion` subcommand, bash/zsh/fish).
-- [ ] `help <subcommand>` dispatches to that subcommand's usage (`main.go:82-84` ignores the arg).
-- [ ] Document NO_COLOR in help text (it works at `output.go:63-65` and is tested; just undocumented).
-- [ ] Fix `"Messages sent::"` double colon (`internal/app/output.go:382`; `-vv` path at `:404` is OK).
-- [ ] `--close-timeout` above the 5s cap emits a stderr notice instead of silently clamping
-      (`config.go:116`, `usage.go:60`).
-- [ ] Decide the `-o raw` trailing-newline contract (no terminator today, diverges from `-q`/curl).
-- [ ] Align `--version` ("Version: unknown") and the help header ("wsstat unknown"); consider build
-      metadata.
+- [x] Payload from stdin/file (`-t @file` / `-t @-`): `resolveTextPayload` (`config.go`) expands an
+      @-prefixed `--text` (`@-` = stdin, `@path` = file, `@@` escapes a literal `@`), sending bytes
+      verbatim. Covered by `TestResolveTextPayload`.
+- [x] `help <subcommand>` dispatches to that subcommand's usage: `printHelpFor` (`usage.go`) routes
+      `help measure`/`help stream` to the command usage, else top usage. Covered by `TestPrintHelpFor`.
+- [x] Document NO_COLOR in help text: note added under `--color` in `printCommonFlags` (`usage.go`).
+      (NO_COLOR is honored under `--color auto` only; `always` returns before the check at
+      `output.go:67`.)
+- [x] Fix `"Messages sent::"` double colon (`internal/app/output.go:385`; the `-vv` path is OK).
+- [x] `--close-timeout` above the 5s cap now prints a stderr notice instead of silently accepting a
+      no-effect value (`config.go` `resolveCommon`, `maxCloseGrace` const).
+- [x] `-o raw` trailing-newline contract: ratified the existing no-terminator behavior (binary-safe,
+      undelimited stream frames) in `README.md` and the `writeRaw` godoc; the `--delimiter`/`--print0`
+      opt-in stays parked under "Further ahead".
+- [x] Align `--version` and the help header: `--version` now prints `wsstat <version>`
+      (`main.go`), matching the `printTopUsage` header. (Build metadata deferred.)
 
 ### Repo structure & release (B -> A; multi-platform assets + govulncheck are blockers)
 
@@ -309,9 +315,7 @@ Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-
 
 ### Cross-cutting (B- -> A)
 
-- [ ] API-diff/gorelease CI gate vs the prior tag, so the v3 freeze is mechanically enforced across
-      future 3.x releases. This is what makes all the "decide before freeze" advice durable.
-- [ ] `--debug` flag wiring the core's existing zerolog `Debug` logs to stderr, decoupled from
+- [x] `--debug` flag wiring the core's existing zerolog `Debug` logs to stderr, decoupled from
       `-v`/`-vv` output verbosity (the app never calls `WithLogger`).
 - [ ] Publish a versioned JSON output schema (docs/ JSON Schema + per-type version semantics) once
       the schema-versioning blocker decision is made.
@@ -339,6 +343,7 @@ TODO + the ADRs + the architecture overview). Check for dangling references befo
   - `-vvv` level-3 verbosity (current ladder is content-bounded; needs a custom counter `flag.Value`)
   - raw stream framing opt-in: `--delimiter` / `--print0`
   - JSON output enrichment: `--include headers,certs` / `--detail full` (keep `-o json` schema-stable)
+  - shell completion (`completion` subcommand, bash/zsh/fish) — no requests yet; static per-shell
+    scripts completing subcommands/flags/enum values is the likely shape when it lands
 - Homebrew tap
   - Initially self-maintained, e.g. new repo `github.com/jkbrsn/homebrew-wsstat` + `brew tap-new jkbrsn/wsstat` etc.
-- ~~Support setting a custom close error/close code~~ (done: `CloseWith(code, reason)`)

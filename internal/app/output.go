@@ -382,7 +382,7 @@ func (c *Client) printVerbose(result *wsstat.Result) {
 	for _, values := range result.IPs {
 		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
 	}
-	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), result.MessageCount)
+	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent"), result.MessageCount)
 	for key, values := range result.RequestHeaders {
 		if key == "Sec-WebSocket-Version" {
 			fmt.Printf(printValueTemp,

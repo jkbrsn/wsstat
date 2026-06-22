@@ -7,6 +7,22 @@ import (
 
 // revive:disable:line-length-limit aligned help text
 
+// printHelpFor prints command-specific usage when a known subcommand name follows
+// `help`/`-h`/`--help` (e.g. `wsstat help stream`), falling back to the top-level usage.
+func printHelpFor(rest []string, w io.Writer) {
+	if len(rest) > 0 {
+		switch rest[0] {
+		case "measure":
+			printMeasureUsage(w)
+			return
+		case "stream":
+			printStreamUsage(w)
+			return
+		}
+	}
+	printTopUsage(w)
+}
+
 // printTopUsage prints the top-level usage listing the two subcommands.
 func printTopUsage(w io.Writer) {
 	fmt.Fprintf(w, "wsstat %s\n", version)
@@ -47,7 +63,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "Input (choose one):")
 	fmt.Fprintln(w, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
 	fmt.Fprintln(w, "      --rpc-version <string>     JSON-RPC version for --rpc-method: 2.0 or 1.0 [default: 2.0]")
-	fmt.Fprintln(w, "  -t, --text <string>            text message to send")
+	fmt.Fprintln(w, "  -t, --text <string>            text message to send (@file or @- reads file/stdin)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Output:")
 	fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
@@ -60,6 +76,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "      --color <string>           color output: auto, always, never [default: auto]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	fmt.Fprintln(w, "        NO_COLOR (any value) in the environment forces color off under --color auto.")
 	fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Connection:")
@@ -71,6 +88,9 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
 	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
 	fmt.Fprintln(w, "      --validate-utf8            validate UTF-8 on inbound text frames; warn on violations")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Diagnostics:")
+	fmt.Fprintln(w, "      --debug                    emit core debug logs to stderr (independent of -v/-vv)")
 }
 
 // printMeasureUsage prints usage for the measure subcommand.

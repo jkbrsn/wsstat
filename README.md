@@ -121,6 +121,13 @@ Some examples:
 # Basic request
 wsstat wss://echo.example.com
 
+# Send a text message
+wsstat -t "ping" wss://echo.example.com
+
+# Read the payload from a file or stdin (@file / @-)
+wsstat -t @payload.json wss://echo.example.com
+echo '{"hello":"world"}' | wsstat -t @- wss://echo.example.com
+
 # Send an RPC method (JSON-RPC 2.0 by default; --rpc-version 1.0 for legacy servers)
 wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 
@@ -183,9 +190,11 @@ Output is split across three orthogonal axes:
 
 - `-o, --output text|json|raw` — the whole-stdout contract. `json` emits
   newline-delimited envelopes with a stable schema (`-v`/`-vv` never change which
-  fields appear); `raw` writes payload bytes verbatim with nothing added (in
-  measure mode `raw` requires `--text` or `--rpc-method`). With `--rpc-method` the
-  response frame is decoded before output, so `raw` emits compact JSON rather than
+  fields appear); `raw` writes payload bytes verbatim with nothing added — no
+  label, color, or trailing newline, so frames stay binary-safe and stream frames
+  concatenate undelimited (use `-o json` when you need a delimiter). In measure
+  mode `raw` requires `--text` or `--rpc-method`; with `--rpc-method` the response
+  frame is decoded before output, so `raw` emits compact JSON rather than
   byte-for-byte wire content.
 - `--body auto|compact` — human body rendering (text output only). `auto`
   pretty-prints; `compact` puts each message on one line.

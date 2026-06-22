@@ -113,10 +113,10 @@ func main() {
 	case args[0] == "measure":
 		err = runMeasure(args[1:])
 	case args[0] == "--version" || args[0] == "-version":
-		fmt.Printf("Version: %s\n", version)
+		fmt.Printf("wsstat %s\n", version)
 		return
 	case args[0] == "help" || args[0] == "-h" || args[0] == "--help":
-		printTopUsage(os.Stdout)
+		printHelpFor(args[1:], os.Stdout)
 		return
 	default:
 		err = runMeasure(args) // bare form: measure

@@ -4,7 +4,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,9 @@ const (
 	int64BitSize = 64      // bit size for strconv.ParseInt into int64
 	bytesPerKiB  = 1 << 10 // multiplier for the K suffix on --max-message-size
 	bytesPerMiB  = 1 << 20 // multiplier for the M suffix on --max-message-size
+	// maxCloseGrace is the transport's hard-coded close-handshake cap; --close-timeout
+	// values above it have no effect (coder/websocket bounds the echo wait at 5s).
+	maxCloseGrace = 5 * time.Second
 )
 
 // revive:disable:line-length-limit flag descriptions
@@ -46,6 +51,8 @@ type commonFlags struct {
 	maxMessageSize string
 	subprotocol    string
 	validateUTF8   bool
+
+	debug bool
 }
 
 // registerCommon registers the shared flags onto fs, binding them to c.
@@ -56,8 +63,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 
 	fs.StringVar(&c.rpcMethod, "rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
 	fs.StringVar(&c.rpcVersion, "rpc-version", "2.0", "JSON-RPC version for --rpc-method: 2.0 or 1.0")
-	fs.StringVar(&c.text, "t", "", "text message to send")
-	fs.StringVar(&c.text, "text", "", "text message to send")
+	fs.StringVar(&c.text, "t", "", "text message to send (@file or @- reads payload from a file or stdin)")
+	fs.StringVar(&c.text, "text", "", "text message to send (@file or @- reads payload from a file or stdin)")
 
 	fs.StringVar(&c.output, "o", "text", "output contract: text, json, or raw")
 	fs.StringVar(&c.output, "output", "text", "output contract: text, json, or raw")
@@ -83,6 +90,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 		"WebSocket subprotocol(s) to negotiate, in preference order (comma-separated)")
 	fs.BoolVar(&c.validateUTF8, "validate-utf8", false,
 		"validate UTF-8 on inbound text frames and warn on violations (coder/websocket skips this)")
+	fs.BoolVar(&c.debug, "debug", false,
+		"emit core debug logs to stderr (independent of -v/-vv output verbosity)")
 }
 
 // textOnlyFlags maps the internal flag names rejected under json/raw output to
@@ -130,6 +139,10 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, errors.New("-q cannot be combined with -v or -vv")
 	}
 
+	if err := resolveTextPayload(c); err != nil {
+		return nil, nil, err
+	}
+
 	rpcVersion, err := validateMessaging(c, set)
 	if err != nil {
 		return nil, nil, err
@@ -140,6 +153,11 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 	}
 	if c.closeTimeout < 0 {
 		return nil, nil, errors.New("--close-timeout must be zero or greater")
+	}
+	if c.closeTimeout > maxCloseGrace {
+		fmt.Fprintf(os.Stderr,
+			"notice: --close-timeout %s has no effect above 5s; "+
+				"the transport caps the close handshake at 5s\n", c.closeTimeout)
 	}
 
 	readLimit, err := parseReadLimit(c.maxMessageSize)
@@ -190,8 +208,37 @@ func buildCommonOptions(
 		app.WithReadLimit(readLimit),
 		app.WithSubprotocols(splitCSV(c.subprotocol)),
 		app.WithValidateUTF8(c.validateUTF8),
+		app.WithDebug(c.debug),
 		app.WithMode(mode),
 	}
+}
+
+// resolveTextPayload expands an @-prefixed --text value: "@-" reads stdin, "@path" reads a
+// file. The bytes are sent verbatim (no trailing-newline stripping), matching the raw-output
+// contract. A literal leading @ is escaped as "@@". Any other value passes through unchanged.
+func resolveTextPayload(c *commonFlags) error {
+	if !strings.HasPrefix(c.text, "@") {
+		return nil
+	}
+	if strings.HasPrefix(c.text, "@@") {
+		c.text = c.text[1:]
+		return nil
+	}
+	src := c.text[1:]
+	var (
+		data []byte
+		err  error
+	)
+	if src == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(src)
+	}
+	if err != nil {
+		return fmt.Errorf("reading --text payload: %w", err)
+	}
+	c.text = string(data)
+	return nil
 }
 
 // validateMessaging checks the messaging flags (--text / --rpc-method / --rpc-version) and

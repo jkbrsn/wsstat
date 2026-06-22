@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--show-secrets` flag: by default `-vv` now masks sensitive header values (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) as `[redacted]`; pass `--show-secrets` to print them. Text-only, like the other `-vv` flags.
 - `--rpc-version 1.0|2.0` flag (default `2.0`) for `--rpc-method`. `1.0` emits a legacy JSON-RPC 1.0 request (`{"id":1,"method":...,"params":[]}` — no `jsonrpc` field, integer id, positional params array) and relaxes response decoding to accept version-less / `1.0` replies (treating `"error":null` as absent, and `"result":null` beside a real error as absent). The encode path otherwise stays strict 2.0. Requires `--rpc-method` or `--text`.
 - (dev) `dev/soak-test.sh` (and `make soak`): a structured flag-combination soak complementing the per-feature `smoke-test.sh`. Drives every flag in each mode (both aliases), asserts every validation rule actually rejects (a combination that should error but exits 0 is flagged as a silent accept), and checks the observable effect of flags that could be silently ignored, including `--clip`/`--color auto` under a real PTY via `dev/pty-run.py`.
+- **Payload from a file or stdin.** `-t @path` reads the text payload from a file and `-t @-` reads it from stdin; bytes are sent verbatim (no trailing-newline stripping). A literal leading `@` is escaped as `@@`.
+- `wsstat help measure` / `wsstat help stream` now print that subcommand's usage (previously `help <anything>` always printed the top-level usage).
+- `NO_COLOR` is now documented in the help text (it already forced color off under `--color auto`).
+- `--debug` flag wiring the core's zerolog debug logs to stderr, independent of the `-v`/`-vv` output verbosity (which only shape stdout). Off by default; safe to combine with any `-o` mode or `-q` since it never touches the stdout output contract.
 
 ### Changed
 
@@ -59,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--clip` now applies to every text response body shape. Non-JSON-RPC map and array responses were printed unclipped; clipping now composes uniformly across all rendered bodies.
 - The failed-handshake response body reflected into the returned dial error is now bounded to 4 KiB (`io.LimitReader`), so a hostile server cannot reflect an unbounded body into the error string.
 - `ReadMessageJSON()` now applies the same close-status contract as `ReadMessage()`: an abnormal close (any status other than normal/going-away) is wrapped as an `unexpected close error` instead of returning the raw transport error, so close handling is identical regardless of decode path.
+- The `-v` output no longer prints a double colon in `Messages sent:: N` (the label carried its own colon on top of the format string's).
+- `--version` now prints `wsstat <version>`, matching the help-header format (was `Version: <version>`).
+- `--close-timeout` above 5s now prints a one-line stderr notice that the transport caps the close handshake at 5s, instead of silently accepting a value with no effect.
 
 ## [2.2.2] - 2026-06-16
 

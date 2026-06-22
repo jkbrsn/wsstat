@@ -26,9 +26,9 @@ type rpcRequest2 struct {
 // (required) positional params array, empty since wsstat sends no arguments. Marshals to
 // {"id":1,"method":...,"params":[]}.
 type rpcRequest1 struct {
-	ID     any   `json:"id"`
+	ID     any    `json:"id"`
 	Method string `json:"method"`
-	Params []any `json:"params"`
+	Params []any  `json:"params"`
 }
 
 // buildRPCRequest returns the request value to send for the given method and JSON-RPC version.

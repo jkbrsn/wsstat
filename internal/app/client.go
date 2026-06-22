@@ -40,11 +40,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/jkbrsn/wsstat/v3"
+	"github.com/rs/zerolog"
 )
 
 // Client measures the latency of a WebSocket connection and manages subscription streams.
@@ -91,6 +94,10 @@ type Client struct {
 
 	// Standards
 	validateUTF8 bool // validate UTF-8 on inbound text frames
+
+	// Diagnostics
+	debug  bool      // emit core debug logs, independent of -v/-vv output verbosity
+	debugW io.Writer // destination for debug logs; nil uses os.Stderr
 }
 
 // Option configures a Client.
@@ -233,6 +240,18 @@ func WithValidateUTF8(enabled bool) Option {
 	return func(c *Client) { c.validateUTF8 = enabled }
 }
 
+// WithDebug enables the core's zerolog debug logs, written to stderr (or the WithDebugWriter
+// destination). It is independent of the -v/-vv output verbosity: it never touches the stdout
+// output contract, so it is safe to combine with any -o mode or -q.
+func WithDebug(enabled bool) Option {
+	return func(c *Client) { c.debug = enabled }
+}
+
+// WithDebugWriter sets the destination for debug logs (default os.Stderr). Mainly for tests.
+func WithDebugWriter(w io.Writer) Option {
+	return func(c *Client) { c.debugW = w }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -291,7 +310,21 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 		opts = append(opts, wsstat.WithValidateUTF8(true))
 	}
 
+	if c.debug {
+		opts = append(opts, wsstat.WithLogger(debugLogger(c.debugW)))
+	}
+
 	return opts
+}
+
+// debugLogger builds the core debug logger. A nil writer defaults to os.Stderr so debug
+// output never collides with the stdout output contract.
+func debugLogger(w io.Writer) zerolog.Logger {
+	dst := w
+	if dst == nil {
+		dst = os.Stderr
+	}
+	return zerolog.New(dst).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 }
 
 // MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages
