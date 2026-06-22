@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,32 +21,30 @@ import (
 )
 
 var (
-	serverAddr       = "localhost:8080"
-	echoServerAddrWs *url.URL
-	// TODO: support wss in tests
+	echoServer       *httptest.Server // shared echo server on a random port
+	echoServerAddrWs *url.URL         // ws:// URL to the echo server's /echo path
+	echoServerPort   string           // the echo server's port, for resolve-override tests
 )
 
-func init() {
-	var err error
-	echoServerAddrWs, err = url.Parse("ws://" + serverAddr + "/echo")
-	if err != nil {
-		log.Fatalf("Failed to parse URL: %v", err)
-	}
-}
-
-// TestMain sets up the test server and runs the tests in this file.
+// TestMain starts a single shared echo server on a random port and runs the tests.
+// httptest.NewServer is listening before it returns, so no readiness poll is needed.
 func TestMain(m *testing.M) {
-	// Set up test server
-	go func() {
-		startEchoServer(serverAddr)
-	}()
+	echoServer = httptest.NewServer(http.HandlerFunc(echoHandler))
+	defer echoServer.Close()
 
-	// Ensure the echo server starts before any tests run
-	time.Sleep(250 * time.Millisecond)
+	host := strings.TrimPrefix(echoServer.URL, "http://")
+	_, echoServerPort, _ = net.SplitHostPort(host)
+	echoServerAddrWs = &url.URL{Scheme: "ws", Host: host, Path: "/echo"}
 
-	// Run the tests in this file
 	m.Run()
 }
+
+// echoHostPort builds a "host:port" key on the shared echo server's port, used to key
+// WithResolves overrides at a known port without hardcoding one.
+func echoHostPort(host string) string { return net.JoinHostPort(host, echoServerPort) }
+
+// echoHostURL builds a ws:// echo URL for host on the shared echo server's port.
+func echoHostURL(host string) string { return "ws://" + echoHostPort(host) + "/echo" }
 
 func TestNew(t *testing.T) {
 	ws := New()
@@ -702,38 +702,34 @@ func getFunctionName() string {
 	return strings.TrimPrefix(runtime.FuncForPC(pc).Name(), "main.")
 }
 
-// startEchoServer starts a WebSocket server that echoes back any received messages.
-func startEchoServer(addr string) {
-	http.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+// echoHandler echoes back any received message. It backs the shared httptest echo server
+// and accepts a WebSocket upgrade on any path (tests dial /echo by convention).
+func echoHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		log.Print("accept:", err)
+		return
+	}
+	defer func() {
+		_ = conn.CloseNow()
+	}()
+	conn.SetReadLimit(-1)
+	ctx := r.Context()
+	for {
+		mt, message, err := conn.Read(ctx)
 		if err != nil {
-			log.Print("accept:", err)
-			return
-		}
-		defer func() {
-			_ = conn.CloseNow()
-		}()
-		conn.SetReadLimit(-1)
-		ctx := r.Context()
-		for {
-			mt, message, err := conn.Read(ctx)
-			if err != nil {
-				// Only print error if it's not a normal/expected closure
-				status := websocket.CloseStatus(err)
-				if status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
-					log.Println("read:", err)
-				}
-				break
+			// Only print error if it's not a normal/expected closure
+			status := websocket.CloseStatus(err)
+			if status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
+				log.Println("read:", err)
 			}
-			if err := conn.Write(ctx, mt, message); err != nil {
-				log.Println("write:", err)
-				break
-			}
+			break
 		}
-	})
-
-	log.Printf("Echo server started on %s\n", addr)
-	log.Println(http.ListenAndServe(addr, nil))
+		if err := conn.Write(ctx, mt, message); err != nil {
+			log.Println("write:", err)
+			break
+		}
+	}
 }
 
 // Validation of WSStat results after Dial has been called
@@ -881,6 +877,56 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 	}
 }
 
+// hammerExtractResult calls ExtractResult in a tight loop until stop is closed.
+func hammerExtractResult(ws *WSStat, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+			_ = ws.ExtractResult().TotalTime
+		}
+	}
+}
+
+// TestRaceExtractResultDuringClose exercises the ws.result race: ExtractResult calculates
+// and copies Result while Close finalizes it concurrently. The pre-existing suite never
+// raced these two paths, which is why the data race on ws.result stayed latent. Must pass
+// under -race.
+func TestRaceExtractResultDuringClose(t *testing.T) {
+	for i := range 30 {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			ws := New(WithTimeout(1 * time.Second))
+			err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
+			require.NoError(t, err)
+
+			var wg sync.WaitGroup
+
+			// Writer to populate timings concurrently with the extractors.
+			wg.Go(func() {
+				for j := range 10 {
+					ws.WriteMessage(TextMessage, fmt.Appendf(nil, "msg %d", j))
+					time.Sleep(time.Microsecond * 5)
+				}
+			})
+
+			// Extractors hammer ExtractResult so a calculate/copy overlaps Close's finalize.
+			stop := make(chan struct{})
+			for range 3 {
+				wg.Go(func() { hammerExtractResult(ws, stop) })
+			}
+
+			time.Sleep(time.Microsecond * 50)
+			ws.Close()
+			close(stop)
+			wg.Wait()
+
+			final := ws.ExtractResult()
+			assert.Greater(t, final.TotalTime, time.Duration(0))
+		})
+	}
+}
+
 // TestWithSubprotocols verifies that an offered subprotocol is negotiated and surfaced in
 // Result.Subprotocol.
 func TestWithSubprotocols(t *testing.T) {
@@ -980,13 +1026,13 @@ func TestWithResolves(t *testing.T) {
 	t.Run("basic resolve override", func(t *testing.T) {
 		// Create WSStat with resolve override pointing to localhost
 		resolves := map[string]string{
-			"example.com:8080": "127.0.0.1",
+			echoHostPort("example.com"): "127.0.0.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
 		// Dial using the overridden hostname
-		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		targetURL, err := url.Parse(echoHostURL("example.com"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)
@@ -1005,14 +1051,14 @@ func TestWithResolves(t *testing.T) {
 	t.Run("multiple hosts", func(t *testing.T) {
 		// Multiple overrides for different hosts
 		resolves := map[string]string{
-			"example.com:8080": "127.0.0.1",
-			"other.com:8080":   "127.0.0.1",
+			echoHostPort("example.com"): "127.0.0.1",
+			echoHostPort("other.com"):   "127.0.0.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
 		// Use the first override
-		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		targetURL, err := url.Parse(echoHostURL("example.com"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)
@@ -1025,13 +1071,13 @@ func TestWithResolves(t *testing.T) {
 	t.Run("multiple ports same host", func(t *testing.T) {
 		// Override for specific port
 		resolves := map[string]string{
-			"example.com:8080": "127.0.0.1",
+			echoHostPort("example.com"): "127.0.0.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
-		// Connect to port 8080 (should use override)
-		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		// Connect using the override host (should use override)
+		targetURL, err := url.Parse(echoHostURL("example.com"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)
@@ -1044,7 +1090,7 @@ func TestWithResolves(t *testing.T) {
 	t.Run("fallback to DNS when no override", func(t *testing.T) {
 		// Override for different host
 		resolves := map[string]string{
-			"other.com:8080": "192.168.1.1",
+			echoHostPort("other.com"): "192.168.1.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
@@ -1060,13 +1106,13 @@ func TestWithResolves(t *testing.T) {
 	t.Run("case insensitive hostname", func(t *testing.T) {
 		// Override with lowercase
 		resolves := map[string]string{
-			"example.com:8080": "127.0.0.1",
+			echoHostPort("example.com"): "127.0.0.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
 		// Dial with uppercase (should match due to case-insensitive comparison)
-		targetURL, err := url.Parse("ws://EXAMPLE.COM:8080/echo")
+		targetURL, err := url.Parse(echoHostURL("EXAMPLE.COM"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)
@@ -1079,14 +1125,14 @@ func TestWithResolves(t *testing.T) {
 	t.Run("IPv6 address override", func(t *testing.T) {
 		// Override with IPv6 loopback
 		resolves := map[string]string{
-			"example.com:8080": "::1",
+			echoHostPort("example.com"): "::1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
 		// Note: This test might fail if IPv6 is not available
 		// but that's acceptable for testing the override mechanism
-		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		targetURL, err := url.Parse(echoHostURL("example.com"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)
@@ -1099,12 +1145,12 @@ func TestWithResolves(t *testing.T) {
 
 	t.Run("timing measurements with override", func(t *testing.T) {
 		resolves := map[string]string{
-			"example.com:8080": "127.0.0.1",
+			echoHostPort("example.com"): "127.0.0.1",
 		}
 		ws := New(WithResolves(resolves))
 		defer ws.Close()
 
-		targetURL, err := url.Parse("ws://example.com:8080/echo")
+		targetURL, err := url.Parse(echoHostURL("example.com"))
 		require.NoError(t, err)
 
 		err = ws.DialContext(context.Background(), targetURL, nil)

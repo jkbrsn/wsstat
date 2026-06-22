@@ -45,9 +45,45 @@ import (
 
 var version = "unknown"
 
+// Process exit codes. Usage covers both flag-parse failures and post-parse argument
+// validation; runtime is reserved for genuine connection/measurement/output failures.
+const (
+	exitRuntime = 1 // runtime/network failure (dial, measure, stream, output write)
+	exitUsage   = 2 // bad invocation: flag parse error or argument validation
+)
+
 // errUsageShown signals that a FlagSet already printed its own error and usage,
 // so main should exit without printing anything further.
 var errUsageShown = errors.New("usage shown")
+
+// cliError classifies a failure for the top-level handler: the process exit code and
+// the resolved output contract, so a JSON run can emit a structured error envelope.
+type cliError struct {
+	code   int        // process exit code (exitRuntime or exitUsage)
+	output app.Output // resolved output contract; OutputJSON triggers the JSON envelope
+	err    error      // underlying error
+}
+
+func (e *cliError) Error() string { return e.err.Error() }
+func (e *cliError) Unwrap() error { return e.err }
+
+// usageErr classifies a build/validation failure as exit 2. The flag-parse sentinels
+// (already-printed usage, help) pass through unchanged for main's dispatch switch.
+func usageErr(err error) error {
+	if errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsageShown) {
+		return err
+	}
+	return &cliError{code: exitUsage, err: err}
+}
+
+// runtimeErr classifies a runtime failure as exit 1, carrying the output contract so
+// fail can emit a JSON error envelope under -o json. Returns nil for a nil error.
+func runtimeErr(output app.Output, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &cliError{code: exitRuntime, output: output, err: err}
+}
 
 // removedFlags maps v2 flags dropped in v3 to a targeted migration hint.
 var removedFlags = map[string]string{
@@ -71,7 +107,7 @@ func main() {
 	switch {
 	case len(args) == 0:
 		printTopUsage(os.Stderr)
-		os.Exit(2)
+		os.Exit(exitUsage)
 	case args[0] == "stream":
 		err = runStream(args[1:])
 	case args[0] == "measure":
@@ -90,17 +126,32 @@ func main() {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return
 	case errors.Is(err, errUsageShown):
-		os.Exit(2)
+		os.Exit(exitUsage)
 	default:
 		fail(err)
 	}
 }
 
-// fail prints err to stderr and exits with status 1.
+// fail reports err and exits. A runtime failure under -o json emits a structured error
+// envelope to stdout (keeping the JSON stream parseable); every other case prints plain
+// text to stderr. The exit code comes from the cliError classification, defaulting to
+// exitRuntime for any unclassified error.
 func fail(err error) {
+	code := exitRuntime
+	var ce *cliError
+	if errors.As(err, &ce) {
+		code = ce.code
+		if ce.output == app.OutputJSON {
+			if emitErr := app.EmitJSONError(os.Stdout, err); emitErr == nil {
+				// revive:disable-next-line:deep-exit single CLI error exit point
+				os.Exit(code)
+			}
+			// Fall through to stderr if the envelope could not be written.
+		}
+	}
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	// revive:disable-next-line:deep-exit single CLI error exit point
-	os.Exit(1)
+	os.Exit(code)
 }
 
 // registerRemoved registers v2 flags dropped in v3 as inert vars on fs, matching
@@ -254,25 +305,26 @@ func parseErr(err error) error {
 func runMeasure(args []string) error {
 	client, target, err := buildMeasure(args)
 	if err != nil {
-		return err
+		return usageErr(err)
 	}
 
 	ctx, cancel := interruptContext()
 	defer cancel()
 
+	out := client.Output()
 	result, err := client.MeasureLatency(ctx, target)
 	if err != nil {
-		return fmt.Errorf("measuring latency: %w", err)
+		return runtimeErr(out, fmt.Errorf("measuring latency: %w", err))
 	}
 
 	if err := client.PrintRequestDetails(result); err != nil {
-		return fmt.Errorf("printing request details: %w", err)
+		return runtimeErr(out, fmt.Errorf("printing request details: %w", err))
 	}
 	if err := client.PrintTimingResults(target, result); err != nil {
-		return fmt.Errorf("printing timing results: %w", err)
+		return runtimeErr(out, fmt.Errorf("printing timing results: %w", err))
 	}
 	if err := client.PrintResponse(result); err != nil {
-		return fmt.Errorf("printing response: %w", err)
+		return runtimeErr(out, fmt.Errorf("printing response: %w", err))
 	}
 	return nil
 }
@@ -280,14 +332,15 @@ func runMeasure(args []string) error {
 func runStream(args []string) error {
 	client, target, err := buildStream(args)
 	if err != nil {
-		return err
+		return usageErr(err)
 	}
 
 	ctx, cancel := interruptContext()
 	defer cancel()
 
+	out := client.Output()
 	if client.Once() {
-		return client.StreamSubscriptionOnce(ctx, target)
+		return runtimeErr(out, client.StreamSubscriptionOnce(ctx, target))
 	}
-	return client.StreamSubscription(ctx, target)
+	return runtimeErr(out, client.StreamSubscription(ctx, target))
 }

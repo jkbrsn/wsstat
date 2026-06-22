@@ -80,6 +80,16 @@ var documentedDefaultHeaders = map[string][]string{
 }
 
 // WSStat wraps the coder/websocket package with latency measuring capabilities.
+//
+// Concurrency: DialContext must complete (single-threaded) before any other method is
+// called. After a successful dial, ExtractResult and Close are safe to call concurrently
+// with each other and with the read/write/subscription methods; ExtractResult takes a
+// consistent snapshot even while Close is finalizing the Result. Close is idempotent and
+// may be called from multiple goroutines. WriteMessage/WriteMessageJSON and
+// ReadMessage/ReadMessageJSON/PingPong are not internally serialized against each other:
+// concurrent writers (or concurrent readers) interleave on the shared channels, so callers
+// that need ordering must coordinate it. Subscribe/SubscribeOnce are safe to call
+// concurrently.
 type WSStat struct {
 	log zerolog.Logger
 
@@ -88,6 +98,7 @@ type WSStat struct {
 	httpClient *http.Client
 	timings    *wsTimings
 	result     *Result
+	resultMu   sync.Mutex // guards calculateResultLocked, the ExtractResult copy, and closeDone
 
 	readChan  chan *wsRead
 	writeChan chan *wsWrite
@@ -95,7 +106,7 @@ type WSStat struct {
 	subscriptionMu            sync.RWMutex
 	subscriptions             map[string]*subscriptionState
 	subscriptionArchive       map[string]SubscriptionStats
-	nextSubscriptionID        uint64
+	nextSubscriptionID        atomic.Uint64
 	defaultSubscriptionBuffer int
 	subscriptionFirstEvent    time.Time
 	subscriptionLastEvent     time.Time
@@ -201,10 +212,10 @@ type wsTimings struct {
 	mu sync.Mutex // Protects messageWrites and messageReads
 }
 
-// calculateResult calculates the durations of each phase of the WebSocket connection based
-// on the current state of the WSStat timings.
+// calculateResultLocked calculates the durations of each phase of the WebSocket connection
+// based on the current state of the WSStat timings. The caller must hold ws.resultMu.
 // Note: if there haven't been as many message reads as writes, MessageRTT will be 0.
-func (ws *WSStat) calculateResult() {
+func (ws *WSStat) calculateResultLocked() {
 	// Calculate durations per phase
 	ws.result.DNSLookup = ws.timings.dnsLookupDone.Sub(ws.timings.dialStart)
 	ws.result.TCPConnection = ws.timings.tcpConnected.Sub(ws.timings.dnsLookupDone)
@@ -613,8 +624,11 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 }
 
 // ExtractResult calculate the current results and returns a copy of the Result object.
+// Safe to call concurrently with the read/write/subscription methods and with Close.
 func (ws *WSStat) ExtractResult() *Result {
-	ws.calculateResult()
+	ws.resultMu.Lock()
+	defer ws.resultMu.Unlock()
+	ws.calculateResultLocked()
 
 	resultCopy := *ws.result
 	if ws.result.Subscriptions != nil {
@@ -667,7 +681,11 @@ func (ws *WSStat) Close() {
 		}
 
 		// Record closeDone after the handshake completes for accurate timing.
+		// Guarded by resultMu because calculateResultLocked reads it and a concurrent
+		// ExtractResult may be calculating at the same time.
+		ws.resultMu.Lock()
 		ws.timings.closeDone = time.Now()
+		ws.resultMu.Unlock()
 
 		// Now stop the pumps and finalize subscriptions.
 		ws.cancel()
@@ -676,7 +694,9 @@ func (ws *WSStat) Close() {
 			ws.finalizeSubscription(state, context.Canceled)
 		}
 
-		ws.calculateResult()
+		ws.resultMu.Lock()
+		ws.calculateResultLocked()
+		ws.resultMu.Unlock()
 
 		// Wait for pumps to finish
 		pumpsTimeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -203,6 +203,24 @@ wsstat stream --body compact --clip wss://example.org/stream
 `--body`, `--clip`, `-q`, `-v`, and `-vv` apply only to `-o text` and are
 rejected under `-o json|raw`.
 
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success (also `--help` and `--version`) |
+| 1    | Runtime failure (dial, measurement, stream, or output write) |
+| 2    | Usage error (bad flag or argument) |
+| 130  | Interrupted; a second `Ctrl-C` forces teardown |
+
+Usage errors (exit 2) always print plain text to stderr. Under `-o json`, a
+runtime failure (exit 1) prints a `{"type":"error"}` envelope to stdout so a
+`wsstat ... -o json | jq` pipeline stays parseable on the failure path:
+
+```sh
+wsstat -o json ws://127.0.0.1:1
+# {"schema_version":"1.0","type":"error","error":"measuring latency: ..."}
+```
+
 ## wsstat Library Package
 
 Use the `wsstat` Golang package to trace WebSocket connection and latency in your Go applications. It wraps [coder/websocket](https://pkg.go.dev/github.com/coder/websocket) for the WebSocket protocol implementation, and measures the duration of the different phases of the connection cycle.

@@ -33,22 +33,31 @@ for Batch 2 and the subscription migration.
 - Remove `Dial`; migrate in-tree callers (reshape step 5).
 - Tighten `handleConnectionError` to `errors.As`.
 
-**Batch 3 — Race + concurrency** (slot after Batch 2; the one-shots call `calculateResult`).
-- `resultMu`/atomic-swap race fix + `-race` test.
-- Concurrency-safety contract godoc.
-- `nextSubscriptionID` 32-bit-safe.
+**Batch 3 — Race + concurrency. DONE.** (slot after Batch 2; the one-shots call
+`calculateResult`).
+- `resultMu` race fix + `-race` test. `calculateResult` -> `calculateResultLocked` (caller holds
+  `resultMu`); guarded the `ExtractResult` snapshot copy and `Close`'s `closeDone` write +
+  finalize. New `TestRaceExtractResultDuringClose` fires `DATA RACE` without the lock, passes with.
+- Concurrency-safety contract godoc on `WSStat`.
+- `nextSubscriptionID` 32-bit-safe via typed `atomic.Uint64`.
 
 **Parallel track — Timing precision + TLS integration test** (needs decision #1; disjoint from the
 dial-path core, lives in `internal/app/formatting.go`/`output.go` + a new test). Can run alongside
 Batches 1-3.
 
-**Batch 4 — CLI error contract** (after sentinels exist in Batch 2).
-- JSON error envelope under `-o json`.
-- Exit-code normalization + table.
+**Batch 4 — CLI error contract. DONE.** (after sentinels exist in Batch 2).
+- JSON error envelope under `-o json`: `errorOutputJSON` + exported `EmitJSONError(w, err)` in
+  `internal/app/types.go`; emitted to stdout on the runtime-failure path.
+- Exit-code normalization + table: `cliError`/`usageErr`/`runtimeErr` in `main.go` route validation
+  to exit 2, runtime to exit 1; table in `usage.go` (`EXIT CODES`) + README.
 
-**Batch 5 — Test harness + tests.**
-- Swap fixed `localhost:8080` echo server for `httptest` (do before writing new tests).
-- Error-path tests for the new `Measure*` funcs.
+**Batch 5 — Test harness + tests. DONE.**
+- Swapped the fixed `localhost:8080` echo server for a shared `httptest.NewServer` on a random
+  port (no readiness sleep; `echoHostPort`/`echoHostURL` helpers carry the dynamic port into the
+  resolve-override tests).
+- Error-path tests for the `Measure*` funcs: `TestMeasureDialErrors` covers refused port,
+  plain-HTTP handshake failure, and dial timeout across MeasureText/JSON/Ping (asserts wrapped
+  error + nil Result).
 
 **Batch 6 — Docs/release hygiene (last).** CHANGELOG cut, README fixes, multi-platform assets,
 toolchain + govulncheck, `-insecure` doc fix, schema-versioning doc, pre-tag ephemeral-doc cleanup.
@@ -90,27 +99,26 @@ Contract-freezing (breaking if deferred past the tag):
       guards); `handleConnectionError` tightened to `errors.As` over the tls/x509 cert types with a
       string fallback. `ErrReadTimeout` deferred (timeouts surface as `context.DeadlineExceeded`).
       Remaining CLI half — the JSON error envelope — is its own item below (Batch 4).
-- [ ] **JSON schema versioning decision** — one `schema_version="1.0"` is stamped on four
-      structurally-distinct payloads (timing/response/subscription_summary/subscription_message,
-      `internal/app/types.go:15`). One knob can't evolve them independently.
+- [x] **JSON schema versioning decision** — decision frozen and implementation matches: a single
+      `JSONSchemaVersion = "1.0"` (`internal/app/types.go:16`) is stamped on every envelope —
+      timing/response/subscription_summary/subscription_message and the `error` envelope (Batch 4).
   - **Decided**: single monotonic `schema_version` covering the whole output family as a unit — any
     breaking change to any payload bumps it (`1.0`->`2.0`); additive fields don't. It stays emitted
     on **every** JSON object (NDJSON records are self-describing per line, incl. streamed
     `subscription_message` lines). Publishing a formal JSON Schema in `docs/` is additive doc, can
-    land post-freeze (tracked under cross-cutting polish), and does not change this paradigm.
+    land post-freeze (tracked under the cross-cutting polish item below), and does not change this
+    paradigm.
 
 Correctness:
 
-- [ ] **Data race on `ws.result`** (confirmed, 34 race reports reproduced). `calculateResult`
-      (`wsstat.go:181-252`) writes every `ws.result.*` field with no lock; reachable concurrently
-      from `ExtractResult` (`:620`, called by the app's `handleSubscriptionTick`) and `Close`
-      (`:681`, via the pumps' `defer ws.Close()`). `closeDone` (`:672`) and the phase-timing
-      callbacks (`:769,802,816,843`) are also unsynchronized writers.
-  - Approach: a `resultMu` guarding the `calculateResult` body, the `*ws.result` copy in
-    `ExtractResult`, the `closeDone` write, and the timing-callback writes — **or** build a local
-    `Result` and atomic-swap a `*Result` pointer.
-  - Done when: a new `-race` test calling `ExtractResult` in a loop concurrently with `Close` passes
-    (the existing suite doesn't cover this, which is why the race is latent).
+- [x] **Data race on `ws.result`** (Batch 3). Fixed with a `resultMu` guarding the (renamed)
+      `calculateResultLocked` body, the `*ws.result` snapshot copy in `ExtractResult`, and `Close`'s
+      `closeDone` write + finalize. The dial-time `TLSState`/`IPs`/phase-timing writes happen-before
+      the pumps start (single-threaded dial), so they don't race and stay lock-free; the message
+      read/write slices keep their existing `timings.mu`. `nextSubscriptionID` is now `atomic.Uint64`.
+      Lock order is `resultMu` -> `subscriptionMu` (via `snapshotSubscriptionStats`); no inverse path.
+  - Done: `TestRaceExtractResultDuringClose` loops `ExtractResult` concurrently with `Close` and
+    passes under `-race` (verified it reports `DATA RACE` with the lock removed).
 - [x] **Connection leak** in `Dial` (Batch 1): dropped the redundant post-handshake `net.LookupIP`;
       `Result.IPs` is now set from the connected address inside the transport's `dialWithAddresses`.
       Removes the leak window *and* the second DNS round-trip, and subsumes the "record actually-dialed
@@ -118,18 +126,15 @@ Correctness:
 
 Contract completeness:
 
-- [ ] **JSON error envelope** under `-o json`: failures currently print plain `Error: %v` text to
-      stderr (`cmd/wsstat/main.go:101`, `fail()`), so `... -o json | jq` breaks on the failure path.
-      Add a `type:"error"` envelope to `internal/app/types.go` and thread the resolved `Output` into
-      the top-level error handler so `fail()` can format it.
-  - Decision: emit to stdout (consistent with the NDJSON data stream) or stderr — document whichever.
-  - This is the CLI half of the error-contract change above.
-- [ ] **Document/normalize exit codes**. Today: 0 success/help/version, 1 runtime error *and*
-      post-parse validation, 2 flag-parse error, 130 second-SIGINT — so "bad usage" is split across
-      1 and 2 with no rule for scripts.
-  - Decision: route post-parse argument/validation errors (`resolveCommon`/`buildMeasure`) to exit 2
-    to match flag-parse, reserving 1 for genuine runtime/network failure. Add an exit-code table to
-    README/usage.
+- [x] **JSON error envelope** under `-o json` (Batch 4): `errorOutputJSON` + exported
+      `EmitJSONError(w, err)` in `internal/app/types.go`; `fail()` (`cmd/wsstat/main.go`) threads the
+      resolved `Output` via `cliError` and emits the `type:"error"` record on the runtime-failure
+      path. Decision: emit to **stdout** (consistent with the NDJSON data stream); usage errors keep
+      plain stderr text. Covered by `TestEmitJSONError` + `TestErrorClassification`.
+- [x] **Document/normalize exit codes** (Batch 4): post-parse argument/validation errors now exit 2
+      (matching flag-parse) via `usageErr`, reserving 1 for runtime/network failure via `runtimeErr`;
+      `130` stays second-SIGINT. Exit-code table added to `usage.go` (`EXIT CODES`) and the README.
+      Covered by `TestErrorClassification`.
 
 Test the headline feature:
 
@@ -138,10 +143,11 @@ Test the headline feature:
       `CertificateDetails` (`result.go:209`, currently 0%) and the TLS `Format` section
       (`DialTLSContext` 20.8%, `printTLSSectionIfPresent` 10.5%). No real `wss://` dial exists in any
       test today. A real handshake also surfaces the timing-truncation bug above — wire these together.
-- [ ] **Error-path tests** for the `MeasureLatency*` wrappers + `Dial`: refused port (`127.0.0.1:1`),
-      plain-HTTP endpoint (handshake failure), and a timeout via a slow `httptest` server. Assert the
-      error is `%w`-wrapped (or matches the new sentinels) and that the returned `Result` is nil.
-      `wrappers_test.go` is currently all happy-path.
+- [x] **Error-path tests** for the one-shot `Measure*` funcs (Batch 5): `TestMeasureDialErrors`
+      (`measure_test.go`) covers refused port (`127.0.0.1:1`), a plain-HTTP endpoint (handshake
+      failure), and a dial timeout via a context-blocking `httptest` server, across
+      MeasureText/MeasureJSON/MeasurePing. Asserts the error is `%w`-wrapped (`dial: ...`) and the
+      returned `Result` is nil. (The `MeasureLatency*` wrappers + `Dial` no longer exist as of Batch 2.)
 
 Docs/release hygiene (low-risk, do last):
 
@@ -189,12 +195,12 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 ### Concurrency (C -> A; A2 race fix is the blocker, these finish the job)
 
-- [ ] Document the concurrency-safety contract: which `WSStat` methods are safe to call
-      concurrently, and the rule that `ExtractResult` must not race `Dial`/`Close`. Goes in godoc.
+- [x] Document the concurrency-safety contract (Batch 3): `WSStat` godoc now states the dial-first
+      rule and that `ExtractResult`/`Close`/read/write/subscription methods are safe concurrently.
 - [x] Wrappers should return `ExtractResult()` (deep copy) (Batch 2): the new one-shots return
       `ExtractResult()` after Close; the live-pointer-returning wrappers are gone.
-- [ ] Make `nextSubscriptionID` 32-bit-safe: use `atomic.Uint64` (typed) or move it to the first
-      struct word (`wsstat.go:85`, `subscription.go:218`).
+- [x] Make `nextSubscriptionID` 32-bit-safe (Batch 3): typed `atomic.Uint64`
+      (`wsstat.go:98`, `subscription.go:218`).
 
 ### Documentation (C+ -> A; README/CHANGELOG fixes are blockers, these reach A)
 
@@ -217,7 +223,8 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
       (`:600-602`) so close handling is identical regardless of decode path.
 - [ ] Fix doc/impl mismatches: `result.go:113` says `%#v` but verbose is `%+v`; `WithCloseGrace`
       zero-case doc (`wsstat.go:903`) overstates "immediate teardown" vs the timer race.
-- [ ] Drop the redundant `extractFirstString` double-flatten (`measurement.go:99,120`).
+- [x] Drop the redundant `extractFirstString` double-flatten — moot: current code has a single
+      clean flatten (`measurement.go:120`, called once at `:99`); no redundancy remains to drop.
 
 ### Security (B -> A; read-limit/govulncheck/toolchain are blockers, these reach A)
 
@@ -232,9 +239,11 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 ### Testing (B -> A; TLS + error-path tests are blockers, these reach A)
 
-- [ ] Replace the fixed `localhost:8080` echo server (`wsstat_test.go:22,902`) with
-      `httptest.NewServer` (random port) + readiness poll; removes the documented port-conflict
-      flakiness, the `time.Sleep(250ms)` startup, and unblocks `t.Parallel()`.
+- [x] Replaced the fixed `localhost:8080` echo server with a shared `httptest.NewServer` (random
+      port) in `TestMain` (Batch 5). httptest is listening before it returns, so the `time.Sleep(250ms)`
+      startup and port-conflict flakiness are gone. Existing tests were not mass-converted to
+      `t.Parallel()` (left for a follow-up), but the shared server is now read-only so it no longer
+      blocks them.
 - [ ] CI-runnable end-to-end test of the `cmd/wsstat` binary (measure/stream dispatch + exit codes);
       `main.go` dispatch is 0% and the only e2e coverage is the Docker-gated `dev/` scripts.
 - [ ] Table-driven test for the `color` package (`internal/app/color/color.go`, currently 0%),

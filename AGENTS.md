@@ -34,7 +34,7 @@ All layers use the functional options pattern: `New(opts ...Option)` with `WithT
 
 ## Testing
 
-- Tests start an echo server on `localhost:8080` (TestMain) — avoid port conflicts.
+- Tests start a shared `httptest` echo server on a random port (TestMain); `echoServerAddrWs` holds its URL.
 - `testify` (assert/require); CI runs with the race detector and 16x repetition.
 
 ## PR/Commit Standards

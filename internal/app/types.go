@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 
 	"github.com/jkbrsn/wsstat/v3"
@@ -91,6 +92,35 @@ type subscriptionEntryJSON struct {
 	LastEventMs        *int64 `json:"last_event_ms,omitempty"`
 	MeanInterArrivalMs *int64 `json:"mean_inter_arrival_ms,omitempty"`
 	Error              string `json:"error,omitempty"`
+}
+
+// errorOutputJSON is the schema-stable error envelope emitted under -o json when a runtime
+// failure occurs, so a `wsstat ... -o json | jq` pipeline always receives a parseable record
+// on the failure path instead of falling back to plain stderr text.
+type errorOutputJSON struct {
+	Schema string `json:"schema_version"`
+	Type   string `json:"type"`
+	Error  string `json:"error"`
+}
+
+// EmitJSONError writes a structured error envelope (type "error") to w, terminated by a
+// newline to match the NDJSON data stream. The CLI calls this on the runtime-failure path
+// under the JSON output contract; the envelope goes to stdout alongside any data already
+// streamed, so consumers parsing the stream see the failure as one final record.
+func EmitJSONError(w io.Writer, err error) error {
+	env := errorOutputJSON{
+		Schema: JSONSchemaVersion,
+		Type:   "error",
+		Error:  err.Error(),
+	}
+	data, mErr := json.Marshal(env)
+	if mErr != nil {
+		return fmt.Errorf("failed to marshal error envelope: %w", mErr)
+	}
+	if _, wErr := w.Write(append(data, '\n')); wErr != nil {
+		return fmt.Errorf("failed to write error envelope: %w", wErr)
+	}
+	return nil
 }
 
 type subscriptionMessageJSON struct {
