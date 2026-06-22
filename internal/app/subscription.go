@@ -31,7 +31,7 @@ func (c *Client) openSubscription(
 	}
 
 	wsClient := wsstat.New(c.wsstatOptions()...)
-	if err := wsClient.Dial(target, header); err != nil {
+	if err := wsClient.DialContext(ctx, target, header); err != nil {
 		wsClient.Close()
 		return nil, nil, handleConnectionError(err, target.String())
 	}

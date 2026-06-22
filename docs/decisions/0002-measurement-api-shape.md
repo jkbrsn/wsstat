@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Commit: d62f4df
-Status: proposed
+Status: accepted
 
 ## Context
 

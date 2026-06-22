@@ -13,9 +13,9 @@ below; full text recorded inline on the blocker items.
 3. Error sentinels — export `ErrConnectionNotEstablished` + `ErrClosed` only; timeouts via `context.DeadlineExceeded`.
 4. Schema versioning — single whole-family monotonic version, emitted on every JSON object.
 
-**Batch 1 — Dial-path rework** (one focused pass over `wsstat.go:351-394` + the `Result`/`DialOptions`
-structs; freezes the `Result` struct once). `DialContext` is the prerequisite for Batch 2 and the
-subscription migration.
+**Batch 1 — Dial-path rework. DONE.** (one focused pass over `wsstat.go:351-394` + the
+`Result`/`DialOptions` structs; freezes the `Result` struct once). `DialContext` is the prerequisite
+for Batch 2 and the subscription migration.
 - `DialContext(ctx, target, headers)` + per-call ctx/deadline on read/write (reshape step 1).
 - Connection-leak fix: drop the redundant `net.LookupIP`, populate `Result.IPs` from the dialed
   address (folds in the "record actually-dialed IP" polish item).
@@ -24,7 +24,7 @@ subscription migration.
 - `WithHeaders` option (reshape step 6).
 - Optional while in `DialOptions`: `WithCompression` (default off).
 
-**Batch 2 — One-shots + error contract** (depends on Batch 1's `DialContext`).
+**Batch 2 — One-shots + error contract. DONE.** (depended on Batch 1's `DialContext`).
 - `MeasureText`/`MeasureJSON`/`MeasurePing`; each returns a deep-copied `Result` (reshape step 2,
   subsumes the wrappers-return-deep-copy polish item).
 - Full `%v -> %w` sweep + exported sentinels (needs decision #3; reshape step 3).
@@ -69,24 +69,12 @@ Contract-freezing (breaking if deferred past the tag):
     semantics stay, so a real sub-ms phase now renders non-zero. Baked into the initial
     `schema_version "1.0"` (no bump — 1.0 hasn't shipped).
   - Done when: a sub-ms `ws://localhost` measure renders non-zero in both text and JSON.
-- [ ] **Measurement API reshape** — decided ([ADR 0002](./decisions/0002-measurement-api-shape.md);
-      rationale in [design/measure-wrapper-api.md](./design/measure-wrapper-api.md)). Ordered:
-  1. Add `DialContext(ctx, target, headers) error`; make read/write honor a per-call ctx/deadline
-     (not only `ws.ctx`). Keep `Dial` until step 5.
-  2. Write the three free one-shots `MeasureText`/`MeasureJSON`/`MeasurePing`
-     (`(ctx, target, payload, ...Option)`, headers via `WithHeaders`), each owning
-     New->DialContext->loop->Close with cleanup on every error path (subsumes the connection-leak
-     fix for the one-shot path).
-  3. Fold the error contract in here: `%w` wrapping + exported sentinels as one error style across
-     the three funcs (the broader `%w` sweep + JSON error envelope stay in the error-contract item).
-  4. Delete the nine `MeasureLatency*` wrappers and the ~120-line goroutine/channel shuttle
-     (`wrappers.go:193-350`); unexport `OneHitMessage`/`OneHitMessageJSON`.
-  5. Remove `Dial`; migrate in-tree callers: `internal/app/measurement.go:23,54,77` -> the three
-     free funcs, `_example/main.go:28` -> `MeasureText`, `internal/app/subscription.go:34` + tests
-     -> `DialContext`.
-  6. Add `WithHeaders(http.Header)` option.
-  - Done when: `go build ./...` + tests green, no `MeasureLatency*`/`Dial` symbols remain, and the
-    race + error-path tests (below) cover the new funcs.
+- [x] **Measurement API reshape** (Batches 1-2; [ADR 0002](./decisions/0002-measurement-api-shape.md)).
+      All six steps landed: `DialContext` + ctx-honoring read/write and `WithHeaders` (Batch 1); the
+      three free one-shots `MeasureText`/`MeasureJSON`/`MeasurePing` in `measure.go`, deletion of the
+      nine wrappers + goroutine shuttle (`wrappers.go` removed), removal of `OneHitMessage*` and
+      `Dial`, and migration of all in-tree callers + ~33 test sites to `DialContext` (Batch 2).
+      `MeasureLatency*`/`Dial`/`OneHit*` symbols are gone; thorough error-path tests remain Batch 5.
 - [x] **`WithSubprotocols([]string)` + `--subprotocol`** (Batch 1): threaded into
       `DialOptions.Subprotocols`; `Result.Subprotocol` populated from `Conn.Subprotocol()`. Covered by
       `TestWithSubprotocols`.
@@ -96,18 +84,12 @@ Contract-freezing (breaking if deferred past the tag):
   - **Decided**: default 16 MiB. `WithReadLimit(n)`: `n > 0` sets the cap, `n < 0` (`-1`) disables
     it (unlimited opt-in), `n == 0` means "unset → default" (a 0-byte limit is never useful). CLI
     `--max-message-size` takes a byte count (optional `K`/`M` suffix), `-1` for unlimited.
-- [ ] **Error contract — one coordinated change** (don't split across releases):
-  - `%v` -> `%w` at `wsstat.go:361,363,396,576` and `wrappers.go:24,29,61,86,118` (the
-    `*WithContext` variants at `:213,275` already use `%w`).
-  - Export sentinels for the failure classes library consumers must branch on.
-    **Decided**: export exactly `ErrConnectionNotEstablished` (op before successful dial) and
-    `ErrClosed` (op on a closed conn; messages prefixed `wsstat:`). Defer `ErrReadTimeout` — once
-    read/write honor a per-call ctx, timeouts surface as `context.DeadlineExceeded` /
-    `os.ErrDeadlineExceeded`, which consumers check with `errors.Is`. Adding a sentinel later is
-    non-breaking; removing one isn't, so freeze the minimal set.
-  - Tighten `handleConnectionError` (`internal/app/formatting.go:36-39`) from
-    `strings.Contains(errMsg,"tls:")` to `errors.As` once type info survives the `%w` boundary.
-  - The JSON error envelope (below) is the CLI-facing half of this same contract.
+- [x] **Error contract — core half** (Batch 2): `%v`->`%w` on the `DialContext` dial errors and the
+      `ReadMessage` "unexpected close error"; exported `ErrConnectionNotEstablished` + `ErrClosed`
+      (returned by `ReadMessage`/`ReadMessageJSON`/`PingPong` via a `closed atomic.Bool` + conn-nil
+      guards); `handleConnectionError` tightened to `errors.As` over the tls/x509 cert types with a
+      string fallback. `ErrReadTimeout` deferred (timeouts surface as `context.DeadlineExceeded`).
+      Remaining CLI half — the JSON error envelope — is its own item below (Batch 4).
 - [ ] **JSON schema versioning decision** — one `schema_version="1.0"` is stamped on four
       structurally-distinct payloads (timing/response/subscription_summary/subscription_message,
       `internal/app/types.go:15`). One knob can't evolve them independently.
@@ -190,10 +172,9 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 ### Features & API (C+ -> A)
 
-- [ ] Measurement API reshape — **decided** ([ADR 0002](./decisions/0002-measurement-api-shape.md));
-      the single biggest lever on this grade. Execution is tracked as a release blocker above.
-      Batch 1 landed reshape steps 1 (`DialContext`) and 6 (`WithHeaders`); steps 2-5 (one-shots,
-      wrapper deletion, `Dial` removal) are Batch 2.
+- [x] Measurement API reshape (Batches 1-2; [ADR 0002](./decisions/0002-measurement-api-shape.md),
+      now accepted) — the single biggest lever on this grade. Execution tracked as a release blocker
+      above; all six steps landed.
 - [x] `DialContext(ctx, ...)` public method on `WSStat` (Batch 1): caller ctx is installed as the
       connection context, so the pumps and read/write paths honor caller cancellation/deadline.
 - [x] `WithCompression` / permessage-deflate toggle (Batch 1): maps to `DialOptions.CompressionMode`,
@@ -203,15 +184,15 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
       fix). Still open: a `WithIPVersion`/family-preference option (deferred, not yet needed).
 - [ ] `WithProxy(*url.URL)` / `--proxy` instead of env-only `http.ProxyFromEnvironment`
       (`wsstat.go:735`), or document proxying as env-driven.
-- [ ] Decide on `OneHitMessage` (non-JSON, `wsstat.go:505`): zero in-tree callers — keep as
-      supported surface or remove before the freeze.
+- [x] Decide on `OneHitMessage` (Batch 2): removed both `OneHitMessage`/`OneHitMessageJSON` (the
+      one-shots use the Write/Read loop directly).
 
 ### Concurrency (C -> A; A2 race fix is the blocker, these finish the job)
 
 - [ ] Document the concurrency-safety contract: which `WSStat` methods are safe to call
       concurrently, and the rule that `ExtractResult` must not race `Dial`/`Close`. Goes in godoc.
-- [ ] Wrappers should return `ExtractResult()` (deep copy) instead of the live `ws.result` pointer
-      (`wrappers.go:33,67,90,124,...`) — harden against future post-return mutation.
+- [x] Wrappers should return `ExtractResult()` (deep copy) (Batch 2): the new one-shots return
+      `ExtractResult()` after Close; the live-pointer-returning wrappers are gone.
 - [ ] Make `nextSubscriptionID` 32-bit-safe: use `atomic.Uint64` (typed) or move it to the first
       struct word (`wsstat.go:85`, `subscription.go:218`).
 
@@ -223,8 +204,8 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
       gorilla->coder, message-type API stays int-based). Currently only in the CHANGELOG.
 - [ ] Per-field godoc on `SubscriptionStats` and `SubscriptionMessage` (`subscription.go:59-76`) to
       match the `Result` convention (esp. `MeanInterArrival`, `Decoded`, `Size` vs `len(Data)`).
-- [ ] De-duplicate the package doc (identical block in `wsstat.go:1` and `wrappers.go:1`); keep one
-      copy and expand the overview to mention subscriptions/streaming.
+- [~] De-duplicate the package doc (Batch 2): the duplicate block went away with `wrappers.go`; the
+      one in `wsstat.go:1` remains. Still TODO: expand that overview to mention subscriptions/streaming.
 - [ ] Document the standards posture (no UTF-8 validation on text frames, compression off by
       default, read-limit behavior) so the deliberate RFC deviations are explicit.
 - [ ] Verify `README.md:247` `./TODO.md` link resolves (file is at `docs/TODO.md`).

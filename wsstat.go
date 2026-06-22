@@ -56,6 +56,16 @@ func fromCoderType(mt websocket.MessageType) int {
 	return int(mt)
 }
 
+// Exported error sentinels for the failure classes library consumers branch on. Returned
+// (via errors.Is) by the connection methods; the one-shot Measure* functions propagate them.
+var (
+	// ErrConnectionNotEstablished is returned when a read or ping is attempted before a
+	// successful dial.
+	ErrConnectionNotEstablished = errors.New("wsstat: connection not established")
+	// ErrClosed is returned when an operation is attempted on a closed connection.
+	ErrClosed = errors.New("wsstat: connection closed")
+)
+
 // documentedDefaultHeaders lists the known headers the WebSocket library sets by default.
 var documentedDefaultHeaders = map[string][]string{
 	"Upgrade":               {"websocket"}, // Constant value
@@ -93,6 +103,7 @@ type WSStat struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
+	closed    atomic.Bool // set once Close begins; distinguishes closed from never-dialed
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
@@ -356,14 +367,6 @@ func (ws *WSStat) writePump() {
 	}
 }
 
-// Dial establishes a new WebSocket connection using the custom dialer defined in this package.
-// If required, specify custom headers to merge with the default headers. It dials with a
-// background context; use DialContext to bind the connection to a caller-supplied context.
-// Sets times: dialStart, wsHandshakeDone
-func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
-	return ws.DialContext(context.Background(), targetURL, customHeaders)
-}
-
 // DialContext establishes a new WebSocket connection bound to ctx. Canceling ctx (or calling
 // Close) tears down the connection and unblocks in-flight reads and writes. If required, specify
 // custom headers to merge with the default headers.
@@ -399,9 +402,9 @@ func (ws *WSStat) DialContext(
 			defer func() {
 				_ = resp.Body.Close()
 			}()
-			return fmt.Errorf("failed dial response '%s': %v", string(body), err)
+			return fmt.Errorf("failed dial response '%s': %w", string(body), err)
 		}
-		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
+		return fmt.Errorf("failed to establish WebSocket connection: %w", err)
 	}
 	ws.timings.wsHandshakeDone = time.Now()
 	conn.SetReadLimit(ws.readLimit) // bound a single message; negative disables the limit
@@ -509,46 +512,17 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	}
 }
 
-// OneHitMessage sends a single message through the WebSocket connection, and waits for
-// the response. Note: this function assumes that the response received is the response to the
-// sent message, make sure to only run this function sequentially to avoid unexpected behavior.
-// Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) OneHitMessage(messageType int, data []byte) ([]byte, error) {
-	ws.WriteMessage(messageType, data)
-
-	// Assuming immediate response
-	_, p, err := ws.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	return p, nil
-}
-
-// OneHitMessageJSON sends a single JSON message through the WebSocket connection, and waits for
-// the response. Note: this function assumes that the response received is the response to the
-// sent message, make sure to only run this function sequentially to avoid unexpected behavior.
-// Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
-	ws.WriteMessageJSON(v)
-
-	// Assuming immediate response
-	resp, err := ws.ReadMessageJSON()
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
-}
-
 // PingPong sends a ping through the WebSocket connection and blocks until the matching pong
 // is received. coder's Ping is a synchronous round-trip, so both the write and read timings
 // are recorded around the single call.
 // Sets result times: MessageReads, MessageWrites
 func (ws *WSStat) PingPong() error {
+	if ws.closed.Load() {
+		return ErrClosed
+	}
 	conn := ws.conn.Load()
 	if conn == nil {
-		return ws.ctx.Err()
+		return ErrConnectionNotEstablished
 	}
 
 	ws.timings.mu.Lock()
@@ -571,12 +545,18 @@ func (ws *WSStat) PingPong() error {
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
+	if ws.closed.Load() {
+		return 0, nil, ErrClosed
+	}
+	if ws.conn.Load() == nil {
+		return 0, nil, ErrConnectionNotEstablished
+	}
 	select {
 	case <-ws.ctx.Done():
 		return 0, nil, ws.ctx.Err()
 	case msg, ok := <-ws.readChan:
 		if !ok {
-			return 0, nil, ws.ctx.Err()
+			return 0, nil, ErrClosed
 		}
 
 		if msg.err != nil {
@@ -584,7 +564,7 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 			if status != -1 &&
 				status != websocket.StatusNormalClosure &&
 				status != websocket.StatusGoingAway {
-				return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
+				return msg.messageType, nil, fmt.Errorf("unexpected close error: %w", msg.err)
 			}
 			return msg.messageType, nil, msg.err
 		}
@@ -600,12 +580,18 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
+	if ws.closed.Load() {
+		return nil, ErrClosed
+	}
+	if ws.conn.Load() == nil {
+		return nil, ErrConnectionNotEstablished
+	}
 	select {
 	case <-ws.ctx.Done():
 		return nil, ws.ctx.Err()
 	case msg, ok := <-ws.readChan:
 		if !ok {
-			return nil, ws.ctx.Err()
+			return nil, ErrClosed
 		}
 
 		if msg.err != nil {
@@ -671,6 +657,7 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 // Sets result times: CloseDone
 func (ws *WSStat) Close() {
 	ws.closeOnce.Do(func() {
+		ws.closed.Store(true)
 		// Graceful close FIRST, while the read pump is still alive so the server's Close
 		// echo is read off the socket before TCP teardown. Ordering is load-bearing:
 		// canceling the context first would kill the read pump before the echo arrives

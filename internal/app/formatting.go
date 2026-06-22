@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,19 +27,33 @@ func formatDuration(d time.Duration) string {
 }
 
 func handleConnectionError(err error, address string) error {
-	// Check for specific TLS errors first
-	var tlsErr *tls.RecordHeaderError
-	if errors.As(err, &tlsErr) {
+	// A malformed TLS record during the handshake is reported distinctly.
+	var recordErr *tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
 		return fmt.Errorf("TLS handshake failed connecting to '%s': %w", address, err)
 	}
-
-	// Fallback to string checking for specific messages
-	errMsg := err.Error()
-	if strings.Contains(errMsg, "tls:") || strings.Contains(errMsg, "TLS") {
+	if isTLSCertError(err) {
 		return fmt.Errorf("secure WebSocket connection failed to '%s': %w", address, err)
 	}
-
 	return fmt.Errorf("WebSocket connection failed to '%s': %w", address, err)
+}
+
+// isTLSCertError reports whether err is a TLS certificate-verification failure. It prefers typed
+// matching (now that dial errors are %w-wrapped, the x509/tls types survive the boundary) and
+// falls back to a string check for errors that don't surface a typed value.
+func isTLSCertError(err error) bool {
+	var (
+		certVerif   *tls.CertificateVerificationError
+		unknownAuth x509.UnknownAuthorityError
+		hostname    x509.HostnameError
+		invalid     x509.CertificateInvalidError
+	)
+	if errors.As(err, &certVerif) || errors.As(err, &unknownAuth) ||
+		errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tls:") || strings.Contains(msg, "TLS")
 }
 
 func msPtr(d time.Duration) *int64 {

@@ -185,7 +185,7 @@ func TestDial(t *testing.T) {
 	ws := New()
 	defer ws.Close()
 
-	err := ws.Dial(echoServerAddrWs, http.Header{})
+	err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 	assert.NoError(t, err)
 	assert.NotNil(t, ws.conn.Load())
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
@@ -199,7 +199,7 @@ func TestWriteReadClose(t *testing.T) {
 		validateCloseResult(ws, getFunctionName(), t)
 	}()
 
-	err := ws.Dial(echoServerAddrWs, http.Header{})
+	err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 	assert.NoError(t, err)
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
@@ -225,7 +225,7 @@ func TestBufferedReadWrite(t *testing.T) {
 			validateCloseResult(ws, getFunctionName(), t)
 		}()
 
-		err := ws.Dial(echoServerAddrWs, http.Header{})
+		err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 		assert.NoError(t, err)
 		validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
@@ -249,7 +249,7 @@ func TestBufferedReadWrite(t *testing.T) {
 			validateCloseResult(ws, getFunctionName(), t)
 		}()
 
-		err := ws.Dial(echoServerAddrWs, http.Header{})
+		err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 		assert.NoError(t, err)
 		validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
@@ -282,62 +282,10 @@ func TestBufferedReadWrite(t *testing.T) {
 	})
 }
 
-func TestOneHitMessage(t *testing.T) {
-	testStart := time.Now()
-	ws := New()
-	defer func() {
-		ws.Close()
-		validateCloseResult(ws, getFunctionName(), t)
-	}()
-
-	err := ws.Dial(echoServerAddrWs, http.Header{})
-	assert.NoError(t, err)
-	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
-
-	message := []byte("Hello, world!")
-	response, err := ws.OneHitMessage(TextMessage, message)
-	assert.NoError(t, err)
-	assert.Equal(t, message, response, "Received message does not match sent message")
-
-	// Call close before defer, since Close calls calculateResult
-	ws.Close()
-
-	validateOneHitResult(ws, getFunctionName(), t)
-}
-
-func TestOneHitMessageJSON(t *testing.T) {
-	testStart := time.Now()
-	ws := New()
-	defer func() {
-		ws.Close()
-		validateCloseResult(ws, getFunctionName(), t)
-	}()
-
-	err := ws.Dial(echoServerAddrWs, http.Header{})
-	assert.NoError(t, err)
-	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
-
-	message := struct {
-		Text string `json:"text"`
-	}{
-		Text: "Hello, world!",
-	}
-	response, err := ws.OneHitMessageJSON(message)
-	assert.NoError(t, err)
-	responseMap, ok := response.(map[string]any)
-	require.True(t, ok, "Response is not a map")
-	assert.Equal(t, message.Text, responseMap["text"])
-
-	// Call close before defer, since Close calls calculateResult
-	ws.Close()
-
-	validateOneHitResult(ws, getFunctionName(), t)
-}
-
 func TestSubscribeReceivesMessage(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
 		MessageType: TextMessage,
@@ -377,7 +325,7 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	msg, err := ws.SubscribeOnce(context.Background(), SubscriptionOptions{
 		MessageType: TextMessage,
@@ -400,7 +348,7 @@ func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
 func TestSubscriptionMatcherFallThrough(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
 		MessageType: TextMessage,
@@ -439,7 +387,7 @@ func TestSubscriptionMatcherFallThrough(t *testing.T) {
 func TestSubscriptionCancelWithoutTraffic(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{})
 	require.NoError(t, err)
@@ -469,7 +417,7 @@ func TestPingPong(t *testing.T) {
 		validateCloseResult(ws, getFunctionName(), t)
 	}()
 
-	err := ws.Dial(echoServerAddrWs, http.Header{})
+	err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 	assert.NoError(t, err)
 	validateDialResult(testStart, ws, echoServerAddrWs, getFunctionName(), t)
 
@@ -492,16 +440,28 @@ func TestReadAfterClose(t *testing.T) {
 	ws.Close()
 
 	_, _, err := ws.ReadMessage()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context canceled")
+	require.ErrorIs(t, err, ErrClosed)
 
 	_, err = ws.ReadMessageJSON()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context canceled")
+	require.ErrorIs(t, err, ErrClosed)
 
 	err = ws.PingPong()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context canceled")
+	require.ErrorIs(t, err, ErrClosed)
+}
+
+// TestOperationsBeforeDial verifies the not-established sentinel on a fresh, undialed instance.
+func TestOperationsBeforeDial(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+
+	_, _, err := ws.ReadMessage()
+	require.ErrorIs(t, err, ErrConnectionNotEstablished)
+
+	_, err = ws.ReadMessageJSON()
+	require.ErrorIs(t, err, ErrConnectionNotEstablished)
+
+	err = ws.PingPong()
+	require.ErrorIs(t, err, ErrConnectionNotEstablished)
 }
 
 // TestCloseHandshakeStatus verifies that Close performs the RFC 6455 two-way closing
@@ -534,8 +494,9 @@ func TestCloseHandshakeStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	ws := New()
-	require.NoError(t, ws.Dial(wsURL, http.Header{}))
-	_, err = ws.OneHitMessage(TextMessage, []byte("hello"))
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
+	ws.WriteMessage(TextMessage, []byte("hello"))
+	_, _, err = ws.ReadMessage()
 	require.NoError(t, err)
 	ws.Close()
 
@@ -577,7 +538,7 @@ func TestCloseGraceBound(t *testing.T) {
 
 	grace := 500 * time.Millisecond
 	ws := New(WithCloseGrace(grace))
-	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
 
 	start := time.Now()
 	done := make(chan struct{})
@@ -599,8 +560,9 @@ func TestResultFormat(t *testing.T) {
 	ws := New()
 	defer ws.Close()
 
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
-	_, err := ws.OneHitMessage(TextMessage, []byte("test"))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+	ws.WriteMessage(TextMessage, []byte("test"))
+	_, _, err := ws.ReadMessage()
 	require.NoError(t, err)
 	ws.Close()
 
@@ -664,7 +626,7 @@ func TestResultFormatWithZeroValues(t *testing.T) {
 	defer ws.Close()
 
 	// Dial but close immediately
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 	ws.Close()
 	result := ws.ExtractResult()
 
@@ -679,7 +641,7 @@ func TestResultFormatWithZeroValues(t *testing.T) {
 func TestSubscriptionByteCount(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
 		MessageType: TextMessage,
@@ -707,7 +669,7 @@ func TestSubscriptionByteCount(t *testing.T) {
 func TestSubscriptionUnsubscribe(t *testing.T) {
 	ws := New()
 	defer ws.Close()
-	require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 
 	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
 		MessageType: TextMessage,
@@ -730,164 +692,6 @@ func TestSubscriptionUnsubscribe(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("subscription did not close after unsubscribe")
 	}
-}
-
-func TestMeasureLatencyBurstWithContext(t *testing.T) {
-	t.Run("completes normally without cancellation", func(t *testing.T) {
-		ctx := context.Background()
-		result, _, err := MeasureLatencyBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			[]string{"test1", "test2", "test3"},
-			http.Header{},
-		)
-		require.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.Equal(t, 3, result.MessageCount)
-		assert.Greater(t, result.MessageRTT, time.Duration(0))
-	})
-
-	t.Run("cancels during execution", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Cancel after a very short delay
-		go func() {
-			time.Sleep(10 * time.Millisecond)
-			cancel()
-		}()
-
-		// Create large batch to ensure cancellation happens mid-execution
-		msgs := make([]string, 1000)
-		for i := range msgs {
-			msgs[i] = "test"
-		}
-
-		_, _, err := MeasureLatencyBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			msgs,
-			http.Header{},
-		)
-		// Either context canceled or succeeded before cancel
-		if err != nil {
-			assert.Contains(t, err.Error(), "context canceled")
-		}
-	})
-
-	t.Run("context already canceled", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // Cancel immediately
-
-		_, _, err := MeasureLatencyBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			[]string{"test1", "test2"},
-			http.Header{},
-		)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "context canceled")
-	})
-}
-
-func TestMeasureLatencyJSONBurstWithContext(t *testing.T) {
-	t.Run("completes normally without cancellation", func(t *testing.T) {
-		ctx := context.Background()
-		messages := []any{
-			map[string]string{"test": "value1"},
-			map[string]string{"test": "value2"},
-			map[string]string{"test": "value3"},
-		}
-		result, _, err := MeasureLatencyJSONBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			messages,
-			http.Header{},
-		)
-		require.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.Equal(t, 3, result.MessageCount)
-		assert.Greater(t, result.MessageRTT, time.Duration(0))
-	})
-
-	t.Run("cancels during execution", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-
-		go func() {
-			time.Sleep(10 * time.Millisecond)
-			cancel()
-		}()
-
-		messages := make([]any, 1000)
-		for i := range messages {
-			messages[i] = map[string]string{"test": "value"}
-		}
-
-		_, _, err := MeasureLatencyJSONBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			messages,
-			http.Header{},
-		)
-		// Either context canceled or succeeded before cancel
-		if err != nil {
-			assert.Contains(t, err.Error(), "context canceled")
-		}
-	})
-}
-
-func TestMeasureLatencyPingBurstWithContext(t *testing.T) {
-	t.Run("completes normally without cancellation", func(t *testing.T) {
-		ctx := context.Background()
-		result, err := MeasureLatencyPingBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			3,
-			http.Header{},
-		)
-		require.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.Equal(t, 3, result.MessageCount)
-		assert.Greater(t, result.MessageRTT, time.Duration(0))
-	})
-
-	t.Run("cancels during execution", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-
-		go func() {
-			time.Sleep(10 * time.Millisecond)
-			cancel()
-		}()
-
-		_, err := MeasureLatencyPingBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			1000,
-			http.Header{},
-		)
-		// Either context canceled or succeeded before cancel
-		if err != nil {
-			assert.Contains(t, err.Error(), "context canceled")
-		}
-	})
-
-	t.Run("context deadline exceeded", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		defer cancel()
-
-		_, err := MeasureLatencyPingBurstWithContext(
-			ctx,
-			echoServerAddrWs,
-			1000,
-			http.Header{},
-		)
-		// Either timeout or succeeded before timeout
-		if err != nil {
-			assert.True(t,
-				strings.Contains(err.Error(), "context") ||
-					strings.Contains(err.Error(), "deadline"),
-			)
-		}
-	})
 }
 
 // Helpers
@@ -976,7 +780,7 @@ func TestRaceConditionOnClose(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
-			err := ws.Dial(echoServerAddrWs, http.Header{})
+			err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 			require.NoError(t, err)
 
 			// Send multiple messages concurrently to fill the write buffer
@@ -1011,7 +815,7 @@ func TestRaceConditionWithSubscription(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
-			err := ws.Dial(echoServerAddrWs, http.Header{})
+			err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 			require.NoError(t, err)
 
 			// Create a subscription
@@ -1056,7 +860,7 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			ws := New(WithTimeout(1 * time.Second))
 
-			err := ws.Dial(echoServerAddrWs, http.Header{})
+			err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
 			require.NoError(t, err)
 
 			// Multiple writers
@@ -1076,6 +880,7 @@ func TestConcurrentWritesAndClose(t *testing.T) {
 		})
 	}
 }
+
 // TestWithSubprotocols verifies that an offered subprotocol is negotiated and surfaced in
 // Result.Subprotocol.
 func TestWithSubprotocols(t *testing.T) {
@@ -1106,7 +911,7 @@ func TestWithSubprotocols(t *testing.T) {
 
 	ws := New(WithSubprotocols([]string{"chat.v1"}))
 	defer ws.Close()
-	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
 
 	result := ws.ExtractResult()
 	assert.Equal(t, "chat.v1", result.Subprotocol)
@@ -1142,7 +947,7 @@ func TestWithCompression(t *testing.T) {
 
 	ws := New(WithCompression(true))
 	defer ws.Close()
-	require.NoError(t, ws.Dial(wsURL, http.Header{}))
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
 
 	result := ws.ExtractResult()
 	assert.Contains(t, result.Compression, "permessage-deflate")
@@ -1154,7 +959,7 @@ func TestWithReadLimit(t *testing.T) {
 	t.Run("message above limit errors", func(t *testing.T) {
 		ws := New(WithReadLimit(8))
 		defer ws.Close()
-		require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 		ws.WriteMessage(TextMessage, message)
 		_, _, err := ws.ReadMessage()
 		require.Error(t, err)
@@ -1163,7 +968,7 @@ func TestWithReadLimit(t *testing.T) {
 	t.Run("negative limit disables the cap", func(t *testing.T) {
 		ws := New(WithReadLimit(-1))
 		defer ws.Close()
-		require.NoError(t, ws.Dial(echoServerAddrWs, http.Header{}))
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
 		ws.WriteMessage(TextMessage, message)
 		_, got, err := ws.ReadMessage()
 		require.NoError(t, err)
@@ -1184,7 +989,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://example.com:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		require.NoError(t, err)
 
 		// Verify connection succeeded (proves override worked)
@@ -1210,7 +1015,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://example.com:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1229,7 +1034,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://example.com:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1245,7 +1050,7 @@ func TestWithResolves(t *testing.T) {
 		defer ws.Close()
 
 		// Connect to localhost (no override, should use DNS)
-		err := ws.Dial(echoServerAddrWs, nil)
+		err := ws.DialContext(context.Background(), echoServerAddrWs, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1264,7 +1069,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://EXAMPLE.COM:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1284,7 +1089,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://example.com:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		// We don't require.NoError here because IPv6 might not be available
 		// The important thing is that the override was attempted
 		if err == nil {
@@ -1302,7 +1107,7 @@ func TestWithResolves(t *testing.T) {
 		targetURL, err := url.Parse("ws://example.com:8080/echo")
 		require.NoError(t, err)
 
-		err = ws.Dial(targetURL, nil)
+		err = ws.DialContext(context.Background(), targetURL, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1322,7 +1127,7 @@ func TestWithResolves(t *testing.T) {
 		ws := New(WithResolves(nil))
 		defer ws.Close()
 
-		err := ws.Dial(echoServerAddrWs, nil)
+		err := ws.DialContext(context.Background(), echoServerAddrWs, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
@@ -1334,7 +1139,7 @@ func TestWithResolves(t *testing.T) {
 		ws := New(WithResolves(map[string]string{}))
 		defer ws.Close()
 
-		err := ws.Dial(echoServerAddrWs, nil)
+		err := ws.DialContext(context.Background(), echoServerAddrWs, nil)
 		require.NoError(t, err)
 
 		err = ws.PingPong()
