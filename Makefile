@@ -5,7 +5,7 @@ VERSION := $(shell cat VERSION)
 VERSION_LABEL ?= $(VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION_LABEL}"
 
-.PHONY: build build-all build-multi build-os-arch fmt lint test smoke soak explain
+.PHONY: build build-all build-multi build-os-arch clean fmt lint test smoke soak explain
 
 .DEFAULT_GOAL := explain
 
@@ -21,6 +21,7 @@ explain:
 	@echo "Targets:"
 	@echo "  build           - Build the binary for the host OS/Arch."
 	@echo "  build-all       - Build binaries for all target OS/Arch pairs."
+	@echo "  clean           - Remove built binaries and clear the golangci-lint cache."
 	@echo "  fmt             - Format code with gofmt."
 	@echo "  lint            - Run linter (golangci-lint)."
 	@echo "  test            - Run tests."
@@ -54,6 +55,11 @@ build-os-arch:
 	@GOOS=$(firstword $(subst /, ,$(OS_ARCH))) \
 	GOARCH=$(lastword $(subst /, ,$(OS_ARCH))) \
 	go build ${LDFLAGS} -o 'bin/$(CMD)-$(firstword $(subst /, ,$(OS_ARCH)))-$(lastword $(subst /, ,$(OS_ARCH)))' ${PACKAGE_NAME}
+
+clean:
+	@echo "==> Cleaning build artifacts and lint cache"
+	rm -rf bin/*
+	@golangci-lint cache clean
 
 fmt:
 	@echo "==> Formatting code"

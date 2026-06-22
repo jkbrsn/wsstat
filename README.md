@@ -69,6 +69,8 @@ The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
 #### Binary
 
+Prebuilt release binaries are currently published for **Linux/amd64 only**. On other platforms, build from source (see [macOS and Windows](#macos-and-windows) below).
+
 ##### Linux
 
 Download the binary from the latest release (`amd64`) on [the release page](https://github.com/jkbrsn/wsstat/releases):
@@ -260,6 +262,7 @@ The project has a `Makefile` that provides a number of commands to build and tes
 # build
 make build
 make build-all  # build for all supported platforms
+make clean      # remove built binaries and clear the golangci-lint cache
 
 # test
 make test

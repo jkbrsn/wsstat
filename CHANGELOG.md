@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wsstat help measure` / `wsstat help stream` now print that subcommand's usage (previously `help <anything>` always printed the top-level usage).
 - `NO_COLOR` is now documented in the help text (it already forced color off under `--color auto`).
 - `--debug` flag wiring the core's zerolog debug logs to stderr, independent of the `-v`/`-vv` output verbosity (which only shape stdout). Off by default; safe to combine with any `-o` mode or `-q` since it never touches the stdout output contract.
+- (dev) `make clean` target: removes built binaries (`bin/*`, keeping the dir) and clears the golangci-lint cache.
 - **Published JSON output schema.** `docs/schema/wsstat-output-v1.schema.json` (draft 2020-12) validates a single `-o json` NDJSON record across all five types (`timing`, `response`, `subscription_summary`, `subscription_message`, `error`); `docs/schema/README.md` documents the version semantics. `schema_version` is a single monotonic version for the whole output family: a breaking change to any record bumps it (`1.0` -> `2.0`); additive optional fields do not. The schema is intentionally open so additive fields still validate. A drift test pins the schema's version and record-type set to the code. See [ADR 0003](./docs/decisions/0003-json-output-schema-and-timing-precision.md).
 
 ### Changed
