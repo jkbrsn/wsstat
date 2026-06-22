@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -138,6 +139,47 @@ func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 		assert.Contains(t, output, "Request headers")
 		assert.Contains(t, output, "Response headers")
 		assert.Contains(t, output, "Certificate")
+	})
+}
+
+func TestPrintRequestDetailsMasksSecrets(t *testing.T) {
+	res := sampleResult(t)
+	res.RequestHeaders = http.Header{
+		"Authorization":       {"Bearer s3cr3t"},
+		"Cookie":              {"session=abc"},
+		"Proxy-Authorization": {"Basic zzz"},
+		"User-Agent":          {"wsstat"},
+	}
+	res.ResponseHeaders = http.Header{
+		"Set-Cookie": {"session=def"},
+		"Server":     {"demo"},
+	}
+	result := &MeasurementResult{Result: res}
+
+	t.Run("masked by default", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{verbosityLevel: 2}
+			return client.PrintRequestDetails(result)
+		})
+		assert.Contains(t, output, "[redacted]")
+		assert.NotContains(t, output, "Bearer s3cr3t")
+		assert.NotContains(t, output, "session=abc")
+		assert.NotContains(t, output, "Basic zzz")
+		assert.NotContains(t, output, "session=def")
+		// Non-sensitive headers are still shown.
+		assert.Contains(t, output, "wsstat")
+		assert.Contains(t, output, "demo")
+	})
+
+	t.Run("shown with show-secrets", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{verbosityLevel: 2, showSecrets: true}
+			return client.PrintRequestDetails(result)
+		})
+		assert.NotContains(t, output, "[redacted]")
+		assert.Contains(t, output, "Bearer s3cr3t")
+		assert.Contains(t, output, "session=abc")
+		assert.Contains(t, output, "session=def")
 	})
 }
 

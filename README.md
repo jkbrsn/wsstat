@@ -45,7 +45,7 @@ sudo snap install wsstat
 
 #### Go
 
-Requires that you have Go installed on your system and that you have `$GOPATH/bin` in your `PATH`. Recommended Go version is 1.21 or later.
+Requires that you have Go installed on your system and that you have `$GOPATH/bin` in your `PATH`. Recommended Go version is 1.26 or later.
 
 Install via Go:
 
@@ -58,7 +58,7 @@ git clone github.com/jkbrsn/wsstat
 cd wsstat
 git fetch --all
 git checkout origin/main
-go install -ldflags "-X main.version=$(cat VERSION)" github.com/jkbrsn/wsstat@latest
+go install -ldflags "-X main.version=$(cat VERSION)" ./cmd/wsstat
 ```
 
 Note: installing the package with `@latest`  will always install the latest version no matter the other parameters of the command.
@@ -74,7 +74,7 @@ The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 Download the binary from the latest release (`amd64`) on [the release page](https://github.com/jkbrsn/wsstat/releases):
 
 ```sh
-wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat
+wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat-<tag>
 ```
 
 Make the binary executable:
@@ -262,4 +262,4 @@ make lint
 
 ## Contributing
 
-For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./TODO.md) to see if what you've got in mind is already in the works.
+For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./docs/TODO.md) to see if what you've got in mind is already in the works.

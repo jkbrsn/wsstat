@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -194,15 +195,6 @@ func (c *Client) clipBodyWithPrefix(s string, prefixWidth int) string {
 			}
 		}
 		lines[i] = clipToWidth(line, w)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// clipLines clips each line of a (possibly multi-line) string to width columns.
-func clipLines(s string, width int) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = clipToWidth(line, width)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -420,12 +412,30 @@ func (c *Client) printVVerbose(result *wsstat.Result) {
 	}
 	fmt.Println(c.colorizeOrange("Request headers"))
 	for key, values := range result.RequestHeaders {
-		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), c.headerValue(key, values))
 	}
 	fmt.Println(c.colorizeOrange("Response headers"))
 	for key, values := range result.ResponseHeaders {
-		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), c.headerValue(key, values))
 	}
+}
+
+// sensitiveHeaders are header names whose values are masked in -vv output unless
+// --show-secrets is set. Compared case-insensitively against the canonical form.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Proxy-Authorization": true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+}
+
+// headerValue renders a header's values for -vv output, masking sensitive ones unless
+// --show-secrets is set.
+func (c *Client) headerValue(key string, values []string) string {
+	if !c.showSecrets && sensitiveHeaders[http.CanonicalHeaderKey(key)] {
+		return "[redacted]"
+	}
+	return strings.Join(values, ", ")
 }
 
 // PrintRequestDetails prints connection and request information to stdout.

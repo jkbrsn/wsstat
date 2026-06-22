@@ -62,10 +62,11 @@ type Client struct {
 	subprotocols []string          // WebSocket subprotocols to negotiate
 
 	// Output
-	output    Output // whole-stdout contract: text, json, or raw
-	body      Body   // body rendering (text output): auto or compact
-	clip      bool   // clip each rendered line to terminal width (text output)
-	colorMode string // Color behavior: "auto", "always", or "never"
+	output      Output // whole-stdout contract: text, json, or raw
+	body        Body   // body rendering (text output): auto or compact
+	clip        bool   // clip each rendered line to terminal width (text output)
+	colorMode   string // Color behavior: "auto", "always", or "never"
+	showSecrets bool   // render sensitive header values instead of masking them (-vv)
 
 	// Verbosity
 	quiet          bool // suppress request/timing output
@@ -145,6 +146,12 @@ func WithBodyRender(body Body) Option {
 // WithClip enables clipping each rendered line to terminal width (text output).
 func WithClip(clip bool) Option {
 	return func(c *Client) { c.clip = clip }
+}
+
+// WithShowSecrets renders sensitive header values (Authorization, Cookie, etc.) in -vv
+// output instead of masking them. Off by default.
+func WithShowSecrets(show bool) Option {
+	return func(c *Client) { c.showSecrets = show }
 }
 
 // WithColorMode sets color output behavior (auto, always, or never).

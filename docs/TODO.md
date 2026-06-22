@@ -59,13 +59,15 @@ Batches 1-3.
   plain-HTTP handshake failure, and dial timeout across MeasureText/JSON/Ping (asserts wrapped
   error + nil Result).
 
-**Batch 6 — Docs/release hygiene (last).** CHANGELOG cut, README fixes, multi-platform assets,
-toolchain + govulncheck, `-insecure` doc fix, schema-versioning doc, pre-tag ephemeral-doc cleanup.
+**Batch 6 — Docs/release hygiene (last). PARTIAL.** Landed: README fixes (incl. `_example/` ->
+`examples/` rename), `-insecure` doc fix, and the pre-tag ephemeral-doc cleanup. Deferred to a
+dedicated release-CI pass at tag time: CHANGELOG `[3.0.0]` cut, multi-platform assets + `SHA256SUMS`,
+and the go1.26.4 toolchain + `govulncheck` gate. (The formal JSON-Schema doc remains a separate
+cross-cutting polish item.)
 
 ## v3.0.0 release blockers
 
-Full rationale + evidence in [v3-readiness-review.md](./v3-readiness-review.md). Ordered by
-the suggested sequencing (contract-freezers first, docs/release hygiene last).
+Ordered by the suggested sequencing (contract-freezers first, docs/release hygiene last).
 
 Contract-freezing (breaking if deferred past the tag):
 
@@ -83,7 +85,7 @@ Contract-freezing (breaking if deferred past the tag):
       three free one-shots `MeasureText`/`MeasureJSON`/`MeasurePing` in `measure.go`, deletion of the
       nine wrappers + goroutine shuttle (`wrappers.go` removed), removal of `OneHitMessage*` and
       `Dial`, and migration of all in-tree callers + ~33 test sites to `DialContext` (Batch 2).
-      `MeasureLatency*`/`Dial`/`OneHit*` symbols are gone; thorough error-path tests remain Batch 5.
+      `MeasureLatency*`/`Dial`/`OneHit*` symbols are gone; error-path tests landed in Batch 5.
 - [x] **`WithSubprotocols([]string)` + `--subprotocol`** (Batch 1): threaded into
       `DialOptions.Subprotocols`; `Result.Subprotocol` populated from `Conn.Subprotocol()`. Covered by
       `TestWithSubprotocols`.
@@ -138,11 +140,14 @@ Contract completeness:
 
 Test the headline feature:
 
-- [ ] **TLS integration test** (`httptest.NewTLSServer` + `WithTLSConfig(InsecureSkipVerify:true)`):
-      assert `TLSHandshake`/`TLSHandshakeDone` are populated and correctly ordered, exercise
-      `CertificateDetails` (`result.go:209`, currently 0%) and the TLS `Format` section
-      (`DialTLSContext` 20.8%, `printTLSSectionIfPresent` 10.5%). No real `wss://` dial exists in any
-      test today. A real handshake also surfaces the timing-truncation bug above — wire these together.
+- [x] **TLS integration test**: `TestDialTLS` (`wsstat_test.go`) dials a real `wss://` against an
+      in-test HTTPS echo server using a generated self-signed ECDSA cert with known fields
+      (`selfSignedCert`/`newTLSEchoServer` helpers) and `WithTLSConfig(InsecureSkipVerify:true)`.
+      Asserts `TLSState`/`HandshakeComplete`, `TLSHandshake`/`TLSHandshakeDone` populated and ordered,
+      `CertificateDetails` parsing (CommonName/DNSNames/NotAfter), and the `%+v` TLS `Format` section.
+      Lifted `CertificateDetails` 0%->83%, `printTLSSectionIfPresent` 10.5%->95%, `DialTLSContext`
+      (via `newHTTPClient`) ~21%->71%. Passes under `-race`. The timing-truncation bug stays separate
+      (asserts on raw `time.Duration` ordering, not ms rendering).
 - [x] **Error-path tests** for the one-shot `Measure*` funcs (Batch 5): `TestMeasureDialErrors`
       (`measure_test.go`) covers refused port (`127.0.0.1:1`), a plain-HTTP endpoint (handshake
       failure), and a dial timeout via a context-blocking `httptest` server, across
@@ -154,27 +159,30 @@ Docs/release hygiene (low-risk, do last):
 - [ ] **Cut the CHANGELOG `[3.0.0]` section**: rename `[Unreleased]` (`CHANGELOG.md:8`) to
       `## [3.0.0] - <date>`, add a fresh empty `[Unreleased]` above it, and add footer links
       `[Unreleased]: .../compare/v3.0.0...HEAD` and `[3.0.0]: .../compare/v2.2.2...v3.0.0`.
-- [ ] **Fix README**: `_example/` path (`:220,225` — `go run examples/main.go` fails today),
-      `go install` module path missing `/v3` and the stray `@latest` (`:61`), Go-version claim
-      (`:48` says 1.21, go.mod needs 1.26), download asset URL (`:77` -> asset is `wsstat-<tag>`).
-  - Decision: rename `_example/` -> `examples/` (also makes it visible to go tooling / pkg.go.dev)
-    and keep the README text, vs. fix the README refs to `_example/`. Renaming is preferred.
+  - Deferred to actual tag time (so the release date isn't fixed prematurely).
+- [x] **Fix README** (Batch 6): renamed `_example/` -> `examples/` (git mv; dropped a stray 9 MB
+      tracked binary), so `go run examples/main.go` works and the dir is visible to go tooling.
+      Fixed the `go install` line to `./cmd/wsstat` (was a `/v3`-less module path + contradictory
+      `@latest`), the Go-version claim (1.21 -> 1.26), the download asset URL (`wsstat-<tag>`), and
+      the `./TODO.md` link (-> `./docs/TODO.md`).
 - [ ] **Multi-platform release assets**: `release.yml:208-216` runs host-only `make build` and
       uploads just linux/amd64, while `build-all` (Makefile) covers 8 targets and the README
       advertises downloads. Switch to `make build-all`, upload all `wsstat-<os>-<arch>` (tag-renamed)
       + a `SHA256SUMS` file.
+  - Deferred (Batch 6): release-CI work, to land in a dedicated pass with the govulncheck/toolchain item.
 - [ ] **Toolchain + vuln gate**: build/release with go1.26.4 (fixes GO-2026-5039 / GO-2026-5037,
       both std-lib only) and add a `govulncheck` step to CI so future dep/std-lib vulns are caught.
-- [ ] **Fix the `-insecure` docs**: CLAUDE.md/AGENTS.md say it "switches to ws://", but it keeps TLS
-      and sets `InsecureSkipVerify` (`internal/app/client.go:225-229`). `usage.go:58` is already
-      correct; align the agent docs to match.
+  - Deferred (Batch 6): local Go is 1.26.3; pinning the toolchain triggers a local auto-download, so
+    this is held for the release-CI pass (bump CI `GO_VERSION` + go.mod together then).
+- [x] **Fix the `-insecure` docs** (Batch 6): `AGENTS.md:32` (CLAUDE.md symlinks to it) now says
+      `-insecure`/`-k` keeps TLS but sets `InsecureSkipVerify` (use `ws://` for plaintext), matching
+      `usage.go`.
 
 ## v3.0.0 polish (lift the B/C grades to A)
 
 Not release-blocking, but this is the work that takes the review's B/C verticals to A. Low-risk
-and mostly mechanical; grouped by the vertical it lifts. Evidence/grades in
-[v3-readiness-review.md](./v3-readiness-review.md). The wrapper-family redesign that gates the
-Features & API grade is its own discussion: [design/measure-wrapper-api.md](./design/measure-wrapper-api.md).
+and mostly mechanical; grouped by the vertical it lifts. The wrapper-family redesign that gated the
+Features & API grade is recorded in [ADR 0002](./decisions/0002-measurement-api-shape.md).
 
 ### Features & API (C+ -> A)
 
@@ -206,8 +214,6 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 - [ ] Runnable `Example*` test functions (`ExampleMeasureLatency`, `ExampleWSStat_Subscribe`) so
       pkg.go.dev renders usage and CI compile-checks the snippets. None exist today.
-- [ ] Library-side v2->v3 upgrade guide in the README (import path now `/v3`, `ReadPong()` removed,
-      gorilla->coder, message-type API stays int-based). Currently only in the CHANGELOG.
 - [ ] Per-field godoc on `SubscriptionStats` and `SubscriptionMessage` (`subscription.go:59-76`) to
       match the `Result` convention (esp. `MeanInterArrival`, `Decoded`, `Size` vs `len(Data)`).
 - [~] De-duplicate the package doc (Batch 2): the duplicate block went away with `wrappers.go`; the
@@ -218,22 +224,30 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 
 ### Code quality (B+ -> A)
 
-- [ ] Remove dead `clipLines` (`internal/app/output.go:201-208`; only its own test references it).
-- [ ] Share a close-status helper between `ReadMessage` (`wsstat.go:571-579`) and `ReadMessageJSON`
-      (`:600-602`) so close handling is identical regardless of decode path.
-- [ ] Fix doc/impl mismatches: `result.go:113` says `%#v` but verbose is `%+v`; `WithCloseGrace`
-      zero-case doc (`wsstat.go:903`) overstates "immediate teardown" vs the timer race.
+- [x] Remove dead `clipLines` (`internal/app/output.go`): deleted the function and its only caller,
+      `TestClipLinesMultiLine`; `clipBodyWithPrefix` keeps its own inline per-line clipping.
+- [x] Share a close-status helper between `ReadMessage` and `ReadMessageJSON`: extracted
+      `classifyReadErr` (`wsstat.go`), called by both, so close handling is identical regardless of
+      decode path (`ReadMessageJSON` now wraps abnormal closes too; noted in CHANGELOG).
+- [x] Fix doc/impl mismatches: `result.go` `formatVerbosePlus` comment now says `%+v` (was `%#v`);
+      `WithCloseGrace` zero-case doc reworded to reflect the timer race rather than "immediate teardown".
 - [x] Drop the redundant `extractFirstString` double-flatten — moot: current code has a single
       clean flatten (`measurement.go:120`, called once at `:99`); no redundancy remains to drop.
 
 ### Security (B -> A; read-limit/govulncheck/toolchain are blockers, these reach A)
 
-- [ ] URL-scheme allowlist at parse time (`cmd/wsstat/config.go:191-198`): accept only `{ws, wss}`,
-      reject `http://`/`https://` (today silently dialed as plaintext via coder's lenient handling).
-- [ ] Wrap the dial-error response-body read in `io.LimitReader` (~4 KiB) (`wsstat.go:357`); a
-      hostile server can currently reflect an unbounded body into the returned error.
-- [ ] Mask sensitive request headers (`Authorization`, `Cookie`, `Proxy-Authorization`) in `-vv`
-      output (`internal/app/output.go:383,422`) with an explicit `--show-secrets` opt-out.
+- [x] URL-scheme allowlist at parse time (`cmd/wsstat/config.go` `parseWSURI`): accept only
+      `{ws, wss}`, reject `http://`/`https://` (and any other scheme) with a directed error instead
+      of silently dialing plaintext. Scheme-less input still defaults to `wss://`. Covered by
+      `TestParseWSURI` rejection rows.
+- [x] Bounded the dial-error response-body read with `io.LimitReader(resp.Body, 4 KiB)`
+      (`wsstat.go`, `maxErrBodyBytes`); a hostile server can no longer reflect an unbounded body
+      into the returned error.
+- [x] Mask sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) in
+      `-vv` output (`internal/app/output.go` `headerValue`/`sensitiveHeaders`) as `[redacted]`, with
+      an explicit `--show-secrets` opt-out (text-only flag). Covered by
+      `TestPrintRequestDetailsMasksSecrets`. (Library `%+v` `printHeadersSection` left unmasked by
+      design — out of CLI scope.)
 - [ ] Track a decision on the transitive `bytedance/sonic` JIT/asm surface pulled via
       `jkbrsn/jsonrpc` (sonic-free build tag in jsonrpc, or drop the dep for the JSON-RPC subset used).
 
@@ -297,17 +311,12 @@ Features & API grade is its own discussion: [design/measure-wrapper-api.md](./de
 Ephemeral working docs to delete once their content has fully landed in the durable trail (this
 TODO + the ADRs + the architecture overview). Check for dangling references before deleting each.
 
-- [ ] Remove `docs/design/measure-wrapper-api.md` (ephemeral rationale record;
-      [ADR 0002](./decisions/0002-measurement-api-shape.md) is the durable decision). Before deleting:
-  - Update the `Sources` link in ADR 0002 that points at it (link edits to an accepted ADR are
-    allowed by the ADR convention), or drop that bullet.
-  - Fix the references in this file (the measurement-API reshape blocker and the Features & API
-    polish item both link it).
-  - `rg 'measure-wrapper-api'` to catch anything else.
-- [ ] Remove `docs/v3-readiness-review.md` (working review report; its findings now live in this
-      TODO, the ADRs, and the architecture overview). Before deleting:
-  - Fix the "Evidence/grades in ..." links in this file (the blockers intro and the polish intro).
-  - `rg 'v3-readiness-review'` to catch anything else.
+- [x] Removed `docs/design/measure-wrapper-api.md` (Batch 6; [ADR 0002](./decisions/0002-measurement-api-shape.md)
+      is the durable decision). Dropped its `Sources` bullet in ADR 0002 and the two intro links in
+      this file; `rg 'measure-wrapper-api'` is clean.
+- [x] Removed `docs/v3-readiness-review.md` (Batch 6; findings now live in this TODO, the ADRs, and
+      the architecture overview). Dropped the blockers-intro and polish-intro links; `rg
+      'v3-readiness-review'` is clean.
 
 ## Upcoming minor
 

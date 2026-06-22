@@ -112,7 +112,7 @@ func (r *Result) durations() map[string]time.Duration {
 	}
 }
 
-// formatVerbosePlus prints the verbose multi-line view used by %#v.
+// formatVerbosePlus prints the verbose multi-line view used by %+v.
 func (r *Result) formatVerbosePlus(s fmt.State) {
 	r.printURLAndIPSection(s)
 	r.printTLSSectionIfPresent(s)

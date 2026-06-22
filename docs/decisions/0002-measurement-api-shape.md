@@ -46,11 +46,10 @@ helpers.
   shuttle be deleted. Read/write must honor a per-call ctx/deadline, not only `ws.ctx`.
 - The `%w` / exported-sentinels error contract has one home: the three free functions.
 - Breaking vs v2 (names, signatures, `Dial` removal); covered by the v3 CHANGELOG migration table.
-  In-tree migration is four call sites (`internal/app/measurement.go:23,54,77`, `_example/main.go:28`)
+  In-tree migration is four call sites (`internal/app/measurement.go:23,54,77`, `examples/main.go:28`)
   plus `internal/app/subscription.go:34` (`Dial` -> `DialContext`).
 - `proposed` until the reshape ships; flip to `accepted` after review against the code.
 
 ## Sources
 
-- `docs/design/measure-wrapper-api.md` — full options analysis (ephemeral; this branch only)
-- `wrappers.go`, `wsstat.go` — the surface being replaced
+- `wrappers.go`, `wsstat.go` — the surface that was replaced (`wrappers.go` removed in v3)

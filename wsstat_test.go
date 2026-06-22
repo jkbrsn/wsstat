@@ -2,9 +2,15 @@ package wsstat
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1191,4 +1197,78 @@ func TestWithResolves(t *testing.T) {
 		err = ws.PingPong()
 		assert.NoError(t, err)
 	})
+}
+
+// selfSignedCert generates an ECDSA P-256 self-signed certificate with known fields,
+// so TLS tests can assert exact CertificateDetails values.
+func selfSignedCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "wsstat-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.IPv6loopback},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
+}
+
+// newTLSEchoServer starts an HTTPS echo server using the in-test self-signed cert.
+// Because TLS.Certificates is non-empty, StartTLS keeps our cert instead of the
+// httptest default, so the test can assert known certificate fields.
+func newTLSEchoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(echoHandler))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{selfSignedCert(t)}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestDialTLS exercises the wss:// dial path: the TLS handshake instrumentation,
+// CertificateDetails parsing, and the text TLS Format section.
+func TestDialTLS(t *testing.T) {
+	srv := newTLSEchoServer(t)
+	u := &url.URL{
+		Scheme: "wss",
+		Host:   strings.TrimPrefix(srv.URL, "https://"),
+		Path:   "/echo",
+	}
+
+	ws := New(WithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
+	require.NoError(t, ws.DialContext(context.Background(), u, http.Header{}))
+	defer ws.Close()
+
+	res := ws.ExtractResult()
+
+	// Handshake state populated and phase timings ordered.
+	require.NotNil(t, res.TLSState)
+	assert.True(t, res.TLSState.HandshakeComplete)
+	assert.Greater(t, res.TLSHandshake, time.Duration(0))
+	// TLSHandshakeDone is measured from dialStart, so it spans the handshake duration.
+	assert.GreaterOrEqual(t, res.TLSHandshakeDone, res.TLSHandshake)
+
+	// CertificateDetails parses the presented leaf certificate.
+	certs := res.CertificateDetails()
+	require.Len(t, certs, 1)
+	assert.Equal(t, "wsstat-test", certs[0].CommonName)
+	assert.Contains(t, certs[0].DNSNames, "localhost")
+	assert.True(t, certs[0].NotAfter.After(time.Now()))
+
+	// Verbose text output renders the TLS section.
+	out := fmt.Sprintf("%+v", res)
+	assert.Contains(t, out, "TLS handshake details")
+	assert.Contains(t, out, "wsstat-test")
 }

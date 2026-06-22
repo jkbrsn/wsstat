@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The CLI now force-quits on a second interrupt: the first `Ctrl-C` (SIGINT/SIGTERM) begins a graceful shutdown bounded by close-grace, and a second immediately exits with code 130. Lets a teardown stuck on a non-echoing peer always be escaped.
 - **JSON error envelope.** Under `-o json`, a runtime failure now prints a schema-stable `{"schema_version","type":"error","error"}` record to stdout (newline-terminated, matching the NDJSON data stream) instead of falling back to plain `Error:` text, so a `wsstat ... -o json | jq` pipeline stays parseable on the failure path. Usage errors still print plain text to stderr.
 - (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, and a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`.
+- `--show-secrets` flag: by default `-vv` now masks sensitive header values (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) as `[redacted]`; pass `--show-secrets` to print them. Text-only, like the other `-vv` flags.
 - (dev) `dev/soak-test.sh` (and `make soak`): a structured flag-combination soak complementing the per-feature `smoke-test.sh`. Drives every flag in each mode (both aliases), asserts every validation rule actually rejects (a combination that should error but exits 0 is flagged as a silent accept), and checks the observable effect of flags that could be silently ignored, including `--clip`/`--color auto` under a real PTY via `dev/pty-run.py`.
 
 ### Changed
@@ -37,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** Migrated the underlying WebSocket library from the unmaintained `gorilla/websocket` to `coder/websocket`. The module path is now `github.com/jkbrsn/wsstat/v3`; importers must update their import paths.
 - `Close()` now performs the full RFC 6455 two-way closing handshake before tearing down the socket, resolving an ungraceful client close where strict peers logged `1006` / `use of closed network connection`. The handshake wait is bounded by `WithCloseGrace` (default 3s) so a write-only / non-echoing peer cannot stall teardown for coder's hard-coded 5s.
 - The public message-type API stays `int`-based via the new `wsstat.TextMessage` / `wsstat.BinaryMessage` constants (numerically identical to the previous values), so callers do not need to import the transport package.
+- **BREAKING (CLI):** the URL scheme is now allowlisted to `ws`/`wss` at parse time. `http://`/`https://` (and any other scheme) are rejected with `unsupported scheme "...": use ws:// or wss://` instead of being silently dialed as plaintext by the lenient underlying dialer. Scheme-less input still defaults to `wss://`.
 - **Exit codes normalized.** Post-parse argument/validation errors now exit `2` (matching flag-parse errors) instead of `1`, reserving `1` for genuine runtime/network failures. The full table (`0` success, `1` runtime, `2` usage, `130` interrupt) is documented in `wsstat -h` and the README.
 
 ### Removed
@@ -51,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `stream --once` now rejects an explicitly-set `-c`/`--count` instead of silently overriding it. `--once` always yields exactly one event, so combining it with a count is a configuration error rather than a no-op.
 - `--quiet` (alias of `-q`) and `--verbose` (alias of `-v`) are now accepted. Previously only `-q` parsed even though the help advertised `--quiet`, and `--verbose` (valid in v2) had been dropped; both long forms are rejected under `-o json|raw`, the same as their short forms.
 - `--clip` now applies to every text response body shape. Non-JSON-RPC map and array responses were printed unclipped; clipping now composes uniformly across all rendered bodies.
+- The failed-handshake response body reflected into the returned dial error is now bounded to 4 KiB (`io.LimitReader`), so a hostile server cannot reflect an unbounded body into the error string.
+- `ReadMessageJSON()` now applies the same close-status contract as `ReadMessage()`: an abnormal close (any status other than normal/going-away) is wrapped as an `unexpected close error` instead of returning the raw transport error, so close handling is identical regardless of decode path.
 
 ## [2.2.2] - 2026-06-16
 

@@ -29,7 +29,7 @@ All layers use the functional options pattern: `New(opts ...Option)` with `WithT
 
 - **Errors**: wrap with `fmt.Errorf("context: %w", err)`, no trailing periods; sentinels as `var ErrX = errors.New(...)`.
 - **Logging**: default `zerolog.Nop()`, injected via options; keep tests quiet.
-- **Security**: TLS verifies by default; CLI `-insecure` switches to `ws://`.
+- **Security**: TLS verifies by default; CLI `-insecure`/`-k` keeps TLS but sets `InsecureSkipVerify` (use `ws://` for plaintext).
 - **Style**: `gofmt -s`; soft 100-char lines; max 80 lines per function (tests excluded).
 
 ## Testing

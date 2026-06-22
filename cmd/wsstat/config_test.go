@@ -24,6 +24,9 @@ func TestParseWSURI(t *testing.T) {
 		{name: "no scheme defaults to wss", input: "example.com/path", expected: "wss://example.com/path"},
 		{name: "localhost without scheme", input: "localhost:8080", expected: "wss://localhost:8080"},
 		{name: "invalid URL", input: "ht!tp://invalid", wantErr: true},
+		{name: "http scheme rejected", input: "http://example.com", wantErr: true},
+		{name: "https scheme rejected", input: "https://example.com", wantErr: true},
+		{name: "other scheme rejected", input: "ftp://example.com", wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -37,6 +37,9 @@ const (
 	// defaultReadLimit bounds a single inbound message (16 MiB). Covers realistic payloads
 	// while keeping coder's OOM guard; raise or disable via WithReadLimit.
 	defaultReadLimit = 16 << 20
+	// maxErrBodyBytes caps how much of a failed-handshake response body is read into the
+	// returned error, so a hostile server cannot reflect an unbounded body into it.
+	maxErrBodyBytes = 4 << 10
 
 	// TextMessage denotes a UTF-8 encoded text message (e.g. JSON). Numerically identical to
 	// websocket.MessageText so the public int-based API stays stable across the transport swap.
@@ -409,7 +412,7 @@ func (ws *WSStat) DialContext(
 	})
 	if err != nil {
 		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBodyBytes))
 			defer func() {
 				_ = resp.Body.Close()
 			}()
@@ -552,6 +555,19 @@ func (ws *WSStat) PingPong() error {
 	return nil
 }
 
+// classifyReadErr applies the close-status contract shared by the read methods: a
+// normal or going-away close passes through as-is, any other close status is wrapped
+// as an unexpected close error, and non-close errors pass through unchanged.
+func classifyReadErr(err error) error {
+	status := websocket.CloseStatus(err)
+	if status != -1 &&
+		status != websocket.StatusNormalClosure &&
+		status != websocket.StatusGoingAway {
+		return fmt.Errorf("unexpected close error: %w", err)
+	}
+	return err
+}
+
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
@@ -571,13 +587,7 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 		}
 
 		if msg.err != nil {
-			status := websocket.CloseStatus(msg.err)
-			if status != -1 &&
-				status != websocket.StatusNormalClosure &&
-				status != websocket.StatusGoingAway {
-				return msg.messageType, nil, fmt.Errorf("unexpected close error: %w", msg.err)
-			}
-			return msg.messageType, nil, msg.err
+			return msg.messageType, nil, classifyReadErr(msg.err)
 		}
 
 		ws.timings.mu.Lock()
@@ -606,7 +616,7 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 		}
 
 		if msg.err != nil {
-			return nil, msg.err
+			return nil, classifyReadErr(msg.err)
 		}
 
 		ws.timings.mu.Lock()
@@ -926,8 +936,9 @@ func WithLogger(logger zerolog.Logger) Option { return func(o *options) { o.logg
 func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
 
 // WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
-// before forcing the connection shut. Zero or negative forces an immediate teardown
-// without waiting for the echo. Defaults to 3s.
+// before forcing the connection shut. Zero or negative fires the teardown immediately
+// rather than granting a grace window; a peer that echoes in that instant may still
+// complete the handshake cleanly. Defaults to 3s.
 //
 // Only values below 5s take effect: the underlying coder/websocket library caps its
 // own close handshake at a hard-coded 5s, so Close returns by then regardless and a

@@ -32,8 +32,9 @@ type commonFlags struct {
 	output    string
 	body      string
 	color     string
-	clip      bool
-	quiet     bool
+	clip        bool
+	showSecrets bool
+	quiet       bool
 	v1        bool
 	v2        bool
 	insecure  bool
@@ -59,6 +60,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.StringVar(&c.output, "output", "text", "output contract: text, json, or raw")
 	fs.StringVar(&c.body, "body", "auto", "body rendering for text output: auto or compact")
 	fs.BoolVar(&c.clip, "clip", false, "clip each rendered line to terminal width (text output, TTY only)")
+	fs.BoolVar(&c.showSecrets, "show-secrets", false,
+		"show sensitive header values in -vv output instead of masking them")
 	fs.BoolVar(&c.quiet, "q", false, "suppress all output except the response")
 	fs.BoolVar(&c.quiet, "quiet", false, "suppress all output except the response")
 	fs.BoolVar(&c.v1, "v", false, "increase verbosity (level 1)")
@@ -82,6 +85,7 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 var textOnlyFlags = []struct{ name, display string }{
 	{"body", "--body"},
 	{"clip", "--clip"},
+	{"show-secrets", "--show-secrets"},
 	{"q", "-q"},
 	{"quiet", "--quiet"},
 	{"v", "-v"},
@@ -160,6 +164,7 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		app.WithOutput(output),
 		app.WithBodyRender(body),
 		app.WithClip(c.clip),
+		app.WithShowSecrets(c.showSecrets),
 		app.WithColorMode(color),
 		app.WithQuiet(c.quiet),
 		app.WithVerbosity(verbosity),
@@ -249,11 +254,22 @@ func positionalURL(fs *flag.FlagSet) (*url.URL, error) {
 	return target, nil
 }
 
-// parseWSURI parses rawURI into a URL, defaulting a missing scheme to wss://.
+// parseWSURI parses rawURI into a URL, defaulting a missing scheme to wss://. Only the
+// ws and wss schemes are accepted; http/https (and anything else) are rejected so they are
+// not silently dialed as plaintext by the lenient underlying dialer.
 func parseWSURI(rawURI string) (*url.URL, error) {
 	uri := rawURI
 	if !strings.Contains(rawURI, "://") {
 		uri = "wss://" + rawURI
 	}
-	return url.Parse(uri)
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, err
+	}
+	switch u.Scheme {
+	case "ws", "wss":
+		return u, nil
+	default:
+		return nil, fmt.Errorf("unsupported scheme %q: use ws:// or wss://", u.Scheme)
+	}
 }
