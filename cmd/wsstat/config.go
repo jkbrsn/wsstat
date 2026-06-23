@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -294,6 +295,9 @@ func parseReadLimit(s string) (int64, error) {
 	}
 	if n < 0 {
 		return -1, nil
+	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("invalid --max-message-size %q: value too large", s)
 	}
 	return n * mult, nil
 }

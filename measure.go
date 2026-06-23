@@ -72,6 +72,9 @@ func MeasureJSON(
 func MeasurePing(
 	ctx context.Context, target *url.URL, count int, opts ...Option,
 ) (*Result, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("count must be non-negative, got %d", count)
+	}
 	ws := New(opts...)
 	defer ws.Close()
 

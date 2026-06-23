@@ -326,14 +326,17 @@ func (ws *WSStat) readPump() {
 			return
 		}
 
-		readCtx, cancel := context.WithTimeout(ws.ctx, ws.timeout)
-		coderType, p, err := conn.Read(readCtx)
-		cancel()
-		messageType := fromCoderType(coderType)
-		if err != nil {
-			ws.dispatchIncoming(&wsRead{err: err, messageType: messageType})
+		read, deadlineHit := ws.readFrame(conn)
+		if read.err != nil {
+			// If a subscription became active while a bounded read was in flight, the
+			// stream now owns the connection: drop the timeout and keep reading rather
+			// than finalizing the subscription on a spurious read deadline.
+			if deadlineHit && ws.hasActiveSubscriptions() {
+				continue
+			}
+			ws.dispatchIncoming(read)
 			select {
-			case ws.readChan <- &wsRead{err: err, messageType: messageType}:
+			case ws.readChan <- read:
 			case <-ws.ctx.Done():
 				ws.log.Debug().Msg("Context done, dropping error read")
 			}
@@ -343,23 +346,43 @@ func (ws *WSStat) readPump() {
 		// coder/websocket performs no UTF-8 validation on text frames (RFC 6455 §5.6);
 		// when opted in, flag invalid payloads via the logger and the Result counter rather
 		// than failing the connection, since this is a measurement tool.
-		if ws.validateUTF8 && messageType == TextMessage && !utf8.Valid(p) {
+		if ws.validateUTF8 && read.messageType == TextMessage && !utf8.Valid(read.data) {
 			ws.invalidUTF8.Add(1)
-			ws.log.Warn().Int("bytes", len(p)).Msg("received text frame with invalid UTF-8")
+			ws.log.Warn().Int("bytes", len(read.data)).Msg("received text frame with invalid UTF-8")
 		}
 
 		// Message read successfully, dispatch if not handled by subscription
-		if ws.dispatchIncoming(&wsRead{data: p, messageType: messageType}) {
+		if ws.dispatchIncoming(read) {
 			continue
 		}
 
 		select {
-		case ws.readChan <- &wsRead{data: p, messageType: messageType}:
+		case ws.readChan <- read:
 		case <-ws.ctx.Done():
 			ws.log.Debug().Msg("Context done, dropping read message")
 			return
 		}
 	}
+}
+
+// readFrame reads one frame, bounding the read with the dial/read timeout only when
+// no subscription is active. Subscriptions are long-lived and idle by nature, so a
+// per-read deadline would tear them down after a quiet interval; while one is active
+// the read blocks until ws.ctx is canceled (Close). deadlineHit reports that the bound
+// fired (a one-shot timeout) rather than a real transport error or context cancel.
+func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
+	readCtx := ws.ctx
+	var cancel context.CancelFunc
+	if !ws.hasActiveSubscriptions() {
+		readCtx, cancel = context.WithTimeout(ws.ctx, ws.timeout)
+	}
+	coderType, p, err := conn.Read(readCtx)
+	deadlineHit := false
+	if cancel != nil {
+		deadlineHit = readCtx.Err() == context.DeadlineExceeded && ws.ctx.Err() == nil
+		cancel()
+	}
+	return &wsRead{data: p, err: err, messageType: fromCoderType(coderType)}, deadlineHit
 }
 
 // writePump writes messages to the WebSocket connection.
@@ -411,6 +434,11 @@ func (ws *WSStat) writePump() {
 func (ws *WSStat) DialContext(
 	ctx context.Context, targetURL *url.URL, customHeaders http.Header,
 ) error {
+	// A nil ctx would panic in context.WithCancel below; the Measure* contract promises a clean
+	// abort instead, and direct callers get the same guarantee.
+	if ctx == nil {
+		return errors.New("nil context")
+	}
 	// Install the connection context from the caller, replacing the placeholder created in New so
 	// the pumps and read/write paths honor caller cancellation and deadlines.
 	ws.cancel()
@@ -591,10 +619,31 @@ func classifyReadErr(err error) error {
 	return err
 }
 
+// handleRead processes a value received from readChan, recording read timing on success.
+func (ws *WSStat) handleRead(msg *wsRead) (int, []byte, error) {
+	if msg == nil {
+		return 0, nil, ErrClosed
+	}
+	if msg.err != nil {
+		return msg.messageType, nil, classifyReadErr(msg.err)
+	}
+	ws.timings.mu.Lock()
+	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+	ws.timings.mu.Unlock()
+	return msg.messageType, msg.data, nil
+}
+
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
+	// Drain a buffered read/error first: readPump enqueues an inbound error and then closes,
+	// so checking closed before draining could mask a real close/read-limit error as ErrClosed.
+	select {
+	case msg := <-ws.readChan:
+		return ws.handleRead(msg)
+	default:
+	}
 	if ws.closed.Load() {
 		return 0, nil, ErrClosed
 	}
@@ -604,26 +653,32 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 	select {
 	case <-ws.ctx.Done():
 		return 0, nil, ws.ctx.Err()
-	case msg, ok := <-ws.readChan:
-		if !ok {
-			return 0, nil, ErrClosed
-		}
-
-		if msg.err != nil {
-			return msg.messageType, nil, classifyReadErr(msg.err)
-		}
-
-		ws.timings.mu.Lock()
-		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-		ws.timings.mu.Unlock()
-
-		return msg.messageType, msg.data, nil
+	case msg := <-ws.readChan:
+		return ws.handleRead(msg)
 	}
+}
+
+// decodeRead unmarshals a successful read result as JSON, propagating any read error.
+func decodeRead(_ int, data []byte, readErr error) (any, error) {
+	if readErr != nil {
+		return nil, readErr
+	}
+	var resp any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
+	// Drain a buffered read/error first; see ReadMessage for why the closed check comes after.
+	select {
+	case msg := <-ws.readChan:
+		return decodeRead(ws.handleRead(msg))
+	default:
+	}
 	if ws.closed.Load() {
 		return nil, ErrClosed
 	}
@@ -633,26 +688,8 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 	select {
 	case <-ws.ctx.Done():
 		return nil, ws.ctx.Err()
-	case msg, ok := <-ws.readChan:
-		if !ok {
-			return nil, ErrClosed
-		}
-
-		if msg.err != nil {
-			return nil, classifyReadErr(msg.err)
-		}
-
-		ws.timings.mu.Lock()
-		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-		ws.timings.mu.Unlock()
-
-		var resp any
-		err := json.Unmarshal(msg.data, &resp)
-		if err != nil {
-			return nil, err
-		}
-
-		return resp, nil
+	case msg := <-ws.readChan:
+		return decodeRead(ws.handleRead(msg))
 	}
 }
 

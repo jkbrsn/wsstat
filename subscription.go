@@ -388,7 +388,10 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 			match = true
 		}
 
-		if !match && decodeErr == nil {
+		// Deliver only frames this subscription claimed. A decode error is reported via the
+		// envelope's Err for a matched frame, but must not surface on subscriptions the frame
+		// never belonged to (which would inflate their error stats with unrelated traffic).
+		if !match {
 			continue
 		}
 
@@ -406,6 +409,13 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 	}
 
 	return claimed
+}
+
+// hasActiveSubscriptions reports whether any subscription is currently registered.
+func (ws *WSStat) hasActiveSubscriptions() bool {
+	ws.subscriptionMu.RLock()
+	defer ws.subscriptionMu.RUnlock()
+	return len(ws.subscriptions) > 0
 }
 
 // activeSubscriptions returns a snapshot of the active subscriptions.

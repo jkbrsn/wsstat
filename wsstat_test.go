@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -326,6 +327,130 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 	assert.EqualValues(t, 1, stats.MessageCount)
 	assert.Greater(t, stats.FirstEvent, time.Duration(0))
 	assert.GreaterOrEqual(t, stats.LastEvent, stats.FirstEvent)
+}
+
+func TestSubscriptionSurvivesIdleBeyondTimeout(t *testing.T) {
+	// Regression: the per-read dial/read timeout must not tear down a long-lived
+	// subscription that is merely idle. A 5s (here 100ms) silence used to finalize
+	// every active subscription with a deadline error and close the connection.
+	ws := New(WithTimeout(100 * time.Millisecond))
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("first"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "first", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial subscription message")
+	}
+
+	// Stay idle well beyond the read timeout; the subscription must not be finalized.
+	select {
+	case <-sub.Done():
+		t.Fatal("subscription torn down while idle past the read timeout")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// The stream is still live: a later message is still delivered.
+	ws.WriteMessage(TextMessage, []byte("later"))
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "later", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription stopped receiving after the idle period")
+	}
+
+	sub.Cancel()
+	<-sub.Done()
+}
+
+func TestSubscriptionDecodeErrorDoesNotLeak(t *testing.T) {
+	// A decode error on a frame a subscription never matched must not be delivered to it;
+	// only the claiming subscription sees a frame (and its decode error).
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	// subA never matches and its decoder always errors.
+	subA, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("frame-a"),
+		decoder:     func(int, []byte) (any, error) { return nil, errors.New("boom") },
+		matcher:     func(int, []byte, any) bool { return false },
+	})
+	require.NoError(t, err)
+
+	// subB claims only its own echo.
+	subB, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("frame-b"),
+		matcher:     func(_ int, data []byte, _ any) bool { return string(data) == "frame-b" },
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-subB.Updates():
+		require.NoError(t, msg.Err)
+		assert.Equal(t, "frame-b", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("subB did not receive its frame")
+	}
+
+	// subA must not have received the unrelated decode error.
+	select {
+	case msg := <-subA.Updates():
+		t.Fatalf("subA received an unmatched frame: data=%q err=%v", string(msg.Data), msg.Err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	assert.EqualValues(t, 0, subA.MessageCount())
+
+	subA.Cancel()
+	subB.Cancel()
+	<-subA.Done()
+	<-subB.Done()
+}
+
+func TestDialContextNilContext(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	//nolint:staticcheck // passing nil to verify the guard returns an error, not a panic
+	err := ws.DialContext(nil, echoServerAddrWs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil context")
+}
+
+func TestReadMessageDoesNotMaskCloseError(t *testing.T) {
+	// Regression: readPump buffers an inbound error then closes, so a read issued after the
+	// closed flag flips must drain the buffered close error rather than report plain ErrClosed.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusInternalError, "boom")
+	}))
+	defer server.Close()
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
+
+	// Wait until the read pump has observed the close and finalized; by then the close error
+	// is already buffered in readChan and the closed flag is set.
+	require.Eventually(t, ws.closed.Load, 2*time.Second, 5*time.Millisecond)
+
+	_, _, err = ws.ReadMessage()
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrClosed), "real close error masked as ErrClosed: %v", err)
+	assert.Contains(t, err.Error(), "unexpected close error")
 }
 
 func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {

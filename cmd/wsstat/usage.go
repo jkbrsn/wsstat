@@ -78,6 +78,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
 	fmt.Fprintln(w, "        NO_COLOR (any value) in the environment forces color off under --color auto.")
 	fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
+	fmt.Fprintln(w, "        -o raw concatenates stream frames undelimited (binary-safe); use -o json for delimited streaming.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Connection:")
 	fmt.Fprintln(w, "  -H, --header <string>          HTTP header to include (repeatable; \"Key: Value\")")

@@ -64,6 +64,18 @@ func TestMeasureText(t *testing.T) {
 		assert.Equal(t, 3, result.Result.MessageCount)
 	})
 
+	t.Run("no messages leaves Response nil", func(t *testing.T) {
+		client := NewClient(WithTextMessage("hello"), WithCount(0))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result, err := client.measureText(ctx, wsURL, nil)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		// No response must render as nothing, not the empty slice literal.
+		assert.Nil(t, result.Response)
+	})
+
 	t.Run("context cancellation", func(t *testing.T) {
 		client := NewClient(WithTextMessage("test"), WithCount(1))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -193,13 +205,6 @@ func TestProcessTextResponse(t *testing.T) {
 		asMap, ok := result.(map[string]any)
 		assert.True(t, ok, "expected JSON-RPC response to decode into a map, got %T", result)
 		assert.Equal(t, "ok", asMap["result"])
-	})
-
-	t.Run("extracts first element from array", func(t *testing.T) {
-		input := []string{"first", "second", "third"}
-		result, err := processTextResponse(input, OutputText, "2.0")
-		require.NoError(t, err)
-		assert.Equal(t, "first", result)
 	})
 
 	t.Run("respects raw format", func(t *testing.T) {

@@ -148,6 +148,8 @@ func TestPrintRequestDetailsMasksSecrets(t *testing.T) {
 		"Authorization":       {"Bearer s3cr3t"},
 		"Cookie":              {"session=abc"},
 		"Proxy-Authorization": {"Basic zzz"},
+		"X-Api-Key":           {"key-12345"},
+		"X-Auth-Token":        {"tok-67890"},
 		"User-Agent":          {"wsstat"},
 	}
 	res.ResponseHeaders = http.Header{
@@ -166,6 +168,9 @@ func TestPrintRequestDetailsMasksSecrets(t *testing.T) {
 		assert.NotContains(t, output, "session=abc")
 		assert.NotContains(t, output, "Basic zzz")
 		assert.NotContains(t, output, "session=def")
+		// Non-standard credential headers are masked too.
+		assert.NotContains(t, output, "key-12345")
+		assert.NotContains(t, output, "tok-67890")
 		// Non-sensitive headers are still shown.
 		assert.Contains(t, output, "wsstat")
 		assert.Contains(t, output, "demo")
@@ -180,6 +185,8 @@ func TestPrintRequestDetailsMasksSecrets(t *testing.T) {
 		assert.Contains(t, output, "Bearer s3cr3t")
 		assert.Contains(t, output, "session=abc")
 		assert.Contains(t, output, "session=def")
+		assert.Contains(t, output, "key-12345")
+		assert.Contains(t, output, "tok-67890")
 	})
 }
 

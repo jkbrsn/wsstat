@@ -21,7 +21,7 @@ Module `github.com/jkbrsn/wsstat/v3`. Three layers:
 
 1. **CLI** (`cmd/wsstat/`) - parses flags, validates URLs (auto-adds `wss://`), builds config, delegates to the app layer.
 2. **App** (`internal/app/`) - `Client` orchestrates measurement/subscription flows and output formatting.
-3. **Core** (root pkg: `wsstat.go`, `result.go`, `subscription.go`, `wrappers.go`) - public API; wraps coder/websocket with timing instrumentation. `WSStat` produces a `Result` with DNS/TCP/TLS/WS/RTT timings.
+3. **Core** (root pkg: `wsstat.go`, `measure.go`, `result.go`, `subscription.go`) - public API; wraps coder/websocket with timing instrumentation. `WSStat` produces a `Result` with DNS/TCP/TLS/WS/RTT timings; the one-shot `Measure*` free functions live in `measure.go`.
 
 All layers use the functional options pattern: `New(opts ...Option)` with `WithTimeout()`, `WithTLSConfig()`, `WithBufferSize()`, etc.
 
