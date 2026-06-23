@@ -239,6 +239,7 @@ func TestParseReadLimit(t *testing.T) {
 		{"-5", -1, false},
 		{"bad", 0, true},
 		{"12X", 0, true},
+		{"99999999999999999M", 0, true}, // overflows int64 after the unit multiply
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

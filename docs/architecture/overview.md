@@ -13,7 +13,7 @@ a Go library (the root package) and a CLI (`cmd/wsstat`).
 Three layers, importing strictly downward (`internal/` enforces that outside code only sees the
 core):
 
-1. **Core** — the root package (`wsstat.go`, `result.go`, `subscription.go`, `wrappers.go`). Wraps
+1. **Core** — the root package (`wsstat.go`, `measure.go`, `result.go`, `subscription.go`). Wraps
    `coder/websocket` with timing instrumentation. Owns the `WSStat` connection handle, the `Result`
    value, the subscription system, and the free one-shot measurement functions. No knowledge of the
    CLI or of output formatting.

@@ -619,10 +619,31 @@ func classifyReadErr(err error) error {
 	return err
 }
 
+// handleRead processes a value received from readChan, recording read timing on success.
+func (ws *WSStat) handleRead(msg *wsRead) (int, []byte, error) {
+	if msg == nil {
+		return 0, nil, ErrClosed
+	}
+	if msg.err != nil {
+		return msg.messageType, nil, classifyReadErr(msg.err)
+	}
+	ws.timings.mu.Lock()
+	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+	ws.timings.mu.Unlock()
+	return msg.messageType, msg.data, nil
+}
+
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
+	// Drain a buffered read/error first: readPump enqueues an inbound error and then closes,
+	// so checking closed before draining could mask a real close/read-limit error as ErrClosed.
+	select {
+	case msg := <-ws.readChan:
+		return ws.handleRead(msg)
+	default:
+	}
 	if ws.closed.Load() {
 		return 0, nil, ErrClosed
 	}
@@ -632,26 +653,32 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 	select {
 	case <-ws.ctx.Done():
 		return 0, nil, ws.ctx.Err()
-	case msg, ok := <-ws.readChan:
-		if !ok {
-			return 0, nil, ErrClosed
-		}
-
-		if msg.err != nil {
-			return msg.messageType, nil, classifyReadErr(msg.err)
-		}
-
-		ws.timings.mu.Lock()
-		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-		ws.timings.mu.Unlock()
-
-		return msg.messageType, msg.data, nil
+	case msg := <-ws.readChan:
+		return ws.handleRead(msg)
 	}
+}
+
+// decodeRead unmarshals a successful read result as JSON, propagating any read error.
+func decodeRead(_ int, data []byte, readErr error) (any, error) {
+	if readErr != nil {
+		return nil, readErr
+	}
+	var resp any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
+	// Drain a buffered read/error first; see ReadMessage for why the closed check comes after.
+	select {
+	case msg := <-ws.readChan:
+		return decodeRead(ws.handleRead(msg))
+	default:
+	}
 	if ws.closed.Load() {
 		return nil, ErrClosed
 	}
@@ -661,26 +688,8 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 	select {
 	case <-ws.ctx.Done():
 		return nil, ws.ctx.Err()
-	case msg, ok := <-ws.readChan:
-		if !ok {
-			return nil, ErrClosed
-		}
-
-		if msg.err != nil {
-			return nil, classifyReadErr(msg.err)
-		}
-
-		ws.timings.mu.Lock()
-		ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
-		ws.timings.mu.Unlock()
-
-		var resp any
-		err := json.Unmarshal(msg.data, &resp)
-		if err != nil {
-			return nil, err
-		}
-
-		return resp, nil
+	case msg := <-ws.readChan:
+		return decodeRead(ws.handleRead(msg))
 	}
 }
 

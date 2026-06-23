@@ -40,6 +40,12 @@ func TestMeasurePing(t *testing.T) {
 	assert.Positive(t, result.TotalTime)
 }
 
+func TestMeasurePingNegativeCount(t *testing.T) {
+	result, err := MeasurePing(context.Background(), echoServerAddrWs, -1)
+	require.Error(t, err)
+	assert.Nil(t, result)
+}
+
 func TestMeasureTextCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

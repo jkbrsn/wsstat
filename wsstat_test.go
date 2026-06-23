@@ -425,6 +425,34 @@ func TestDialContextNilContext(t *testing.T) {
 	assert.Contains(t, err.Error(), "nil context")
 }
 
+func TestReadMessageDoesNotMaskCloseError(t *testing.T) {
+	// Regression: readPump buffers an inbound error then closes, so a read issued after the
+	// closed flag flips must drain the buffered close error rather than report plain ErrClosed.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusInternalError, "boom")
+	}))
+	defer server.Close()
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
+
+	// Wait until the read pump has observed the close and finalized; by then the close error
+	// is already buffered in readChan and the closed flag is set.
+	require.Eventually(t, ws.closed.Load, 2*time.Second, 5*time.Millisecond)
+
+	_, _, err = ws.ReadMessage()
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrClosed), "real close error masked as ErrClosed: %v", err)
+	assert.Contains(t, err.Error(), "unexpected close error")
+}
+
 func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
 	ws := New()
 	defer ws.Close()
