@@ -17,15 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithCloseGrace(d)` library option (and the `--close-timeout` CLI flag) bounding how long `Close()` waits for the peer's closing-handshake echo before forcing teardown. The library option defaults to 3s and treats `0` as immediate teardown; the CLI flag forwards only positive values, so `--close-timeout 0` keeps the 3s default (the handshake is capped at 5s either way).
 - The CLI now force-quits on a second interrupt: the first `Ctrl-C` (SIGINT/SIGTERM) begins a graceful shutdown bounded by close-grace, and a second immediately exits with code 130. Lets a teardown stuck on a non-echoing peer always be escaped.
 - **JSON error envelope.** Under `-o json`, a runtime failure now prints a schema-stable `{"schema_version","type":"error","error"}` record to stdout (newline-terminated, matching the NDJSON data stream) instead of falling back to plain `Error:` text, so a `wsstat ... -o json | jq` pipeline stays parseable on the failure path. Usage errors still print plain text to stderr.
-- (dev) The mock server now serves `wss://` (port 17443) with a startup-generated self-signed cert, and `dev/smoke-test.sh` exercises the TLS dial path: `-insecure`/`-k`, verify-rejects-self-signed, and a verifying handshake trusted via `/ca.pem` + `SSL_CERT_FILE`.
 - `--show-secrets` flag: by default `-vv` now masks sensitive header values (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) as `[redacted]`; pass `--show-secrets` to print them. Text-only, like the other `-vv` flags.
 - `--rpc-version 1.0|2.0` flag (default `2.0`) for `--rpc-method`. `1.0` emits a legacy JSON-RPC 1.0 request (`{"id":1,"method":...,"params":[]}` — no `jsonrpc` field, integer id, positional params array) and relaxes response decoding to accept version-less / `1.0` replies (treating `"error":null` as absent, and `"result":null` beside a real error as absent). The encode path otherwise stays strict 2.0. Requires `--rpc-method` or `--text`.
 - (dev) `dev/soak-test.sh` (and `make soak`): a structured flag-combination soak complementing the per-feature `smoke-test.sh`. Drives every flag in each mode (both aliases), asserts every validation rule actually rejects (a combination that should error but exits 0 is flagged as a silent accept), and checks the observable effect of flags that could be silently ignored, including `--clip`/`--color auto` under a real PTY via `dev/pty-run.py`.
 - **Payload from a file or stdin.** `-t @path` reads the text payload from a file and `-t @-` reads it from stdin; bytes are sent verbatim (no trailing-newline stripping). A literal leading `@` is escaped as `@@`.
-- `wsstat help measure` / `wsstat help stream` now print that subcommand's usage (previously `help <anything>` always printed the top-level usage).
-- `NO_COLOR` is now documented in the help text (it already forced color off under `--color auto`).
 - `--debug` flag wiring the core's zerolog debug logs to stderr, independent of the `-v`/`-vv` output verbosity (which only shape stdout). Off by default; safe to combine with any `-o` mode or `-q` since it never touches the stdout output contract.
-- (dev) `make clean` target: removes built binaries (`bin/*`, keeping the dir) and clears the golangci-lint cache.
 - **Published JSON output schema.** `docs/schema/wsstat-output-v1.schema.json` (draft 2020-12) validates a single `-o json` NDJSON record across all five types (`timing`, `response`, `subscription_summary`, `subscription_message`, `error`); `docs/schema/README.md` documents the version semantics. `schema_version` is a single monotonic version for the whole output family: a breaking change to any record bumps it (`1.0` -> `2.0`); additive optional fields do not. The schema is intentionally open so additive fields still validate. A drift test pins the schema's version and record-type set to the code. See [ADR 0003](./docs/decisions/0003-json-output-schema-and-timing-precision.md).
 
 ### Changed
@@ -51,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Exit codes normalized.** Post-parse argument/validation errors now exit `2` (matching flag-parse errors) instead of `1`, reserving `1` for genuine runtime/network failures. The full table (`0` success, `1` runtime, `2` usage, `130` interrupt) is documented in `wsstat -h` and the README.
 - Dropped the `github.com/jkbrsn/jsonrpc` dependency (and its transitive `github.com/bytedance/sonic` JIT/asm surface). The CLI only built a fixed JSON-RPC request and decoded the reply, so both are now handled inline with the standard library `encoding/json`. No CLI behavior change; the binary no longer links a runtime code-generation library.
 - **Sub-millisecond timing precision.** Phase durations now render as float milliseconds at microsecond resolution (rounded to 3 decimals) instead of truncating to whole ms, in both text and `-o json` output. A sub-millisecond phase (e.g. a `ws://localhost` dial) now shows non-zero. The JSON `durations_ms`/`timeline_ms` (and subscription `*_ms`) values are now `number` rather than integer; consumers must not assume integer values. Key names and the nil-for-zero semantics are unchanged, so this is part of `schema_version` `1.0` (no bump). See [ADR 0003](./docs/decisions/0003-json-output-schema-and-timing-precision.md).
+- Upgraded to Go 1.26.4.
 
 ### Removed
 
@@ -60,15 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Data race on the measurement `Result`.** `calculateResult` wrote every `Result` field unsynchronized, so calling `ExtractResult()` concurrently with `Close()` (or with the streaming subscription tick) raced under `-race`. The result computation and its snapshot copy are now guarded by an internal mutex; `ExtractResult()` returns a consistent snapshot even while `Close()` finalizes. The concurrency-safety contract is now documented on the `WSStat` godoc, and `nextSubscriptionID` uses `atomic.Uint64` for correct alignment on 32-bit platforms.
-- `stream -o raw` now emits payload bytes only. The `Streaming subscription events` header, per-tick blank lines, and `Subscription summary` blocks no longer leak into raw stream output (only `-o json` had been special-cased, so raw fell through to the human text path). Raw is now verbatim in both measure and stream modes, matching the documented contract.
-- `stream --once` now rejects an explicitly-set `-c`/`--count` instead of silently overriding it. `--once` always yields exactly one event, so combining it with a count is a configuration error rather than a no-op.
-- `--quiet` (alias of `-q`) and `--verbose` (alias of `-v`) are now accepted. Previously only `-q` parsed even though the help advertised `--quiet`, and `--verbose` (valid in v2) had been dropped; both long forms are rejected under `-o json|raw`, the same as their short forms.
-- `--clip` now applies to every text response body shape. Non-JSON-RPC map and array responses were printed unclipped; clipping now composes uniformly across all rendered bodies.
+- `--quiet` (alias of `-q`) is now accepted; previously only `-q` parsed despite the help advertising `--quiet`.
 - The failed-handshake response body reflected into the returned dial error is now bounded to 4 KiB (`io.LimitReader`), so a hostile server cannot reflect an unbounded body into the error string.
 - `ReadMessageJSON()` now applies the same close-status contract as `ReadMessage()`: an abnormal close (any status other than normal/going-away) is wrapped as an `unexpected close error` instead of returning the raw transport error, so close handling is identical regardless of decode path.
-- The `-v` output no longer prints a double colon in `Messages sent:: N` (the label carried its own colon on top of the format string's).
-- `--version` now prints `wsstat <version>`, matching the help-header format (was `Version: <version>`).
-- `--close-timeout` above 5s now prints a one-line stderr notice that the transport caps the close handshake at 5s, instead of silently accepting a value with no effect.
 
 ## [2.2.2] - 2026-06-16
 
