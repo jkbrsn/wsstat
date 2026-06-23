@@ -864,7 +864,7 @@ type dialTarget struct {
 
 // newHTTPClient builds the instrumented *http.Client that coder's websocket.Dial uses to
 // run the handshake. The transport's DialContext/DialTLSContext carry the per-phase timing
-// instrumentation that gorilla's Dialer hooks used to.
+// instrumentation for the DNS, TCP, and TLS phases.
 // Sets timings: dnsLookupDone, tcpConnected, tlsHandshakeDone.
 func newHTTPClient(
 	result *Result,

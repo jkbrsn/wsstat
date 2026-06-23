@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-06-23
+
 ### Added
 
 - **CLI subcommands.** Mode is now an explicit subcommand: `wsstat measure <url>` (also the bare `wsstat <url>` form) and `wsstat stream <url>` for long-lived feeds. `stream --once` exits after the first event. Each subcommand's `-h` lists only its own flags.
@@ -110,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v2.2.2...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/jkbrsn/wsstat/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/jkbrsn/wsstat/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/jkbrsn/wsstat/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/jkbrsn/wsstat/compare/v2.1.3...v2.2.0
