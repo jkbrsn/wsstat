@@ -408,6 +408,13 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 	return claimed
 }
 
+// hasActiveSubscriptions reports whether any subscription is currently registered.
+func (ws *WSStat) hasActiveSubscriptions() bool {
+	ws.subscriptionMu.RLock()
+	defer ws.subscriptionMu.RUnlock()
+	return len(ws.subscriptions) > 0
+}
+
 // activeSubscriptions returns a snapshot of the active subscriptions.
 func (ws *WSStat) activeSubscriptions() []*subscriptionState {
 	ws.subscriptionMu.RLock()

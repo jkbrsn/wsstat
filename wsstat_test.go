@@ -328,6 +328,47 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 	assert.GreaterOrEqual(t, stats.LastEvent, stats.FirstEvent)
 }
 
+func TestSubscriptionSurvivesIdleBeyondTimeout(t *testing.T) {
+	// Regression: the per-read dial/read timeout must not tear down a long-lived
+	// subscription that is merely idle. A 5s (here 100ms) silence used to finalize
+	// every active subscription with a deadline error and close the connection.
+	ws := New(WithTimeout(100 * time.Millisecond))
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("first"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "first", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial subscription message")
+	}
+
+	// Stay idle well beyond the read timeout; the subscription must not be finalized.
+	select {
+	case <-sub.Done():
+		t.Fatal("subscription torn down while idle past the read timeout")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// The stream is still live: a later message is still delivered.
+	ws.WriteMessage(TextMessage, []byte("later"))
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "later", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription stopped receiving after the idle period")
+	}
+
+	sub.Cancel()
+	<-sub.Done()
+}
+
 func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {
 	ws := New()
 	defer ws.Close()

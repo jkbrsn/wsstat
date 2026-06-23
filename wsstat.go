@@ -326,14 +326,17 @@ func (ws *WSStat) readPump() {
 			return
 		}
 
-		readCtx, cancel := context.WithTimeout(ws.ctx, ws.timeout)
-		coderType, p, err := conn.Read(readCtx)
-		cancel()
-		messageType := fromCoderType(coderType)
-		if err != nil {
-			ws.dispatchIncoming(&wsRead{err: err, messageType: messageType})
+		read, deadlineHit := ws.readFrame(conn)
+		if read.err != nil {
+			// If a subscription became active while a bounded read was in flight, the
+			// stream now owns the connection: drop the timeout and keep reading rather
+			// than finalizing the subscription on a spurious read deadline.
+			if deadlineHit && ws.hasActiveSubscriptions() {
+				continue
+			}
+			ws.dispatchIncoming(read)
 			select {
-			case ws.readChan <- &wsRead{err: err, messageType: messageType}:
+			case ws.readChan <- read:
 			case <-ws.ctx.Done():
 				ws.log.Debug().Msg("Context done, dropping error read")
 			}
@@ -343,23 +346,43 @@ func (ws *WSStat) readPump() {
 		// coder/websocket performs no UTF-8 validation on text frames (RFC 6455 §5.6);
 		// when opted in, flag invalid payloads via the logger and the Result counter rather
 		// than failing the connection, since this is a measurement tool.
-		if ws.validateUTF8 && messageType == TextMessage && !utf8.Valid(p) {
+		if ws.validateUTF8 && read.messageType == TextMessage && !utf8.Valid(read.data) {
 			ws.invalidUTF8.Add(1)
-			ws.log.Warn().Int("bytes", len(p)).Msg("received text frame with invalid UTF-8")
+			ws.log.Warn().Int("bytes", len(read.data)).Msg("received text frame with invalid UTF-8")
 		}
 
 		// Message read successfully, dispatch if not handled by subscription
-		if ws.dispatchIncoming(&wsRead{data: p, messageType: messageType}) {
+		if ws.dispatchIncoming(read) {
 			continue
 		}
 
 		select {
-		case ws.readChan <- &wsRead{data: p, messageType: messageType}:
+		case ws.readChan <- read:
 		case <-ws.ctx.Done():
 			ws.log.Debug().Msg("Context done, dropping read message")
 			return
 		}
 	}
+}
+
+// readFrame reads one frame, bounding the read with the dial/read timeout only when
+// no subscription is active. Subscriptions are long-lived and idle by nature, so a
+// per-read deadline would tear them down after a quiet interval; while one is active
+// the read blocks until ws.ctx is canceled (Close). deadlineHit reports that the bound
+// fired (a one-shot timeout) rather than a real transport error or context cancel.
+func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
+	readCtx := ws.ctx
+	var cancel context.CancelFunc
+	if !ws.hasActiveSubscriptions() {
+		readCtx, cancel = context.WithTimeout(ws.ctx, ws.timeout)
+	}
+	coderType, p, err := conn.Read(readCtx)
+	deadlineHit := false
+	if cancel != nil {
+		deadlineHit = readCtx.Err() == context.DeadlineExceeded && ws.ctx.Err() == nil
+		cancel()
+	}
+	return &wsRead{data: p, err: err, messageType: fromCoderType(coderType)}, deadlineHit
 }
 
 // writePump writes messages to the WebSocket connection.
