@@ -2,50 +2,85 @@ package app
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
+const (
+	// msRoundScale rounds milliseconds to 3 decimals (microsecond resolution).
+	msRoundScale = 1000
+	// float64BitSize is the bit size passed to strconv float conversions.
+	float64BitSize = 64
+)
+
+// msFloat converts a duration to milliseconds rounded to 3 decimals (microsecond resolution),
+// so sub-millisecond phases render non-zero instead of truncating to whole ms.
+func msFloat(d time.Duration) float64 {
+	ms := float64(d) / float64(time.Millisecond)
+	return math.Round(ms*msRoundScale) / msRoundScale
+}
+
+// msString renders a duration as milliseconds with up to 3 decimals, trailing zeros trimmed.
+func msString(d time.Duration) string {
+	return strconv.FormatFloat(msFloat(d), 'f', -1, float64BitSize)
+}
+
 func formatPadLeft(d time.Duration) string {
-	return fmt.Sprintf("%7dms", int(d/time.Millisecond))
+	return fmt.Sprintf("%7sms", msString(d))
 }
 
 func formatPadRight(d time.Duration) string {
-	return fmt.Sprintf("%-8s", strconv.Itoa(int(d/time.Millisecond))+"ms")
+	return fmt.Sprintf("%-8s", msString(d)+"ms")
 }
 
 func formatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%dms", d/time.Millisecond)
+	return msString(d) + "ms"
 }
 
 func handleConnectionError(err error, address string) error {
-	// Check for specific TLS errors first
-	var tlsErr *tls.RecordHeaderError
-	if errors.As(err, &tlsErr) {
+	// A malformed TLS record during the handshake is reported distinctly.
+	var recordErr *tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
 		return fmt.Errorf("TLS handshake failed connecting to '%s': %w", address, err)
 	}
-
-	// Fallback to string checking for specific messages
-	errMsg := err.Error()
-	if strings.Contains(errMsg, "tls:") || strings.Contains(errMsg, "TLS") {
+	if isTLSCertError(err) {
 		return fmt.Errorf("secure WebSocket connection failed to '%s': %w", address, err)
 	}
-
 	return fmt.Errorf("WebSocket connection failed to '%s': %w", address, err)
 }
 
-func msPtr(d time.Duration) *int64 {
+// isTLSCertError reports whether err is a TLS certificate-verification failure. It prefers typed
+// matching (now that dial errors are %w-wrapped, the x509/tls types survive the boundary) and
+// falls back to a string check for errors that don't surface a typed value.
+func isTLSCertError(err error) bool {
+	var (
+		certVerif   *tls.CertificateVerificationError
+		unknownAuth x509.UnknownAuthorityError
+		hostname    x509.HostnameError
+		invalid     x509.CertificateInvalidError
+	)
+	if errors.As(err, &certVerif) || errors.As(err, &unknownAuth) ||
+		errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tls:") || strings.Contains(msg, "TLS")
+}
+
+func msPtr(d time.Duration) *float64 {
 	if d <= 0 {
 		return nil
 	}
-	ms := d.Milliseconds()
+	ms := msFloat(d)
 	return &ms
 }
 

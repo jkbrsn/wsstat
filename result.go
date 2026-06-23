@@ -31,10 +31,16 @@ type CertificateDetails struct {
 type Result struct {
 	IPs             []string             // IP addresses of the WebSocket connection
 	URL             *url.URL             // URL of the WebSocket connection
+	Subprotocol     string               // Negotiated WebSocket subprotocol ("" if none)
+	Compression     string               // Negotiated Sec-WebSocket-Extensions value ("" if none)
 	RequestHeaders  http.Header          // Headers of the initial request
 	ResponseHeaders http.Header          // Headers of the response
 	TLSState        *tls.ConnectionState // State of the TLS connection
 	MessageCount    int                  // Number of messages sent and received
+
+	// InvalidUTF8Frames counts inbound text frames that failed UTF-8 validation. Always 0
+	// unless WithValidateUTF8 is set (coder/websocket does not validate text frames itself).
+	InvalidUTF8Frames int
 
 	// Subscription statistics captured when long-lived streams are active.
 	Subscriptions          map[string]SubscriptionStats // Metrics by subscription ID
@@ -110,7 +116,7 @@ func (r *Result) durations() map[string]time.Duration {
 	}
 }
 
-// formatVerbosePlus prints the verbose multi-line view used by %#v.
+// formatVerbosePlus prints the verbose multi-line view used by %+v.
 func (r *Result) formatVerbosePlus(s fmt.State) {
 	r.printURLAndIPSection(s)
 	r.printTLSSectionIfPresent(s)

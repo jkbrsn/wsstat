@@ -9,7 +9,7 @@ on:
       - main
 
 env:
-  GO_VERSION: 1.26.3
+  GO_VERSION: 1.26.4
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
@@ -49,10 +49,21 @@ jobs:
       - run: go mod download
       - run: go test -mod=readonly ./... -count=16 -shuffle=on
 
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
   summary:
     name: CI Summary
     runs-on: ubuntu-24.04
-    needs: [golangci, unit-tests, unit-tests-flaky]
+    needs: [golangci, unit-tests, unit-tests-flaky, govulncheck]
     if: always() # Always run, even if earlier jobs fail
     steps:
       - name: Write CI summary
@@ -63,6 +74,7 @@ jobs:
             echo "- **Lint:** ${{ needs.golangci.result }}"
             echo "- **Unit (race):** ${{ needs.unit-tests.result }}"
             echo "- **Unit (flaky):** ${{ needs.unit-tests-flaky.result }}"
+            echo "- **Vuln scan:** ${{ needs.govulncheck.result }}"
             echo ""
             echo "### Commit"
             echo "[${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})"

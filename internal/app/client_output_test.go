@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -141,6 +142,47 @@ func TestPrintRequestDetailsVerbosityLevels(t *testing.T) {
 	})
 }
 
+func TestPrintRequestDetailsMasksSecrets(t *testing.T) {
+	res := sampleResult(t)
+	res.RequestHeaders = http.Header{
+		"Authorization":       {"Bearer s3cr3t"},
+		"Cookie":              {"session=abc"},
+		"Proxy-Authorization": {"Basic zzz"},
+		"User-Agent":          {"wsstat"},
+	}
+	res.ResponseHeaders = http.Header{
+		"Set-Cookie": {"session=def"},
+		"Server":     {"demo"},
+	}
+	result := &MeasurementResult{Result: res}
+
+	t.Run("masked by default", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{verbosityLevel: 2}
+			return client.PrintRequestDetails(result)
+		})
+		assert.Contains(t, output, "[redacted]")
+		assert.NotContains(t, output, "Bearer s3cr3t")
+		assert.NotContains(t, output, "session=abc")
+		assert.NotContains(t, output, "Basic zzz")
+		assert.NotContains(t, output, "session=def")
+		// Non-sensitive headers are still shown.
+		assert.Contains(t, output, "wsstat")
+		assert.Contains(t, output, "demo")
+	})
+
+	t.Run("shown with show-secrets", func(t *testing.T) {
+		output := captureStdoutFrom(t, func() error {
+			client := &Client{verbosityLevel: 2, showSecrets: true}
+			return client.PrintRequestDetails(result)
+		})
+		assert.NotContains(t, output, "[redacted]")
+		assert.Contains(t, output, "Bearer s3cr3t")
+		assert.Contains(t, output, "session=abc")
+		assert.Contains(t, output, "session=def")
+	})
+}
+
 func TestPrintTimingResultsVerbosityLevels(t *testing.T) {
 	base := sampleTimingResult(t)
 	ctxURL := base.URL
@@ -194,6 +236,44 @@ func TestPrintTimingResultsJSON(t *testing.T) {
 	assert.EqualValues(t, base.TotalTime.Milliseconds(), durations["total"])
 	target := asMap(t, payload["target"])
 	assert.Equal(t, base.URL.String(), target["url"])
+}
+
+func TestPrintTimingResultsUTF8Warning(t *testing.T) {
+	t.Run("json envelope", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		base.InvalidUTF8Frames = 2
+		client := &Client{output: OutputJSON, count: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		payload := decodeJSONLine(t, output)
+		warnings, ok := payload["warnings"].([]any)
+		require.True(t, ok, "warnings field missing: %v", payload)
+		require.Len(t, warnings, 1)
+		assert.Contains(t, warnings[0], "UTF-8")
+	})
+
+	t.Run("text output", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		base.InvalidUTF8Frames = 1
+		client := &Client{output: OutputText, count: 1, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		assert.Contains(t, output, "warning:")
+		assert.Contains(t, output, "UTF-8")
+	})
+
+	t.Run("absent when zero", func(t *testing.T) {
+		base := sampleTimingResult(t)
+		client := &Client{output: OutputJSON, count: 1}
+		output := captureStdoutFrom(t, func() error {
+			return client.PrintTimingResults(base.URL, &MeasurementResult{Result: base})
+		})
+		payload := decodeJSONLine(t, output)
+		_, ok := payload["warnings"]
+		assert.False(t, ok, "warnings should be omitted when there are none")
+	})
 }
 
 func TestPrintResponseJSON(t *testing.T) {

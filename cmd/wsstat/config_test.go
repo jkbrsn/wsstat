@@ -24,6 +24,9 @@ func TestParseWSURI(t *testing.T) {
 		{name: "no scheme defaults to wss", input: "example.com/path", expected: "wss://example.com/path"},
 		{name: "localhost without scheme", input: "localhost:8080", expected: "wss://localhost:8080"},
 		{name: "invalid URL", input: "ht!tp://invalid", wantErr: true},
+		{name: "http scheme rejected", input: "http://example.com", wantErr: true},
+		{name: "https scheme rejected", input: "https://example.com", wantErr: true},
+		{name: "other scheme rejected", input: "ftp://example.com", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -67,6 +70,23 @@ func TestMeasureFlags(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-t", "hi", "--rpc-method", "m", "example.com"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("rpc-version accepts 1.0 with rpc-method", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-method", "m", "--rpc-version", "1.0", "example.com"})
+		require.NoError(t, err)
+	})
+
+	t.Run("rpc-version rejects unknown value", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-method", "m", "--rpc-version", "3.0", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--rpc-version must be 1.0 or 2.0")
+	})
+
+	t.Run("rpc-version without a message rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"--rpc-version", "1.0", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires --rpc-method or --text")
 	})
 
 	t.Run("text-only flag under json rejected", func(t *testing.T) {
@@ -202,4 +222,33 @@ func TestStreamFlags(t *testing.T) {
 		_, _, err := buildStream([]string{"-b", "10", "example.com"})
 		require.NoError(t, err)
 	})
+}
+
+func TestParseReadLimit(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"1024", 1024, false},
+		{"512K", 512 << 10, false},
+		{"16M", 16 << 20, false},
+		{"4m", 4 << 20, false},
+		{"-1", -1, false},
+		{"-5", -1, false},
+		{"bad", 0, true},
+		{"12X", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseReadLimit(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

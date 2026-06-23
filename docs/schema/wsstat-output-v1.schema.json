@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jkbrsn/wsstat/blob/main/docs/schema/wsstat-output-v1.schema.json",
+  "title": "wsstat JSON output (schema family 1.x)",
+  "description": "Validates a single record (one NDJSON line) emitted by `wsstat ... -o json`. The output is newline-delimited JSON: one self-describing object per line. Records are discriminated by the `type` field. The schema is intentionally open (additional properties allowed) so that additive fields, which do not bump `schema_version`, still validate against this document.",
+  "x-schema-version": "1.0",
+  "oneOf": [
+    { "$ref": "#/$defs/timing" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/subscription_summary" },
+    { "$ref": "#/$defs/subscription_message" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "schemaVersion": {
+      "description": "Monotonic version for the whole output family. Bumps (1.0 -> 2.0) only on a breaking change to any record; additive fields keep it unchanged.",
+      "const": "1.0"
+    },
+    "ms": {
+      "description": "A duration in milliseconds, float with microsecond resolution (rounded to 3 decimals). Omitted (absent) when the phase did not occur or measured zero.",
+      "type": "number",
+      "minimum": 0
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "host": { "type": "string" },
+        "ips": { "type": "array", "items": { "type": "string" } },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "version": { "type": "string" },
+            "cipher_suite": { "type": "string" },
+            "peer_certificates": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "durations": {
+      "type": "object",
+      "description": "Per-phase durations in milliseconds.",
+      "properties": {
+        "dns_lookup": { "$ref": "#/$defs/ms" },
+        "tcp_connection": { "$ref": "#/$defs/ms" },
+        "tls_handshake": { "$ref": "#/$defs/ms" },
+        "ws_handshake": { "$ref": "#/$defs/ms" },
+        "message_rtt": { "$ref": "#/$defs/ms" },
+        "total": { "$ref": "#/$defs/ms" }
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "description": "Cumulative milestones (ms from connection start).",
+      "properties": {
+        "dns_lookup_done": { "$ref": "#/$defs/ms" },
+        "tcp_connected": { "$ref": "#/$defs/ms" },
+        "tls_handshake_done": { "$ref": "#/$defs/ms" },
+        "ws_handshake_done": { "$ref": "#/$defs/ms" },
+        "first_message_response": { "$ref": "#/$defs/ms" },
+        "total": { "$ref": "#/$defs/ms" }
+      }
+    },
+    "subscriptionEntry": {
+      "type": "object",
+      "required": ["id", "messages", "bytes"],
+      "properties": {
+        "id": { "type": "string" },
+        "messages": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "first_event_ms": { "$ref": "#/$defs/ms" },
+        "last_event_ms": { "$ref": "#/$defs/ms" },
+        "mean_inter_arrival_ms": { "$ref": "#/$defs/ms" },
+        "error": { "type": "string" }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "required": ["schema_version", "type", "mode", "counts", "durations_ms"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "timing" },
+        "mode": {
+          "description": "`single` for one interaction, `mean` when durations are averaged over multiple.",
+          "enum": ["single", "mean"]
+        },
+        "target": { "$ref": "#/$defs/target" },
+        "counts": {
+          "type": "object",
+          "required": ["requested", "messages"],
+          "properties": {
+            "requested": { "type": "integer", "minimum": 0 },
+            "messages": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "durations_ms": { "$ref": "#/$defs/durations" },
+        "timeline_ms": { "$ref": "#/$defs/timeline" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["schema_version", "type"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "response" },
+        "rpc_method": { "type": "string" },
+        "payload": {
+          "description": "Decoded response payload; shape varies (JSON value or string)."
+        }
+      }
+    },
+    "subscription_summary": {
+      "type": "object",
+      "required": ["schema_version", "type", "total_messages"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "subscription_summary" },
+        "target": { "$ref": "#/$defs/target" },
+        "first_event_ms": { "$ref": "#/$defs/ms" },
+        "last_event_ms": { "$ref": "#/$defs/ms" },
+        "total_messages": { "type": "integer", "minimum": 0 },
+        "subscriptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subscriptionEntry" }
+        }
+      }
+    },
+    "subscription_message": {
+      "type": "object",
+      "required": ["schema_version", "type"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "subscription_message" },
+        "index": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "size": { "type": "integer", "minimum": 0 },
+        "message_type": { "enum": ["text", "binary"] },
+        "payload": {
+          "description": "Decoded message payload; shape varies (JSON value or string)."
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["schema_version", "type", "error"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "error" },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}

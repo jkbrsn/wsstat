@@ -45,7 +45,7 @@ sudo snap install wsstat
 
 #### Go
 
-Requires that you have Go installed on your system and that you have `$GOPATH/bin` in your `PATH`. Recommended Go version is 1.21 or later.
+Requires that you have Go installed on your system and that you have `$GOPATH/bin` in your `PATH`. Recommended Go version is 1.26 or later.
 
 Install via Go:
 
@@ -58,7 +58,7 @@ git clone github.com/jkbrsn/wsstat
 cd wsstat
 git fetch --all
 git checkout origin/main
-go install -ldflags "-X main.version=$(cat VERSION)" github.com/jkbrsn/wsstat@latest
+go install -ldflags "-X main.version=$(cat VERSION)" ./cmd/wsstat
 ```
 
 Note: installing the package with `@latest`  will always install the latest version no matter the other parameters of the command.
@@ -69,12 +69,14 @@ The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
 #### Binary
 
+Prebuilt release binaries are currently published for **Linux/amd64 only**. On other platforms, build from source (see [macOS and Windows](#macos-and-windows) below).
+
 ##### Linux
 
 Download the binary from the latest release (`amd64`) on [the release page](https://github.com/jkbrsn/wsstat/releases):
 
 ```sh
-wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat
+wget https://github.com/jkbrsn/wsstat/releases/download/<tag>/wsstat-<tag>
 ```
 
 Make the binary executable:
@@ -121,7 +123,14 @@ Some examples:
 # Basic request
 wsstat wss://echo.example.com
 
-# Send an RPC method
+# Send a text message
+wsstat -t "ping" wss://echo.example.com
+
+# Read the payload from a file or stdin (@file / @-)
+wsstat -t @payload.json wss://echo.example.com
+echo '{"hello":"world"}' | wsstat -t @- wss://echo.example.com
+
+# Send an RPC method (JSON-RPC 2.0 by default; --rpc-version 1.0 for legacy servers)
 wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 
 # Start a stream
@@ -183,9 +192,11 @@ Output is split across three orthogonal axes:
 
 - `-o, --output text|json|raw` — the whole-stdout contract. `json` emits
   newline-delimited envelopes with a stable schema (`-v`/`-vv` never change which
-  fields appear); `raw` writes payload bytes verbatim with nothing added (in
-  measure mode `raw` requires `--text` or `--rpc-method`). With `--rpc-method` the
-  response frame is decoded before output, so `raw` emits compact JSON rather than
+  fields appear); `raw` writes payload bytes verbatim with nothing added — no
+  label, color, or trailing newline, so frames stay binary-safe and stream frames
+  concatenate undelimited (use `-o json` when you need a delimiter). In measure
+  mode `raw` requires `--text` or `--rpc-method`; with `--rpc-method` the response
+  frame is decoded before output, so `raw` emits compact JSON rather than
   byte-for-byte wire content.
 - `--body auto|compact` — human body rendering (text output only). `auto`
   pretty-prints; `compact` puts each message on one line.
@@ -202,6 +213,24 @@ wsstat stream --body compact --clip wss://example.org/stream
 
 `--body`, `--clip`, `-q`, `-v`, and `-vv` apply only to `-o text` and are
 rejected under `-o json|raw`.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success (also `--help` and `--version`) |
+| 1    | Runtime failure (dial, measurement, stream, or output write) |
+| 2    | Usage error (bad flag or argument) |
+| 130  | Interrupted; a second `Ctrl-C` forces teardown |
+
+Usage errors (exit 2) always print plain text to stderr. Under `-o json`, a
+runtime failure (exit 1) prints a `{"type":"error"}` envelope to stdout so a
+`wsstat ... -o json | jq` pipeline stays parseable on the failure path:
+
+```sh
+wsstat -o json ws://127.0.0.1:1
+# {"schema_version":"1.0","type":"error","error":"measuring latency: ..."}
+```
 
 ## wsstat Library Package
 
@@ -233,6 +262,7 @@ The project has a `Makefile` that provides a number of commands to build and tes
 # build
 make build
 make build-all  # build for all supported platforms
+make clean      # remove built binaries and clear the golangci-lint cache
 
 # test
 make test
@@ -244,4 +274,4 @@ make lint
 
 ## Contributing
 
-For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./TODO.md) to see if what you've got in mind is already in the works.
+For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./docs/TODO.md) to see if what you've got in mind is already in the works.

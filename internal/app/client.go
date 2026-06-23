@@ -40,11 +40,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/jkbrsn/wsstat/v3"
+	"github.com/rs/zerolog"
 )
 
 // Client measures the latency of a WebSocket connection and manages subscription streams.
@@ -54,17 +57,20 @@ import (
 // or use MeasureLatency's return value to access results.
 type Client struct {
 	// Input
-	count       int               // Nr of interactions; 0 means unlimited in subscription mode
-	headers     []string          // HTTP headers for connection establishment ("Key: Value")
-	resolves    map[string]string // DNS resolution overrides: "host:port" → "address"
-	rpcMethod   string            // JSON-RPC method (no params)
-	textMessage string            // Text message
+	count        int               // Nr of interactions; 0 means unlimited in subscription mode
+	headers      []string          // HTTP headers for connection establishment ("Key: Value")
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	rpcMethod    string            // JSON-RPC method (no params)
+	rpcVersion   string            // JSON-RPC version to speak: "2.0" (default) or "1.0"
+	textMessage  string            // Text message
+	subprotocols []string          // WebSocket subprotocols to negotiate
 
 	// Output
-	output    Output // whole-stdout contract: text, json, or raw
-	body      Body   // body rendering (text output): auto or compact
-	clip      bool   // clip each rendered line to terminal width (text output)
-	colorMode string // Color behavior: "auto", "always", or "never"
+	output      Output // whole-stdout contract: text, json, or raw
+	body        Body   // body rendering (text output): auto or compact
+	clip        bool   // clip each rendered line to terminal width (text output)
+	colorMode   string // Color behavior: "auto", "always", or "never"
+	showSecrets bool   // render sensitive header values instead of masking them (-vv)
 
 	// Verbosity
 	quiet          bool // suppress request/timing output
@@ -82,6 +88,16 @@ type Client struct {
 	// Timeouts
 	timeout    time.Duration // read/dial timeout; 0 means use library default
 	closeGrace time.Duration // close-handshake echo wait; 0 means use library default
+
+	// Limits
+	readLimit int64 // max inbound message size; 0 uses library default, -1 disables
+
+	// Standards
+	validateUTF8 bool // validate UTF-8 on inbound text frames
+
+	// Diagnostics
+	debug  bool      // emit core debug logs, independent of -v/-vv output verbosity
+	debugW io.Writer // destination for debug logs; nil uses os.Stderr
 }
 
 // Option configures a Client.
@@ -123,6 +139,13 @@ func WithRPCMethod(method string) Option {
 	return func(c *Client) { c.rpcMethod = method }
 }
 
+// WithRPCVersion sets the JSON-RPC version to speak: "2.0" (default) or "1.0". 1.0 emits a
+// version-less request with a positional params array and relaxes response decoding to accept
+// 1.0 / version-less replies.
+func WithRPCVersion(version string) Option {
+	return func(c *Client) { c.rpcVersion = version }
+}
+
 // WithTextMessage configures a text message to send.
 func WithTextMessage(msg string) Option {
 	return func(c *Client) { c.textMessage = msg }
@@ -141,6 +164,12 @@ func WithBodyRender(body Body) Option {
 // WithClip enables clipping each rendered line to terminal width (text output).
 func WithClip(clip bool) Option {
 	return func(c *Client) { c.clip = clip }
+}
+
+// WithShowSecrets renders sensitive header values (Authorization, Cookie, etc.) in -vv
+// output instead of masking them. Off by default.
+func WithShowSecrets(show bool) Option {
+	return func(c *Client) { c.showSecrets = show }
 }
 
 // WithColorMode sets color output behavior (auto, always, or never).
@@ -194,6 +223,35 @@ func WithCloseGrace(d time.Duration) Option {
 	return func(c *Client) { c.closeGrace = d }
 }
 
+// WithReadLimit sets the max inbound message size in bytes. Zero uses the library default
+// (16 MiB); a negative value disables the limit.
+func WithReadLimit(n int64) Option {
+	return func(c *Client) { c.readLimit = n }
+}
+
+// WithSubprotocols sets the WebSocket subprotocols to offer during the handshake.
+func WithSubprotocols(subprotocols []string) Option {
+	return func(c *Client) { c.subprotocols = subprotocols }
+}
+
+// WithValidateUTF8 enables UTF-8 validation of inbound text frames. Invalid frames are counted
+// and surfaced as a warning rather than failing the connection.
+func WithValidateUTF8(enabled bool) Option {
+	return func(c *Client) { c.validateUTF8 = enabled }
+}
+
+// WithDebug enables the core's zerolog debug logs, written to stderr (or the WithDebugWriter
+// destination). It is independent of the -v/-vv output verbosity: it never touches the stdout
+// output contract, so it is safe to combine with any -o mode or -q.
+func WithDebug(enabled bool) Option {
+	return func(c *Client) { c.debug = enabled }
+}
+
+// WithDebugWriter sets the destination for debug logs (default os.Stderr). Mainly for tests.
+func WithDebugWriter(w io.Writer) Option {
+	return func(c *Client) { c.debugW = w }
+}
+
 // Count returns the configured interaction count.
 func (c *Client) Count() int { return c.count }
 
@@ -240,7 +298,33 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 		opts = append(opts, wsstat.WithCloseGrace(c.closeGrace))
 	}
 
+	if c.readLimit != 0 {
+		opts = append(opts, wsstat.WithReadLimit(c.readLimit))
+	}
+
+	if len(c.subprotocols) > 0 {
+		opts = append(opts, wsstat.WithSubprotocols(c.subprotocols))
+	}
+
+	if c.validateUTF8 {
+		opts = append(opts, wsstat.WithValidateUTF8(true))
+	}
+
+	if c.debug {
+		opts = append(opts, wsstat.WithLogger(debugLogger(c.debugW)))
+	}
+
 	return opts
+}
+
+// debugLogger builds the core debug logger. A nil writer defaults to os.Stderr so debug
+// output never collides with the stdout output contract.
+func debugLogger(w io.Writer) zerolog.Logger {
+	dst := w
+	if dst == nil {
+		dst = os.Stderr
+	}
+	return zerolog.New(dst).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 }
 
 // MeasureLatency measures WebSocket connection latency using ping, text, or JSON-RPC messages

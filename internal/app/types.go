@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 
 	"github.com/jkbrsn/wsstat/v3"
@@ -28,6 +29,7 @@ type timingSummaryJSON struct {
 	Counts    timingCountsJSON    `json:"counts"`
 	Durations timingDurationsJSON `json:"durations_ms"`
 	Timeline  *timingTimelineJSON `json:"timeline_ms,omitempty"`
+	Warnings  []string            `json:"warnings,omitempty"`
 }
 
 type timingCountsJSON struct {
@@ -49,21 +51,21 @@ type timingTLSJSON struct {
 }
 
 type timingDurationsJSON struct {
-	DNSLookup     *int64 `json:"dns_lookup,omitempty"`
-	TCPConnection *int64 `json:"tcp_connection,omitempty"`
-	TLSHandshake  *int64 `json:"tls_handshake,omitempty"`
-	WSHandshake   *int64 `json:"ws_handshake,omitempty"`
-	MessageRTT    *int64 `json:"message_rtt,omitempty"`
-	Total         *int64 `json:"total,omitempty"`
+	DNSLookup     *float64 `json:"dns_lookup,omitempty"`
+	TCPConnection *float64 `json:"tcp_connection,omitempty"`
+	TLSHandshake  *float64 `json:"tls_handshake,omitempty"`
+	WSHandshake   *float64 `json:"ws_handshake,omitempty"`
+	MessageRTT    *float64 `json:"message_rtt,omitempty"`
+	Total         *float64 `json:"total,omitempty"`
 }
 
 type timingTimelineJSON struct {
-	DNSLookupDone        *int64 `json:"dns_lookup_done,omitempty"`
-	TCPConnected         *int64 `json:"tcp_connected,omitempty"`
-	TLSHandshakeDone     *int64 `json:"tls_handshake_done,omitempty"`
-	WSHandshakeDone      *int64 `json:"ws_handshake_done,omitempty"`
-	FirstMessageResponse *int64 `json:"first_message_response,omitempty"`
-	Total                *int64 `json:"total,omitempty"`
+	DNSLookupDone        *float64 `json:"dns_lookup_done,omitempty"`
+	TCPConnected         *float64 `json:"tcp_connected,omitempty"`
+	TLSHandshakeDone     *float64 `json:"tls_handshake_done,omitempty"`
+	WSHandshakeDone      *float64 `json:"ws_handshake_done,omitempty"`
+	FirstMessageResponse *float64 `json:"first_message_response,omitempty"`
+	Total                *float64 `json:"total,omitempty"`
 }
 
 type responseOutputJSON struct {
@@ -77,8 +79,8 @@ type subscriptionSummaryJSON struct {
 	Schema        string                  `json:"schema_version"`
 	Type          string                  `json:"type"`
 	Target        *timingTargetJSON       `json:"target,omitempty"`
-	FirstEventMs  *int64                  `json:"first_event_ms,omitempty"`
-	LastEventMs   *int64                  `json:"last_event_ms,omitempty"`
+	FirstEventMs  *float64                `json:"first_event_ms,omitempty"`
+	LastEventMs   *float64                `json:"last_event_ms,omitempty"`
 	TotalMessages int                     `json:"total_messages"`
 	Subscriptions []subscriptionEntryJSON `json:"subscriptions,omitempty"`
 }
@@ -87,10 +89,39 @@ type subscriptionEntryJSON struct {
 	ID                 string `json:"id"`
 	Messages           uint64 `json:"messages"`
 	Bytes              uint64 `json:"bytes"`
-	FirstEventMs       *int64 `json:"first_event_ms,omitempty"`
-	LastEventMs        *int64 `json:"last_event_ms,omitempty"`
-	MeanInterArrivalMs *int64 `json:"mean_inter_arrival_ms,omitempty"`
+	FirstEventMs       *float64 `json:"first_event_ms,omitempty"`
+	LastEventMs        *float64 `json:"last_event_ms,omitempty"`
+	MeanInterArrivalMs *float64 `json:"mean_inter_arrival_ms,omitempty"`
 	Error              string `json:"error,omitempty"`
+}
+
+// errorOutputJSON is the schema-stable error envelope emitted under -o json when a runtime
+// failure occurs, so a `wsstat ... -o json | jq` pipeline always receives a parseable record
+// on the failure path instead of falling back to plain stderr text.
+type errorOutputJSON struct {
+	Schema string `json:"schema_version"`
+	Type   string `json:"type"`
+	Error  string `json:"error"`
+}
+
+// EmitJSONError writes a structured error envelope (type "error") to w, terminated by a
+// newline to match the NDJSON data stream. The CLI calls this on the runtime-failure path
+// under the JSON output contract; the envelope goes to stdout alongside any data already
+// streamed, so consumers parsing the stream see the failure as one final record.
+func EmitJSONError(w io.Writer, err error) error {
+	env := errorOutputJSON{
+		Schema: JSONSchemaVersion,
+		Type:   "error",
+		Error:  err.Error(),
+	}
+	data, mErr := json.Marshal(env)
+	if mErr != nil {
+		return fmt.Errorf("failed to marshal error envelope: %w", mErr)
+	}
+	if _, wErr := w.Write(append(data, '\n')); wErr != nil {
+		return fmt.Errorf("failed to write error envelope: %w", wErr)
+	}
+	return nil
 }
 
 type subscriptionMessageJSON struct {

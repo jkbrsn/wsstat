@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,24 +24,24 @@ func main() {
 		log.Fatalf("Failed to parse URL: %v", err)
 	}
 
-	// Measure latency with one of the convenience functions
+	// Measure latency with one of the one-shot functions
 	var msg = "Hello, WebSocket!"
-	result, p, err := wsstat.MeasureLatency(u, msg, http.Header{})
+	result, responses, err := wsstat.MeasureText(context.Background(), u, []string{msg})
 	if err != nil {
 		log.Fatalf("Failed to measure latency: %v", err)
 	}
-	fmt.Printf("Basic example\nResponse: %s\n\nResult:\n%+v\n", p, result)
+	fmt.Printf("Basic example\nResponse: %s\n\nResult:\n%+v\n", responses[0], result)
 
 	// Measure latency with more control over the steps in the process by using the WSStat instance
 	ws := wsstat.New()
 	defer ws.Close()
 
-	if err := ws.Dial(u, http.Header{}); err != nil {
+	if err := ws.DialContext(context.Background(), u, http.Header{}); err != nil {
 		log.Fatalf("Failed to establish WebSocket connection: %v", err)
 	}
 
 	ws.WriteMessage(wsstat.TextMessage, []byte(msg))
-	_, p, err = ws.ReadMessage()
+	_, p, err := ws.ReadMessage()
 	if err != nil {
 		log.Fatalf("Failed to read message: %v", err)
 	}

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,8 +44,19 @@ func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result)
 		if timeline := buildTimingTimeline(result); timeline != nil {
 			summary.Timeline = timeline
 		}
+		summary.Warnings = resultWarnings(result)
 	}
 	return summary
+}
+
+// resultWarnings collects non-fatal standards warnings surfaced from a measurement Result, for
+// display in both text and JSON output. Returns nil when there is nothing to warn about.
+func resultWarnings(result *wsstat.Result) []string {
+	if result == nil || result.InvalidUTF8Frames == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"%d inbound text frame(s) failed UTF-8 validation", result.InvalidUTF8Frames)}
 }
 
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
@@ -198,15 +209,6 @@ func (c *Client) clipBodyWithPrefix(s string, prefixWidth int) string {
 	return strings.Join(lines, "\n")
 }
 
-// clipLines clips each line of a (possibly multi-line) string to width columns.
-func clipLines(s string, width int) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = clipToWidth(line, width)
-	}
-	return strings.Join(lines, "\n")
-}
-
 // terminalWidth returns the column count of stdout, or 0 when stdout is not a
 // terminal or its size cannot be determined.
 func terminalWidth() int {
@@ -306,13 +308,13 @@ func (c *Client) printTimingResultsBasic(result *wsstat.Result, count int) {
 	fmt.Printf(
 		"%s: %s (%d %s)\n",
 		rttString,
-		c.colorizeOrange(strconv.FormatInt(result.MessageRTT.Milliseconds(), 10)+"ms"),
+		c.colorizeOrange(msString(result.MessageRTT)+"ms"),
 		result.MessageCount,
 		msgCountString)
 	fmt.Printf(
 		printValueTemp,
 		"Total time",
-		c.colorizeOrange(strconv.FormatInt(result.TotalTime.Milliseconds(), 10)+"ms"))
+		c.colorizeOrange(msString(result.TotalTime)+"ms"))
 	fmt.Println()
 }
 
@@ -379,7 +381,7 @@ func (c *Client) printVerbose(result *wsstat.Result) {
 	for _, values := range result.IPs {
 		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
 	}
-	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent:"), result.MessageCount)
+	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent"), result.MessageCount)
 	for key, values := range result.RequestHeaders {
 		if key == "Sec-WebSocket-Version" {
 			fmt.Printf(printValueTemp,
@@ -420,12 +422,30 @@ func (c *Client) printVVerbose(result *wsstat.Result) {
 	}
 	fmt.Println(c.colorizeOrange("Request headers"))
 	for key, values := range result.RequestHeaders {
-		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), c.headerValue(key, values))
 	}
 	fmt.Println(c.colorizeOrange("Response headers"))
 	for key, values := range result.ResponseHeaders {
-		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), strings.Join(values, ", "))
+		fmt.Printf(printIndentedValueTemp, c.colorizeGreen(key), c.headerValue(key, values))
 	}
+}
+
+// sensitiveHeaders are header names whose values are masked in -vv output unless
+// --show-secrets is set. Compared case-insensitively against the canonical form.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Proxy-Authorization": true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+}
+
+// headerValue renders a header's values for -vv output, masking sensitive ones unless
+// --show-secrets is set.
+func (c *Client) headerValue(key string, values []string) string {
+	if !c.showSecrets && sensitiveHeaders[http.CanonicalHeaderKey(key)] {
+		return "[redacted]"
+	}
+	return strings.Join(values, ", ")
 }
 
 // PrintRequestDetails prints connection and request information to stdout.
@@ -585,6 +605,10 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 	// Raw emits payload bytes only; no timing report.
 	if c.output == OutputRaw {
 		return nil
+	}
+
+	for _, warn := range resultWarnings(result.Result) {
+		fmt.Printf("%s %s\n", c.colorizeOrange("warning:"), warn)
 	}
 
 	switch {

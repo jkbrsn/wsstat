@@ -7,6 +7,22 @@ import (
 
 // revive:disable:line-length-limit aligned help text
 
+// printHelpFor prints command-specific usage when a known subcommand name follows
+// `help`/`-h`/`--help` (e.g. `wsstat help stream`), falling back to the top-level usage.
+func printHelpFor(rest []string, w io.Writer) {
+	if len(rest) > 0 {
+		switch rest[0] {
+		case "measure":
+			printMeasureUsage(w)
+			return
+		case "stream":
+			printStreamUsage(w)
+			return
+		}
+	}
+	printTopUsage(w)
+}
+
 // printTopUsage prints the top-level usage listing the two subcommands.
 func printTopUsage(w io.Writer) {
 	fmt.Fprintf(w, "wsstat %s\n", version)
@@ -24,6 +40,14 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --version                       print program version and exit")
 	fmt.Fprintln(w, "  -h, --help                      show this help")
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "EXIT CODES:")
+	fmt.Fprintln(w, "  0   success (also --help and --version)")
+	fmt.Fprintln(w, "  1   runtime failure (dial, measurement, stream, or output write)")
+	fmt.Fprintln(w, "  2   usage error (bad flag or argument)")
+	fmt.Fprintln(w, "  130 interrupted (second Ctrl-C forces teardown)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Under -o json a runtime failure (exit 1) prints a {\"type\":\"error\"} envelope to stdout.")
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run 'wsstat measure -h' or 'wsstat stream -h' for command-specific flags.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
@@ -38,7 +62,8 @@ func printTopUsage(w io.Writer) {
 func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "Input (choose one):")
 	fmt.Fprintln(w, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
-	fmt.Fprintln(w, "  -t, --text <string>            text message to send")
+	fmt.Fprintln(w, "      --rpc-version <string>     JSON-RPC version for --rpc-method: 2.0 or 1.0 [default: 2.0]")
+	fmt.Fprintln(w, "  -t, --text <string>            text message to send (@file or @- reads file/stdin)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Output:")
 	fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
@@ -47,9 +72,11 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
 	fmt.Fprintln(w, "  -v, --verbose                  increase verbosity (level 1)")
 	fmt.Fprintln(w, "  -vv                            increase verbosity (level 2)")
+	fmt.Fprintln(w, "      --show-secrets             show sensitive header values in -vv (masked by default)")
 	fmt.Fprintln(w, "      --color <string>           color output: auto, always, never [default: auto]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Note: --body, --clip, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	fmt.Fprintln(w, "        NO_COLOR (any value) in the environment forces color off under --color auto.")
 	fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Connection:")
@@ -58,6 +85,12 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(w, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
 	fmt.Fprintln(w, "      --close-timeout <duration> max wait for the peer's close echo [default: 3s; capped at 5s]")
+	fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
+	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
+	fmt.Fprintln(w, "      --validate-utf8            validate UTF-8 on inbound text frames; warn on violations")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Diagnostics:")
+	fmt.Fprintln(w, "      --debug                    emit core debug logs to stderr (independent of -v/-vv)")
 }
 
 // printMeasureUsage prints usage for the measure subcommand.

@@ -215,7 +215,7 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 
 // newSubscriptionID generates a new subscription ID.
 func (ws *WSStat) newSubscriptionID() string {
-	val := atomic.AddUint64(&ws.nextSubscriptionID, 1)
+	val := ws.nextSubscriptionID.Add(1)
 	return fmt.Sprintf("%s%d", subscriptionIDPrefix, val)
 }
 

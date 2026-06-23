@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/rs/zerolog"
@@ -34,6 +35,16 @@ const (
 	defaultChanBufferSize = 8
 	// defaultSubscriptionBufferSize is the default queue length for subscription deliveries.
 	defaultSubscriptionBufferSize = 32
+	// defaultReadLimit bounds a single inbound message (16 MiB). Covers realistic payloads
+	// while keeping coder's OOM guard; raise or disable via WithReadLimit.
+	defaultReadLimit = 16 << 20
+	// maxErrBodyBytes caps how much of a failed-handshake response body is read into the
+	// returned error, so a hostile server cannot reflect an unbounded body into it.
+	maxErrBodyBytes = 4 << 10
+
+	// maxCloseReasonBytes is the largest close-handshake reason CloseWith accepts: the RFC 6455
+	// control-frame payload limit (125 bytes) minus the 2-byte close code.
+	maxCloseReasonBytes = 123
 
 	// TextMessage denotes a UTF-8 encoded text message (e.g. JSON). Numerically identical to
 	// websocket.MessageText so the public int-based API stays stable across the transport swap.
@@ -53,6 +64,16 @@ func fromCoderType(mt websocket.MessageType) int {
 	return int(mt)
 }
 
+// Exported error sentinels for the failure classes library consumers branch on. Returned
+// (via errors.Is) by the connection methods; the one-shot Measure* functions propagate them.
+var (
+	// ErrConnectionNotEstablished is returned when a read or ping is attempted before a
+	// successful dial.
+	ErrConnectionNotEstablished = errors.New("wsstat: connection not established")
+	// ErrClosed is returned when an operation is attempted on a closed connection.
+	ErrClosed = errors.New("wsstat: connection closed")
+)
+
 // documentedDefaultHeaders lists the known headers the WebSocket library sets by default.
 var documentedDefaultHeaders = map[string][]string{
 	"Upgrade":               {"websocket"}, // Constant value
@@ -67,6 +88,16 @@ var documentedDefaultHeaders = map[string][]string{
 }
 
 // WSStat wraps the coder/websocket package with latency measuring capabilities.
+//
+// Concurrency: DialContext must complete (single-threaded) before any other method is
+// called. After a successful dial, ExtractResult and Close are safe to call concurrently
+// with each other and with the read/write/subscription methods; ExtractResult takes a
+// consistent snapshot even while Close is finalizing the Result. Close is idempotent and
+// may be called from multiple goroutines. WriteMessage/WriteMessageJSON and
+// ReadMessage/ReadMessageJSON/PingPong are not internally serialized against each other:
+// concurrent writers (or concurrent readers) interleave on the shared channels, so callers
+// that need ordering must coordinate it. Subscribe/SubscribeOnce are safe to call
+// concurrently.
 type WSStat struct {
 	log zerolog.Logger
 
@@ -75,6 +106,7 @@ type WSStat struct {
 	httpClient *http.Client
 	timings    *wsTimings
 	result     *Result
+	resultMu   sync.Mutex // guards calculateResultLocked, the ExtractResult copy, and closeDone
 
 	readChan  chan *wsRead
 	writeChan chan *wsWrite
@@ -82,7 +114,7 @@ type WSStat struct {
 	subscriptionMu            sync.RWMutex
 	subscriptions             map[string]*subscriptionState
 	subscriptionArchive       map[string]SubscriptionStats
-	nextSubscriptionID        uint64
+	nextSubscriptionID        atomic.Uint64
 	defaultSubscriptionBuffer int
 	subscriptionFirstEvent    time.Time
 	subscriptionLastEvent     time.Time
@@ -90,13 +122,24 @@ type WSStat struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
+	closed    atomic.Bool // set once Close begins; distinguishes closed from never-dialed
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout    time.Duration
-	closeGrace time.Duration
-	tlsConf    *tls.Config
-	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
+	timeout      time.Duration
+	closeGrace   time.Duration
+	tlsConf      *tls.Config
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	readLimit    int64             // max inbound message size; -1 disables the limit
+	subprotocols []string          // WebSocket subprotocols to negotiate
+	headers      http.Header       // headers merged into every handshake
+	compress     bool              // negotiate permessage-deflate
+	validateUTF8 bool              // validate UTF-8 on inbound text frames
+	invalidUTF8  atomic.Int64      // count of text frames that failed UTF-8 validation
+
+	// Close-handshake frame, settable via CloseWith before teardown.
+	closeStatus atomic.Int64           // handshake close code (default StatusNormalClosure)
+	closeReason atomic.Pointer[string] // handshake close reason (nil means empty)
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -112,6 +155,10 @@ func New(opts ...Option) *WSStat {
 	}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	// Resolve the read limit: 0 (unset) uses the default; negative disables the limit.
+	if cfg.readLimit == 0 {
+		cfg.readLimit = defaultReadLimit
 	}
 
 	result := &Result{}
@@ -130,10 +177,16 @@ func New(opts ...Option) *WSStat {
 		closeGrace:                cfg.closeGrace,
 		tlsConf:                   cfg.tlsConfig,
 		resolves:                  cfg.resolves,
+		readLimit:                 cfg.readLimit,
+		subprotocols:              cfg.subprotocols,
+		headers:                   cfg.headers,
+		compress:                  cfg.compress,
+		validateUTF8:              cfg.validateUTF8,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
+	ws.closeStatus.Store(int64(websocket.StatusNormalClosure))
 	// Built after ws so the transport can hand the raw conn back via captureNetConn.
 	ws.httpClient = newHTTPClient(
 		result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves, ws.captureNetConn,
@@ -175,10 +228,10 @@ type wsTimings struct {
 	mu sync.Mutex // Protects messageWrites and messageReads
 }
 
-// calculateResult calculates the durations of each phase of the WebSocket connection based
-// on the current state of the WSStat timings.
+// calculateResultLocked calculates the durations of each phase of the WebSocket connection
+// based on the current state of the WSStat timings. The caller must hold ws.resultMu.
 // Note: if there haven't been as many message reads as writes, MessageRTT will be 0.
-func (ws *WSStat) calculateResult() {
+func (ws *WSStat) calculateResultLocked() {
 	// Calculate durations per phase
 	ws.result.DNSLookup = ws.timings.dnsLookupDone.Sub(ws.timings.dialStart)
 	ws.result.TCPConnection = ws.timings.tcpConnected.Sub(ws.timings.dnsLookupDone)
@@ -243,6 +296,8 @@ func (ws *WSStat) calculateResult() {
 		ws.result.MessageCount += subMessages
 	}
 
+	ws.result.InvalidUTF8Frames = int(ws.invalidUTF8.Load())
+
 	// If the WSStat is not yet closed, set the total time to the current time
 	if ws.timings.closeDone.IsZero() {
 		ws.result.TotalTime = time.Since(ws.timings.dialStart)
@@ -283,6 +338,14 @@ func (ws *WSStat) readPump() {
 				ws.log.Debug().Msg("Context done, dropping error read")
 			}
 			return
+		}
+
+		// coder/websocket performs no UTF-8 validation on text frames (RFC 6455 §5.6);
+		// when opted in, flag invalid payloads via the logger and the Result counter rather
+		// than failing the connection, since this is a measurement tool.
+		if ws.validateUTF8 && messageType == TextMessage && !utf8.Valid(p) {
+			ws.invalidUTF8.Add(1)
+			ws.log.Warn().Int("bytes", len(p)).Msg("received text frame with invalid UTF-8")
 		}
 
 		// Message read successfully, dispatch if not handled by subscription
@@ -341,65 +404,49 @@ func (ws *WSStat) writePump() {
 	}
 }
 
-// Dial establishes a new WebSocket connection using the custom dialer defined in this package.
-// If required, specify custom headers to merge with the default headers.
+// DialContext establishes a new WebSocket connection bound to ctx. Canceling ctx (or calling
+// Close) tears down the connection and unblocks in-flight reads and writes. If required, specify
+// custom headers to merge with the default headers.
 // Sets times: dialStart, wsHandshakeDone
-func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
+func (ws *WSStat) DialContext(
+	ctx context.Context, targetURL *url.URL, customHeaders http.Header,
+) error {
+	// Install the connection context from the caller, replacing the placeholder created in New so
+	// the pumps and read/write paths honor caller cancellation and deadlines.
+	ws.cancel()
+	ws.ctx, ws.cancel = context.WithCancel(ctx)
+
 	ws.result.URL = targetURL
-	headers := cloneHeaders(customHeaders)
+	// Option headers form the base; headers passed to this call override them per key.
+	headers := cloneHeaders(ws.headers)
+	for name, values := range customHeaders {
+		headers[name] = append([]string(nil), values...)
+	}
+	compression := websocket.CompressionDisabled
+	if ws.compress {
+		compression = websocket.CompressionContextTakeover
+	}
 	ws.timings.dialStart = time.Now()
 	conn, resp, err := websocket.Dial(ws.ctx, targetURL.String(), &websocket.DialOptions{
-		HTTPClient: ws.httpClient,
-		HTTPHeader: headers,
+		HTTPClient:      ws.httpClient,
+		HTTPHeader:      headers,
+		Subprotocols:    ws.subprotocols,
+		CompressionMode: compression,
 	})
 	if err != nil {
 		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBodyBytes))
 			defer func() {
 				_ = resp.Body.Close()
 			}()
-			return fmt.Errorf("failed dial response '%s': %v", string(body), err)
+			return fmt.Errorf("failed dial response '%s': %w", string(body), err)
 		}
-		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
+		return fmt.Errorf("failed to establish WebSocket connection: %w", err)
 	}
 	ws.timings.wsHandshakeDone = time.Now()
-	conn.SetReadLimit(-1) // restore unlimited-read behavior (coder defaults to 32 KiB)
+	conn.SetReadLimit(ws.readLimit) // bound a single message; negative disables the limit
 	ws.conn.Store(conn)
-
-	// Lookup IP before starting pumps so slow DNS doesn't let idle read deadlines
-	// close the connection and cancel the context while we wait. If a resolve
-	// override is present, use it and skip DNS entirely.
-	overrideIP := ""
-	if ws.resolves != nil {
-		host := strings.ToLower(targetURL.Hostname())
-		port := targetURL.Port()
-		if port == "" {
-			switch targetURL.Scheme {
-			case "wss":
-				port = "443"
-			case "ws":
-				port = "80"
-			default:
-				// Unknown scheme; leave port empty to skip override lookup
-			}
-		}
-		if ip, ok := ws.resolves[net.JoinHostPort(host, port)]; ok {
-			overrideIP = ip
-		}
-	}
-
-	if overrideIP != "" {
-		ws.result.IPs = []string{overrideIP}
-	} else {
-		ips, err := net.LookupIP(targetURL.Hostname())
-		if err != nil {
-			return fmt.Errorf("failed IP lookup: %v", err)
-		}
-		ws.result.IPs = make([]string, len(ips))
-		for i, ip := range ips {
-			ws.result.IPs[i] = ip.String()
-		}
-	}
+	// Result.IPs was set to the connected address by the transport during the handshake.
 
 	// Start the read and write pumps after successful setup
 	ws.wgPumps.Add(2)
@@ -409,6 +456,10 @@ func (ws *WSStat) Dial(targetURL *url.URL, customHeaders http.Header) error {
 	// Capture request and response headers
 	ws.result.RequestHeaders = applyDefaultHeaders(headers)
 	ws.result.ResponseHeaders = resp.Header
+
+	// Capture the negotiated subprotocol and compression extension.
+	ws.result.Subprotocol = conn.Subprotocol()
+	ws.result.Compression = resp.Header.Get("Sec-WebSocket-Extensions")
 
 	return nil
 }
@@ -498,46 +549,17 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	}
 }
 
-// OneHitMessage sends a single message through the WebSocket connection, and waits for
-// the response. Note: this function assumes that the response received is the response to the
-// sent message, make sure to only run this function sequentially to avoid unexpected behavior.
-// Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) OneHitMessage(messageType int, data []byte) ([]byte, error) {
-	ws.WriteMessage(messageType, data)
-
-	// Assuming immediate response
-	_, p, err := ws.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	return p, nil
-}
-
-// OneHitMessageJSON sends a single JSON message through the WebSocket connection, and waits for
-// the response. Note: this function assumes that the response received is the response to the
-// sent message, make sure to only run this function sequentially to avoid unexpected behavior.
-// Sets result times: MessageReads, MessageWrites
-func (ws *WSStat) OneHitMessageJSON(v any) (any, error) {
-	ws.WriteMessageJSON(v)
-
-	// Assuming immediate response
-	resp, err := ws.ReadMessageJSON()
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
-}
-
 // PingPong sends a ping through the WebSocket connection and blocks until the matching pong
 // is received. coder's Ping is a synchronous round-trip, so both the write and read timings
 // are recorded around the single call.
 // Sets result times: MessageReads, MessageWrites
 func (ws *WSStat) PingPong() error {
+	if ws.closed.Load() {
+		return ErrClosed
+	}
 	conn := ws.conn.Load()
 	if conn == nil {
-		return ws.ctx.Err()
+		return ErrConnectionNotEstablished
 	}
 
 	ws.timings.mu.Lock()
@@ -556,26 +578,39 @@ func (ws *WSStat) PingPong() error {
 	return nil
 }
 
+// classifyReadErr applies the close-status contract shared by the read methods: a
+// normal or going-away close passes through as-is, any other close status is wrapped
+// as an unexpected close error, and non-close errors pass through unchanged.
+func classifyReadErr(err error) error {
+	status := websocket.CloseStatus(err)
+	if status != -1 &&
+		status != websocket.StatusNormalClosure &&
+		status != websocket.StatusGoingAway {
+		return fmt.Errorf("unexpected close error: %w", err)
+	}
+	return err
+}
+
 // ReadMessage reads a message from the WebSocket connection and measures the round-trip time.
 // If an error occurs, it will be returned.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessage() (int, []byte, error) {
+	if ws.closed.Load() {
+		return 0, nil, ErrClosed
+	}
+	if ws.conn.Load() == nil {
+		return 0, nil, ErrConnectionNotEstablished
+	}
 	select {
 	case <-ws.ctx.Done():
 		return 0, nil, ws.ctx.Err()
 	case msg, ok := <-ws.readChan:
 		if !ok {
-			return 0, nil, ws.ctx.Err()
+			return 0, nil, ErrClosed
 		}
 
 		if msg.err != nil {
-			status := websocket.CloseStatus(msg.err)
-			if status != -1 &&
-				status != websocket.StatusNormalClosure &&
-				status != websocket.StatusGoingAway {
-				return msg.messageType, nil, fmt.Errorf("unexpected close error: %v", msg.err)
-			}
-			return msg.messageType, nil, msg.err
+			return msg.messageType, nil, classifyReadErr(msg.err)
 		}
 
 		ws.timings.mu.Lock()
@@ -589,16 +624,22 @@ func (ws *WSStat) ReadMessage() (int, []byte, error) {
 // ReadMessageJSON reads a message from the WebSocket connection and measures the round-trip time.
 // Sets time: MessageReads
 func (ws *WSStat) ReadMessageJSON() (any, error) {
+	if ws.closed.Load() {
+		return nil, ErrClosed
+	}
+	if ws.conn.Load() == nil {
+		return nil, ErrConnectionNotEstablished
+	}
 	select {
 	case <-ws.ctx.Done():
 		return nil, ws.ctx.Err()
 	case msg, ok := <-ws.readChan:
 		if !ok {
-			return nil, ws.ctx.Err()
+			return nil, ErrClosed
 		}
 
 		if msg.err != nil {
-			return nil, msg.err
+			return nil, classifyReadErr(msg.err)
 		}
 
 		ws.timings.mu.Lock()
@@ -616,8 +657,11 @@ func (ws *WSStat) ReadMessageJSON() (any, error) {
 }
 
 // ExtractResult calculate the current results and returns a copy of the Result object.
+// Safe to call concurrently with the read/write/subscription methods and with Close.
 func (ws *WSStat) ExtractResult() *Result {
-	ws.calculateResult()
+	ws.resultMu.Lock()
+	defer ws.resultMu.Unlock()
+	ws.calculateResultLocked()
 
 	resultCopy := *ws.result
 	if ws.result.Subscriptions != nil {
@@ -634,10 +678,15 @@ func (ws *WSStat) ExtractResult() *Result {
 // so on timeout the raw socket is forced shut, which unblocks coder's read and lets the
 // close goroutine return instead of stalling the full 5s.
 func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
+	status := websocket.StatusCode(ws.closeStatus.Load())
+	reason := ""
+	if p := ws.closeReason.Load(); p != nil {
+		reason = *p
+	}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		if err := conn.Close(status, reason); err != nil {
 			ws.log.Debug().Err(err).Msg("close handshake")
 		}
 	}()
@@ -656,10 +705,61 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 	}
 }
 
+// Close-code bounds for CloseWith validation (RFC 6455 §7.4). closeCodeReserved (1004) is
+// reserved; the 3000-4999 range is for registered/private application use. The 1005/1006/1015
+// codes are local-only sentinels (via coder's StatusNoStatusRcvd/AbnormalClosure/TLSHandshake)
+// that must never be sent on the wire.
+const (
+	closeCodeReserved websocket.StatusCode = 1004
+	closeCodeAppMin   websocket.StatusCode = 3000
+	closeCodeAppMax   websocket.StatusCode = 4999
+)
+
+// validCloseCode reports whether code is a close status that may be sent on the wire. Mirrors
+// coder/websocket's internal validation, leaving 1000-1011 (minus the local-only codes) and
+// the 3000-4999 application range.
+func validCloseCode(code int) bool {
+	c := websocket.StatusCode(code)
+	switch c {
+	case closeCodeReserved, websocket.StatusNoStatusRcvd,
+		websocket.StatusAbnormalClosure, websocket.StatusTLSHandshake:
+		return false
+	}
+	if c >= websocket.StatusNormalClosure && c <= websocket.StatusBadGateway {
+		return true
+	}
+	return c >= closeCodeAppMin && c <= closeCodeAppMax
+}
+
+// CloseWith closes the connection sending a chosen close code and reason in the RFC 6455
+// closing handshake, instead of Close's default StatusNormalClosure (1000) with an empty
+// reason. code must be a sendable close status (1000-1003, 1007-1011, or 3000-4999) and
+// reason at most 123 bytes (the control-frame payload limit minus the 2-byte code); an invalid
+// code or over-long reason returns an error without closing. Returns ErrClosed if the
+// connection is already closing. Otherwise teardown proceeds exactly as Close, which it calls;
+// like Close it is idempotent, but the code/reason only take effect when CloseWith wins the
+// race to initiate the close.
+func (ws *WSStat) CloseWith(code int, reason string) error {
+	if ws.closed.Load() {
+		return ErrClosed
+	}
+	if !validCloseCode(code) {
+		return fmt.Errorf("wsstat: invalid close code %d", code)
+	}
+	if len(reason) > maxCloseReasonBytes {
+		return fmt.Errorf("wsstat: close reason exceeds %d bytes", maxCloseReasonBytes)
+	}
+	ws.closeStatus.Store(int64(code))
+	ws.closeReason.Store(&reason)
+	ws.Close()
+	return nil
+}
+
 // Close closes the WebSocket connection and cleans up the WSStat instance.
 // Sets result times: CloseDone
 func (ws *WSStat) Close() {
 	ws.closeOnce.Do(func() {
+		ws.closed.Store(true)
 		// Graceful close FIRST, while the read pump is still alive so the server's Close
 		// echo is read off the socket before TCP teardown. Ordering is load-bearing:
 		// canceling the context first would kill the read pump before the echo arrives
@@ -669,7 +769,11 @@ func (ws *WSStat) Close() {
 		}
 
 		// Record closeDone after the handshake completes for accurate timing.
+		// Guarded by resultMu because calculateResultLocked reads it and a concurrent
+		// ExtractResult may be calculating at the same time.
+		ws.resultMu.Lock()
 		ws.timings.closeDone = time.Now()
+		ws.resultMu.Unlock()
 
 		// Now stop the pumps and finalize subscriptions.
 		ws.cancel()
@@ -678,7 +782,9 @@ func (ws *WSStat) Close() {
 			ws.finalizeSubscription(state, context.Canceled)
 		}
 
-		ws.calculateResult()
+		ws.resultMu.Lock()
+		ws.calculateResultLocked()
+		ws.resultMu.Unlock()
 
 		// Wait for pumps to finish
 		pumpsTimeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -742,7 +848,7 @@ func newHTTPClient(
 				return nil, err
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, nil, capture)
+			return dialWithAddresses(ctx, network, target, timeout, timings, result, nil, capture)
 		},
 
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -773,7 +879,7 @@ func newHTTPClient(
 				return tlsConn, nil
 			}
 
-			return dialWithAddresses(ctx, network, target, timeout, timings, wrap, capture)
+			return dialWithAddresses(ctx, network, target, timeout, timings, result, wrap, capture)
 		},
 	}
 
@@ -828,6 +934,7 @@ func dialWithAddresses(
 	target dialTarget,
 	timeout time.Duration,
 	timings *wsTimings,
+	result *Result,
 	wrap func(net.Conn) (net.Conn, error),
 	capture func(net.Conn),
 ) (net.Conn, error) {
@@ -841,6 +948,9 @@ func dialWithAddresses(
 		}
 
 		timings.tcpConnected = time.Now()
+		// Record the actually-connected address. Overwritten per attempt so the value
+		// reflects the IP whose connection is ultimately returned.
+		result.IPs = []string{ip}
 
 		// Capture the raw conn (not the TLS wrapper) so Close can force the underlying
 		// socket shut; closing it unblocks coder's read regardless of the TLS layer.
@@ -882,12 +992,17 @@ type Option func(*options)
 
 // options stores the configuration for a WSStat instance.
 type options struct {
-	tlsConfig  *tls.Config
-	timeout    time.Duration
-	closeGrace time.Duration
-	bufferSize int
-	logger     zerolog.Logger
-	resolves   map[string]string // DNS resolution overrides: "host:port" → "address"
+	tlsConfig    *tls.Config
+	timeout      time.Duration
+	closeGrace   time.Duration
+	bufferSize   int
+	logger       zerolog.Logger
+	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
+	readLimit    int64             // max inbound message size; 0 uses the default, -1 disables
+	subprotocols []string          // WebSocket subprotocols to negotiate
+	headers      http.Header       // headers merged into every handshake
+	compress     bool              // negotiate permessage-deflate
+	validateUTF8 bool              // validate UTF-8 on inbound text frames
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -900,8 +1015,9 @@ func WithLogger(logger zerolog.Logger) Option { return func(o *options) { o.logg
 func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
 
 // WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
-// before forcing the connection shut. Zero or negative forces an immediate teardown
-// without waiting for the echo. Defaults to 3s.
+// before forcing the connection shut. Zero or negative fires the teardown immediately
+// rather than granting a grace window; a peer that echoes in that instant may still
+// complete the handshake cleanly. Defaults to 3s.
 //
 // Only values below 5s take effect: the underlying coder/websocket library caps its
 // own close handshake at a hard-coded 5s, so Close returns by then regardless and a
@@ -915,4 +1031,35 @@ func WithTLSConfig(cfg *tls.Config) Option { return func(o *options) { o.tlsConf
 // Map key format: "host:port", value: "ip_address".
 func WithResolves(resolves map[string]string) Option {
 	return func(o *options) { o.resolves = resolves }
+}
+
+// WithReadLimit bounds the size in bytes of a single inbound message. A value of 0 keeps the
+// default (16 MiB); a negative value disables the limit (use with care: an unbounded message
+// can exhaust memory). Defaults to 16 MiB.
+func WithReadLimit(n int64) Option { return func(o *options) { o.readLimit = n } }
+
+// WithSubprotocols sets the WebSocket subprotocols to offer during the handshake, in preference
+// order. The negotiated value is reported in Result.Subprotocol.
+func WithSubprotocols(subprotocols []string) Option {
+	return func(o *options) { o.subprotocols = subprotocols }
+}
+
+// WithHeaders sets HTTP headers merged into every handshake request. Headers passed directly to
+// Dial/DialContext take precedence over these on a per-key basis.
+func WithHeaders(headers http.Header) Option {
+	return func(o *options) { o.headers = headers }
+}
+
+// WithCompression enables negotiation of the permessage-deflate extension. Disabled by default.
+// The negotiated extension is reported in Result.Compression.
+func WithCompression(enabled bool) Option {
+	return func(o *options) { o.compress = enabled }
+}
+
+// WithValidateUTF8 enables UTF-8 validation of inbound text frames. coder/websocket performs
+// none (RFC 6455 §5.6 requires text payloads to be valid UTF-8); when enabled, an invalid text
+// frame is logged at warn level and counted in Result.InvalidUTF8Frames rather than failing the
+// connection. Disabled by default.
+func WithValidateUTF8(enabled bool) Option {
+	return func(o *options) { o.validateUTF8 = enabled }
 }
