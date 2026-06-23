@@ -90,37 +90,16 @@ func (c *Client) measurePing(
 //   - OutputRaw: returns the raw response string without any parsing
 //   - OutputText/OutputJSON: attempt to parse as JSON-RPC and fall back to raw if
 //     not valid JSON-RPC. The contract controls rendering, not response parsing.
-//
-// The response may be a []string from burst measurements; if so, only the first
-// element is processed.
-func processTextResponse(response any, output Output, rpcVersion string) (any, error) {
-	// Extract first response from array if present
-	responseStr := extractFirstString(response)
-
-	switch output {
-	case OutputRaw:
-		// Raw: return response without any parsing
-		return responseStr, nil
-
-	default:
-		// Text/JSON: attempt parsing, fall back to raw
-		if str, ok := responseStr.(string); ok {
-			if decoded, err := decodeAsJSONRPC(str, rpcVersion); err == nil {
-				return decoded, nil
-			}
-		}
-		return responseStr, nil
+func processTextResponse(response string, output Output, rpcVersion string) (any, error) {
+	if output == OutputRaw {
+		// Raw: return the response without any parsing.
+		return response, nil
 	}
-}
-
-// extractFirstString normalizes response arrays to a single value.
-// If response is []string with elements, returns the first element.
-// Otherwise returns the response unchanged.
-func extractFirstString(response any) any {
-	if arr, ok := response.([]string); ok && len(arr) > 0 {
-		return arr[0]
+	// Text/JSON: attempt JSON-RPC parsing, fall back to the raw string.
+	if decoded, err := decodeAsJSONRPC(response, rpcVersion); err == nil {
+		return decoded, nil
 	}
-	return response
+	return response, nil
 }
 
 // decodeAsJSONRPC parses a string as a JSON-RPC response.

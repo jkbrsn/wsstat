@@ -207,13 +207,6 @@ func TestProcessTextResponse(t *testing.T) {
 		assert.Equal(t, "ok", asMap["result"])
 	})
 
-	t.Run("extracts first element from array", func(t *testing.T) {
-		input := []string{"first", "second", "third"}
-		result, err := processTextResponse(input, OutputText, "2.0")
-		require.NoError(t, err)
-		assert.Equal(t, "first", result)
-	})
-
 	t.Run("respects raw format", func(t *testing.T) {
 		payload := `{"jsonrpc":"2.0","result":"ok"}`
 		result, err := processTextResponse(payload, OutputRaw, "2.0")
