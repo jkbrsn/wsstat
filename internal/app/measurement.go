@@ -25,14 +25,14 @@ func (c *Client) measureText(
 		return nil, handleConnectionError(err, target.String())
 	}
 
-	var rawResponse any = rawResponses
+	// No response (empty msgs) leaves Response nil so the output layer skips it, rather than
+	// rendering the empty slice literal as the body. Mirrors measureJSON/measurePing.
+	var processedResponse any
 	if len(rawResponses) > 0 {
-		rawResponse = rawResponses[0]
-	}
-
-	processedResponse, err := processTextResponse(rawResponse, c.output, c.rpcVersion)
-	if err != nil {
-		return nil, err
+		processedResponse, err = processTextResponse(rawResponses[0], c.output, c.rpcVersion)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &MeasurementResult{

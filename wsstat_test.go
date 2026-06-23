@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -367,6 +368,61 @@ func TestSubscriptionSurvivesIdleBeyondTimeout(t *testing.T) {
 
 	sub.Cancel()
 	<-sub.Done()
+}
+
+func TestSubscriptionDecodeErrorDoesNotLeak(t *testing.T) {
+	// A decode error on a frame a subscription never matched must not be delivered to it;
+	// only the claiming subscription sees a frame (and its decode error).
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	// subA never matches and its decoder always errors.
+	subA, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("frame-a"),
+		decoder:     func(int, []byte) (any, error) { return nil, errors.New("boom") },
+		matcher:     func(int, []byte, any) bool { return false },
+	})
+	require.NoError(t, err)
+
+	// subB claims only its own echo.
+	subB, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("frame-b"),
+		matcher:     func(_ int, data []byte, _ any) bool { return string(data) == "frame-b" },
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-subB.Updates():
+		require.NoError(t, msg.Err)
+		assert.Equal(t, "frame-b", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("subB did not receive its frame")
+	}
+
+	// subA must not have received the unrelated decode error.
+	select {
+	case msg := <-subA.Updates():
+		t.Fatalf("subA received an unmatched frame: data=%q err=%v", string(msg.Data), msg.Err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	assert.EqualValues(t, 0, subA.MessageCount())
+
+	subA.Cancel()
+	subB.Cancel()
+	<-subA.Done()
+	<-subB.Done()
+}
+
+func TestDialContextNilContext(t *testing.T) {
+	ws := New()
+	defer ws.Close()
+	//nolint:staticcheck // passing nil to verify the guard returns an error, not a panic
+	err := ws.DialContext(nil, echoServerAddrWs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil context")
 }
 
 func TestSubscribeOnceReturnsFirstMessage(t *testing.T) {

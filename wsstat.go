@@ -434,6 +434,11 @@ func (ws *WSStat) writePump() {
 func (ws *WSStat) DialContext(
 	ctx context.Context, targetURL *url.URL, customHeaders http.Header,
 ) error {
+	// A nil ctx would panic in context.WithCancel below; the Measure* contract promises a clean
+	// abort instead, and direct callers get the same guarantee.
+	if ctx == nil {
+		return errors.New("nil context")
+	}
 	// Install the connection context from the caller, replacing the placeholder created in New so
 	// the pumps and read/write paths honor caller cancellation and deadlines.
 	ws.cancel()

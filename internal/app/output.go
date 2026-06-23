@@ -430,8 +430,8 @@ func (c *Client) printVVerbose(result *wsstat.Result) {
 	}
 }
 
-// sensitiveHeaders are header names whose values are masked in -vv output unless
-// --show-secrets is set. Compared case-insensitively against the canonical form.
+// sensitiveHeaders are the standard header names whose values are masked in -vv output
+// unless --show-secrets is set. Compared case-insensitively against the canonical form.
 var sensitiveHeaders = map[string]bool{
 	"Authorization":       true,
 	"Proxy-Authorization": true,
@@ -439,10 +439,33 @@ var sensitiveHeaders = map[string]bool{
 	"Set-Cookie":          true,
 }
 
+// sensitiveHeaderSubstrings flag non-standard credential headers (e.g. X-Api-Key,
+// X-Auth-Token, X-Amz-Security-Token) that the standard set above misses; many WS/RPC
+// endpoints authenticate via custom headers. Matched case-insensitively as substrings of
+// the header name, so masking errs toward over-redacting (revealed by --show-secrets).
+var sensitiveHeaderSubstrings = []string{
+	"auth", "cookie", "token", "secret", "api-key", "apikey", "password",
+}
+
+// isSensitiveHeader reports whether a header's value should be masked in -vv output.
+func isSensitiveHeader(key string) bool {
+	canonical := http.CanonicalHeaderKey(key)
+	if sensitiveHeaders[canonical] {
+		return true
+	}
+	lower := strings.ToLower(canonical)
+	for _, s := range sensitiveHeaderSubstrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // headerValue renders a header's values for -vv output, masking sensitive ones unless
 // --show-secrets is set.
 func (c *Client) headerValue(key string, values []string) string {
-	if !c.showSecrets && sensitiveHeaders[http.CanonicalHeaderKey(key)] {
+	if !c.showSecrets && isSensitiveHeader(key) {
 		return "[redacted]"
 	}
 	return strings.Join(values, ", ")

@@ -388,7 +388,10 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 			match = true
 		}
 
-		if !match && decodeErr == nil {
+		// Deliver only frames this subscription claimed. A decode error is reported via the
+		// envelope's Err for a matched frame, but must not surface on subscriptions the frame
+		// never belonged to (which would inflate their error stats with unrelated traffic).
+		if !match {
 			continue
 		}
 
