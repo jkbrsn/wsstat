@@ -63,17 +63,24 @@ jobs:
           echo "Latest FINAL tag: $LATEST_FINAL_TAG"
           echo "VERSION file:     $NEW_VERSION"
 
-          # STRICT: VERSION must be > latest final (no equality)
+          # STRICT: VERSION must be > latest final, except when rerunning a
+          # release whose tag was already created at this exact commit.
           if [[ "$NEW_VERSION" == "$OLD_FINAL_VERSION" ]]; then
-            echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
-            exit 1
-          fi
-          if [[ "$(printf '%s\n' "$OLD_FINAL_VERSION" "$NEW_VERSION" | sort -V | tail -n1)" != "$NEW_VERSION" ]]; then
+            OLD_FINAL_COMMIT=$(git rev-list -n 1 "$LATEST_FINAL_TAG" 2>/dev/null || true)
+            if [[ -n "$OLD_FINAL_COMMIT" && "$OLD_FINAL_COMMIT" == "$GITHUB_SHA" ]]; then
+              echo "VERSION matches existing final tag at this commit; continuing release rerun"
+            else
+              echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
+              exit 1
+            fi
+          elif [[ "$(printf '%s\n' "$OLD_FINAL_VERSION" "$NEW_VERSION" | sort -V | tail -n1)" != "$NEW_VERSION" ]]; then
             echo "::error::VERSION ($NEW_VERSION) must be greater than latest final ($OLD_FINAL_VERSION)"
             exit 1
           fi
 
-          echo "VERSION is newer than latest final: $OLD_FINAL_VERSION → $NEW_VERSION"
+          if [[ "$NEW_VERSION" != "$OLD_FINAL_VERSION" ]]; then
+            echo "VERSION is newer than latest final: $OLD_FINAL_VERSION → $NEW_VERSION"
+          fi
 
   go-version-align:
     name: Go version alignment
@@ -178,9 +185,9 @@ jobs:
           raw=$(cat VERSION)
           VERSION="${raw#v}"  # normalized base: X.Y.Z
 
-          # existence helpers
-          final_exists()   { git rev-parse "v${VERSION}" >/dev/null 2>&1; }
-          any_rc_tags()    { git tag --list "v${VERSION}-rc*" | grep -q .; }
+          tag_commit() {
+            git rev-list -n 1 "$1" 2>/dev/null || true
+          }
 
           # find next rc number (supports both -rc1 and -rc.1 historical patterns)
           next_rc_tag() {
@@ -197,27 +204,43 @@ jobs:
             fi
           }
 
-          # guard: do not allow prerelease/final if final already exists for this version
-          if final_exists; then
+          final_commit="$(tag_commit "v${VERSION}")"
+          if [[ -n "$final_commit" ]]; then
             if [[ "$PRERELEASE" == "true" ]]; then
               echo "::error::Cannot create prerelease: final tag v${VERSION} already exists"
-            else
-              echo "::error::Final tag v${VERSION} already exists; bump VERSION first"
+              exit 1
             fi
-            exit 1
+            if [[ "$final_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Final tag v${VERSION} exists at $final_commit, not $GITHUB_SHA"
+              exit 1
+            else
+              echo "Final tag v${VERSION} already exists at this commit; continuing release rerun"
+            fi
           fi
 
           if [[ "$PRERELEASE" == "true" ]]; then
-            TAG="$(next_rc_tag "$VERSION")"
+            EXISTING_HEAD_RC=$(git tag --list "v${VERSION}-rc*" \
+              | while read -r tag; do
+                  if [[ "$(tag_commit "$tag")" == "$GITHUB_SHA" ]]; then
+                    echo "$tag"
+                  fi
+                done \
+              | sort -V | tail -n1 || true)
+            if [[ -n "${EXISTING_HEAD_RC:-}" ]]; then
+              TAG="$EXISTING_HEAD_RC"
+              echo "Reusing prerelease tag $TAG at this commit"
+            else
+              TAG="$(next_rc_tag "$VERSION")"
+            fi
             IS_PRE="true"
           else
             TAG="v${VERSION}"
             IS_PRE="false"
           fi
 
-          # final guard: avoid accidental retagging if somehow exists
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists"
+          existing_commit="$(tag_commit "$TAG")"
+          if [[ -n "$existing_commit" && "$existing_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $TAG exists at $existing_commit, not $GITHUB_SHA"
             exit 1
           fi
 
@@ -239,32 +262,57 @@ jobs:
           mv ./bin/wsstat ./bin/wsstat-${{ steps.compute_tag.outputs.tag }}
           ls -lh ./bin/
 
-      - name: Create Git tag (local + remote via API)
+      - name: Reconcile release tag (local + remote)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="${{ steps.compute_tag.outputs.tag }}"
+          WANT_SHA="${GITHUB_SHA}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Local annotated tag: lets git-cliff resolve the `prev..TAG` range and
-          # lets "Find previous final tag" see TAG in `git tag --list`.
-          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-            git tag -a "$TAG" -m "chore(release): $TAG"
+          # Local tag: lets git-cliff resolve the `prev..TAG` range and lets
+          # "Find previous final tag" see TAG in `git tag --list`.
+          LOCAL_SHA=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
+          if [[ -n "$LOCAL_SHA" && "$LOCAL_SHA" != "$WANT_SHA" ]]; then
+            echo "::error::Local tag ${TAG} points at ${LOCAL_SHA}, not ${WANT_SHA}"
+            exit 1
+          fi
+          if [[ -z "$LOCAL_SHA" ]]; then
+            git tag -a "$TAG" -m "chore(release): $TAG" "$WANT_SHA"
           fi
 
-          # Remote tag via the REST git-refs API (NOT git push), since it must exist
-          # before the changelog step, to allow git-cliff to resolves the tag against the remote.
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Remote tag ${TAG} already exists; skipping."
-          else
+          # Remote tag via the REST git-refs API, since it must exist before the
+          # changelog step for git-cliff's remote lookups.
+          REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" 2>/dev/null || true)
+          if [[ -z "$REF_JSON" ]]; then
             gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/tags/${TAG}" \
-              -f sha="${GITHUB_SHA}" >/dev/null
-            echo "Created remote tag ${TAG} -> ${GITHUB_SHA}"
+              -f sha="${WANT_SHA}" >/dev/null
+            echo "Created remote tag ${TAG} -> ${WANT_SHA}"
+            exit 0
           fi
+
+          HAVE_SHA=$(jq -r '.object.sha' <<<"$REF_JSON")
+          HAVE_TYPE=$(jq -r '.object.type' <<<"$REF_JSON")
+          while [[ "$HAVE_TYPE" == "tag" ]]; do
+            TAG_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${HAVE_SHA}")
+            HAVE_SHA=$(jq -r '.object.sha' <<<"$TAG_JSON")
+            HAVE_TYPE=$(jq -r '.object.type' <<<"$TAG_JSON")
+          done
+
+          if [[ "$HAVE_TYPE" != "commit" ]]; then
+            echo "::error::Remote tag ${TAG} points to unsupported object type ${HAVE_TYPE}"
+            exit 1
+          fi
+          if [[ "$HAVE_SHA" != "$WANT_SHA" ]]; then
+            echo "::error::Remote tag ${TAG} points at ${HAVE_SHA}, not ${WANT_SHA}"
+            exit 1
+          fi
+
+          echo "Remote tag ${TAG} already points at ${WANT_SHA}; continuing."
 
       - name: Find previous final tag (-rc.N excluded)
         id: prev_final
@@ -302,7 +350,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name:         ${{ steps.compute_tag.outputs.tag }}
-          target_commitish: ${{ github.sha }}  # API creates the remote tag
           name:             wsstat ${{ steps.compute_tag.outputs.tag }}
           body:             ${{ steps.compute_tag.outputs.is_prerelease == 'true'
                               && steps.git-cliff-rc.outputs.content
