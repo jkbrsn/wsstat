@@ -239,20 +239,31 @@ jobs:
           mv ./bin/wsstat ./bin/wsstat-${{ steps.compute_tag.outputs.tag }}
           ls -lh ./bin/
 
-      - name: Create local Git tag (not pushed)
+      - name: Create Git tag (local + remote via API)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="${{ steps.compute_tag.outputs.tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Local annotated tag only: it lets git-cliff resolve the `prev..TAG`
-          # range and lets "Find previous final tag" see TAG in `git tag --list`.
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists locally; skipping."
-          else
+          # Local annotated tag: lets git-cliff resolve the `prev..TAG` range and
+          # lets "Find previous final tag" see TAG in `git tag --list`.
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
             git tag -a "$TAG" -m "chore(release): $TAG"
+          fi
+
+          # Remote tag via the REST git-refs API (NOT git push), since it must exist
+          # before the changelog step, to allow git-cliff to resolves the tag against the remote.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Remote tag ${TAG} already exists; skipping."
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${GITHUB_SHA}" >/dev/null
+            echo "Created remote tag ${TAG} -> ${GITHUB_SHA}"
           fi
 
       - name: Find previous final tag (-rc.N excluded)
