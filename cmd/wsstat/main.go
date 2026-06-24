@@ -115,7 +115,7 @@ func main() {
 	case args[0] == "--version" || args[0] == "-version":
 		fmt.Printf("wsstat %s\n", version)
 		return
-	case args[0] == "help" || args[0] == "-h" || args[0] == "--help":
+	case isHelpArg(args[0]):
 		printHelpFor(args[1:], os.Stdout)
 		return
 	default:
@@ -129,6 +129,19 @@ func main() {
 		os.Exit(exitUsage)
 	default:
 		fail(err)
+	}
+}
+
+// isHelpArg reports whether a top-level argument requests help. It accepts every
+// spelling stdlib flag treats as help (`-h`, `-help`, `--help`) plus the bare
+// `help` subcommand word, so `wsstat -help` reaches printTopUsage instead of
+// falling through to measure.
+func isHelpArg(arg string) bool {
+	switch arg {
+	case "help", "-h", "-help", "--help":
+		return true
+	default:
+		return false
 	}
 }
 

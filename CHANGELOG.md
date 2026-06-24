@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `wsstat -help` (single-dash long form) now prints the top-level overview listing both subcommands, matching `wsstat --help` and `wsstat -h`. Previously it fell through to the `measure` usage, hiding the `stream` subcommand.
+
 ## [3.0.0] - 2026-06-23
 
 ### Added

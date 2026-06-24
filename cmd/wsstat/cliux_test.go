@@ -106,3 +106,20 @@ func TestPrintHelpFor(t *testing.T) {
 		})
 	}
 }
+
+// TestIsHelpArg guards the top-level help dispatch: every help spelling must route
+// to the overview, while subcommands and the bare form must not. Regression test for
+// `wsstat -help` (single-dash long form) falling through to the measure usage.
+func TestIsHelpArg(t *testing.T) {
+	t.Parallel()
+
+	help := []string{"help", "-h", "-help", "--help"}
+	for _, arg := range help {
+		assert.Truef(t, isHelpArg(arg), "%q should be a help arg", arg)
+	}
+
+	notHelp := []string{"measure", "stream", "--version", "-version", "wss://example.com", "-t", ""}
+	for _, arg := range notHelp {
+		assert.Falsef(t, isHelpArg(arg), "%q should not be a help arg", arg)
+	}
+}
