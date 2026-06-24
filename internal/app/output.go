@@ -588,6 +588,36 @@ func (c *Client) PrintResponse(result *MeasurementResult) error {
 	return nil
 }
 
+// RecordResponse appends a measured response payload to the response sink (see
+// recordResponse). It is a no-op when no sink is configured or the result carries no
+// response (e.g. ping-mode measure), so a measure run with --file but no payload simply
+// produces an empty file.
+func (c *Client) RecordResponse(result *MeasurementResult) error {
+	if c.respSink == nil || result == nil || result.Response == nil {
+		return nil
+	}
+	return c.writeResponseLine(rawResponseBytes(result.Response))
+}
+
+// writeResponseLine appends one response payload to the response sink as a single NDJSON line.
+// It is a no-op when no sink is configured. JSON payloads are compacted to one line so a
+// stream of JSON-RPC responses is valid .jsonl; non-JSON payloads are written verbatim. The
+// trailing newline delimits records and assumes text/JSON frames (binary frames, like the raw
+// output contract, are not newline-safe).
+func (c *Client) writeResponseLine(data []byte) error {
+	if c.respSink == nil {
+		return nil
+	}
+	line := data
+	if compact, err := renderJSON(data, true); err == nil {
+		line = []byte(compact)
+	}
+	if _, err := c.respSink.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("failed to write response file: %w", err)
+	}
+	return nil
+}
+
 // rawResponseBytes renders a measured response as verbatim bytes for the raw
 // output contract. Structured (JSON-RPC) responses are marshaled compactly.
 func rawResponseBytes(v any) []byte {

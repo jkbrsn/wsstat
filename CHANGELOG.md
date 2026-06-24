@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-24
+
+### Added
+
+- **`--file` response recording.** A new `--file <path>` flag records response payloads to a file as NDJSON (one per line), in both `measure` and `stream` modes. It is additive and orthogonal to `-o`: only response bodies go to the file, while latency summaries and start/end chrome keep going to stdout/stderr. JSON payloads are compacted to a single line so a JSON-RPC stream produces valid `.jsonl`; non-JSON payloads are written verbatim. The file is opened exclusively and the run fails rather than overwriting an existing file.
+
 ## [3.0.1] - 2026-06-24
 
 ### Changed
@@ -122,7 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/jkbrsn/wsstat/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/jkbrsn/wsstat/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/jkbrsn/wsstat/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/jkbrsn/wsstat/compare/v2.2.1...v2.2.2

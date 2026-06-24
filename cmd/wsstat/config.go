@@ -37,6 +37,7 @@ type commonFlags struct {
 	rpcVersion  string
 	text        string
 	output      string
+	file        string
 	body        string
 	color       string
 	clip        bool
@@ -69,6 +70,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 
 	fs.StringVar(&c.output, "o", "text", "output contract: text, json, or raw")
 	fs.StringVar(&c.output, "output", "text", "output contract: text, json, or raw")
+	fs.StringVar(&c.file, "file", "",
+		"record response payloads to PATH as NDJSON, one per line (fails if PATH exists)")
 	fs.StringVar(&c.body, "body", "auto", "body rendering for text output: auto or compact")
 	fs.BoolVar(&c.clip, "clip", false, "clip each rendered line to terminal width (text output, TTY only)")
 	fs.BoolVar(&c.showSecrets, "show-secrets", false,
@@ -197,6 +200,7 @@ func buildCommonOptions(
 		app.WithRPCVersion(rpcVersion),
 		app.WithTextMessage(c.text),
 		app.WithOutput(output),
+		app.WithResponseFile(c.file),
 		app.WithBodyRender(body),
 		app.WithClip(c.clip),
 		app.WithShowSecrets(c.showSecrets),
