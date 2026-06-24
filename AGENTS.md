@@ -37,8 +37,9 @@ All layers use the functional options pattern: `New(opts ...Option)` with `WithT
 - Tests start a shared `httptest` echo server on a random port (TestMain); `echoServerAddrWs` holds its URL.
 - `testify` (assert/require); CI runs with the race detector and 16x repetition.
 
-## PR/Commit Standards
+## Git Standards
 
-- Conventional commits: `feat:`, `fix:`, `docs:`, `chore(scope):`.
+- Conventional commits: `feat:`, `fix:`, `docs:`, `chore(scope):` etc.
 - `make lint && make test` must pass.
-- User-facing changes: update `CHANGELOG.md` and `VERSION`.
+- Any larger changes (new feature, behavior/API change, notable refactor): update `CHANGELOG.md` under `## [Unreleased]`.
+ 
