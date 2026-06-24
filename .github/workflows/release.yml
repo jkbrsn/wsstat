@@ -288,8 +288,17 @@ jobs:
 
           # Remote tag via the REST git-refs API, since it must exist before the
           # changelog step for git-cliff's remote lookups.
-          REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" 2>/dev/null || true)
-          if [[ -z "$REF_JSON" ]]; then
+          REF_ERR=$(mktemp)
+          trap 'rm -f "$REF_ERR"' EXIT
+          if ! REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" 2>"$REF_ERR"); then
+            STATUS=$(jq -r '.status // empty' <<<"$REF_JSON" 2>/dev/null || true)
+            if [[ "$STATUS" != "404" ]]; then
+              echo "::error::Failed to read remote tag ${TAG}"
+              [[ -n "$REF_JSON" ]] && echo "$REF_JSON"
+              cat "$REF_ERR" >&2
+              exit 1
+            fi
+
             gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/tags/${TAG}" \
               -f sha="${WANT_SHA}" >/dev/null
