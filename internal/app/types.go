@@ -86,13 +86,13 @@ type subscriptionSummaryJSON struct {
 }
 
 type subscriptionEntryJSON struct {
-	ID                 string `json:"id"`
-	Messages           uint64 `json:"messages"`
-	Bytes              uint64 `json:"bytes"`
+	ID                 string   `json:"id"`
+	Messages           uint64   `json:"messages"`
+	Bytes              uint64   `json:"bytes"`
 	FirstEventMs       *float64 `json:"first_event_ms,omitempty"`
 	LastEventMs        *float64 `json:"last_event_ms,omitempty"`
 	MeanInterArrivalMs *float64 `json:"mean_inter_arrival_ms,omitempty"`
-	Error              string `json:"error,omitempty"`
+	Error              string   `json:"error,omitempty"`
 }
 
 // errorOutputJSON is the schema-stable error envelope emitted under -o json when a runtime
