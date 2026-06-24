@@ -244,10 +244,12 @@ jobs:
             exit 1
           fi
 
-          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
-          echo "version_label=${TAG#v}"  >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"                >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=$IS_PRE"   >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "version_label=${TAG#v}"
+            echo "tag=$TAG"
+            echo "is_prerelease=$IS_PRE"
+          } >> "$GITHUB_OUTPUT"
           echo "VERSION=$VERSION"        >> "$GITHUB_ENV"
 
           echo "Computed tag: $TAG (prerelease=$IS_PRE)"
