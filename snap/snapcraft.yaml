@@ -29,7 +29,7 @@ apps:
 parts:
   go-deps:
     plugin: nil
-    source: https://go.dev/dl/go1.26.3.linux-amd64.tar.gz
+    source: https://go.dev/dl/go1.26.4.linux-amd64.tar.gz
     source-type: tar
     override-build: |
       install -d "${CRAFT_PART_INSTALL}/usr/local/go"
