@@ -75,10 +75,17 @@ jobs:
 
           echo "VERSION is newer than latest final: $OLD_FINAL_VERSION → $NEW_VERSION"
 
+  go-version-align:
+    name: Go version alignment
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/check-go-version.sh
+
   test-race:
     name: Test race
     runs-on: ubuntu-24.04
-    needs: [version-bump-check]
+    needs: [version-bump-check, go-version-align]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -95,7 +102,7 @@ jobs:
   test-flaky:
     name: Test flaky
     runs-on: ubuntu-24.04
-    needs: [version-bump-check]
+    needs: [version-bump-check, go-version-align]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -111,7 +118,7 @@ jobs:
 
   golangci-lint:
     runs-on: ubuntu-24.04
-    needs: [version-bump-check]
+    needs: [version-bump-check, go-version-align]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -130,7 +137,7 @@ jobs:
   govulncheck:
     name: Vulnerability scan
     runs-on: ubuntu-24.04
-    needs: [version-bump-check]
+    needs: [version-bump-check, go-version-align]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -145,7 +152,7 @@ jobs:
 
   release:
     name: "Build, tag & release (${{ needs.initialize.outputs.version }})"
-    needs: [version-bump-check, initialize, test-race, test-flaky, golangci-lint, govulncheck]
+    needs: [version-bump-check, initialize, go-version-align, test-race, test-flaky, golangci-lint, govulncheck]
     runs-on: ubuntu-24.04
     outputs:
       tag:           ${{ steps.compute_tag.outputs.tag }}
@@ -319,7 +326,7 @@ jobs:
   summary:
     name: Release summary
     runs-on: ubuntu-24.04
-    needs: [initialize, version-bump-check, test-race, test-flaky, golangci-lint, govulncheck, release, snap]
+    needs: [initialize, version-bump-check, go-version-align, test-race, test-flaky, golangci-lint, govulncheck, release, snap]
     if: ${{ always() }}  # ensure this job runs even if dependencies failed
     steps:
       - name: Write release summary
@@ -330,6 +337,7 @@ jobs:
             echo "### Job Status"
             echo "- Initialize:        ${{ needs.initialize.result }}"
             echo "- Version bump:      ${{ needs['version-bump-check'].result }}"
+            echo "- Go version align:  ${{ needs['go-version-align'].result }}"
             echo "- Tests (race):      ${{ needs['test-race'].result }}"
             echo "- Tests (flaky):     ${{ needs['test-flaky'].result }}"
             echo "- Lint:              ${{ needs.golangci-lint.result }}"
