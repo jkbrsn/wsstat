@@ -239,7 +239,7 @@ jobs:
           mv ./bin/wsstat ./bin/wsstat-${{ steps.compute_tag.outputs.tag }}
           ls -lh ./bin/
 
-      - name: Create Git tag
+      - name: Create local Git tag (not pushed)
         shell: bash
         run: |
           set -euo pipefail
@@ -247,11 +247,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Local annotated tag only: it lets git-cliff resolve the `prev..TAG`
+          # range and lets "Find previous final tag" see TAG in `git tag --list`.
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists; skipping tag creation."
+            echo "Tag $TAG already exists locally; skipping."
           else
             git tag -a "$TAG" -m "chore(release): $TAG"
-            git push origin "$TAG"
           fi
 
       - name: Find previous final tag (-rc.N excluded)
@@ -290,6 +291,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name:         ${{ steps.compute_tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}  # API creates the remote tag
           name:             wsstat ${{ steps.compute_tag.outputs.tag }}
           body:             ${{ steps.compute_tag.outputs.is_prerelease == 'true'
                               && steps.git-cliff-rc.outputs.content
