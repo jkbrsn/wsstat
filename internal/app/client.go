@@ -72,6 +72,13 @@ type Client struct {
 	colorMode   string // Color behavior: "auto", "always", or "never"
 	showSecrets bool   // render sensitive header values instead of masking them (-vv)
 
+	// Response sink: an additive side-channel that records response payloads as NDJSON,
+	// independent of the stdout output contract. responseFilePath is the configured path
+	// ("" disables it); respSink is the open writer, injected via SetResponseSink by the
+	// caller that owns the file's lifecycle. A nil respSink is a no-op.
+	responseFilePath string
+	respSink         io.Writer
+
 	// Verbosity
 	quiet          bool // suppress request/timing output
 	verbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
@@ -154,6 +161,14 @@ func WithTextMessage(msg string) Option {
 // WithOutput sets the whole-stdout contract (text, json, or raw).
 func WithOutput(output Output) Option {
 	return func(c *Client) { c.output = output }
+}
+
+// WithResponseFile sets the path of a file that records response payloads as NDJSON, one
+// per line. It is additive and orthogonal to the stdout output contract: setting it only
+// configures the path. The caller opens the file and injects the writer via SetResponseSink.
+// An empty path disables recording.
+func WithResponseFile(path string) Option {
+	return func(c *Client) { c.responseFilePath = path }
 }
 
 // WithBodyRender sets the body rendering for text output (auto or compact).
@@ -257,6 +272,15 @@ func (c *Client) Count() int { return c.count }
 
 // Output returns the configured output contract.
 func (c *Client) Output() Output { return c.output }
+
+// ResponseFilePath returns the configured response-recording file path ("" when disabled).
+func (c *Client) ResponseFilePath() string { return c.responseFilePath }
+
+// SetResponseSink injects the writer that records response payloads. It is a setter rather
+// than a construction-time option because the sink is an open file whose lifecycle (open and
+// close) is owned by the caller; the caller opens the file, calls SetResponseSink, and defers
+// Close. A nil writer disables recording.
+func (c *Client) SetResponseSink(w io.Writer) { c.respSink = w }
 
 // Body returns the configured body rendering.
 func (c *Client) Body() Body { return c.body }

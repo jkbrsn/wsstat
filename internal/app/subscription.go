@@ -94,7 +94,7 @@ func (c *Client) runSubscriptionLoop(
 				continue
 			}
 			messageIndex++
-			if err := c.printSubscriptionMessage(messageIndex, msg); err != nil {
+			if err := c.emitMessage(messageIndex, msg); err != nil {
 				return err
 			}
 			if limit > 0 && messageIndex >= limit {
@@ -110,6 +110,16 @@ func (c *Client) runSubscriptionLoop(
 			}
 		}
 	}
+}
+
+// emitMessage records a received update to the response sink (no-op when --file is unset)
+// and prints it to stdout. Recording is independent of the stdout print, so it fires
+// regardless of -q/verbosity.
+func (c *Client) emitMessage(index int, msg wsstat.SubscriptionMessage) error {
+	if err := c.writeResponseLine(msg.Data); err != nil {
+		return err
+	}
+	return c.printSubscriptionMessage(index, msg)
 }
 
 // subscriptionPayload returns the payload to be sent to the server.

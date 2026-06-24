@@ -56,6 +56,9 @@ const (
 // so main should exit without printing anything further.
 var errUsageShown = errors.New("usage shown")
 
+// responseFilePerm is the mode for the --file response sink (owner read/write, group/other read).
+const responseFilePerm = 0o644
+
 // cliError classifies a failure for the top-level handler: the process exit code and
 // the resolved output contract, so a JSON run can emit a structured error envelope.
 type cliError struct {
@@ -315,6 +318,22 @@ func parseErr(err error) error {
 	return errUsageShown
 }
 
+// openResponseSink opens the --file response sink (if configured) and injects it into the
+// client, returning a closer to defer. The file is opened O_EXCL so an existing capture is
+// never clobbered. Returns a no-op closer when --file is unset.
+func openResponseSink(client *app.Client, out app.Output) (func(), error) {
+	path := client.ResponseFilePath()
+	if path == "" {
+		return func() {}, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, responseFilePerm)
+	if err != nil {
+		return nil, runtimeErr(out, fmt.Errorf("opening response file: %w", err))
+	}
+	client.SetResponseSink(f)
+	return func() { _ = f.Close() }, nil
+}
+
 func runMeasure(args []string) error {
 	client, target, err := buildMeasure(args)
 	if err != nil {
@@ -325,6 +344,12 @@ func runMeasure(args []string) error {
 	defer cancel()
 
 	out := client.Output()
+	closeSink, err := openResponseSink(client, out)
+	if err != nil {
+		return err
+	}
+	defer closeSink()
+
 	result, err := client.MeasureLatency(ctx, target)
 	if err != nil {
 		return runtimeErr(out, fmt.Errorf("measuring latency: %w", err))
@@ -339,6 +364,9 @@ func runMeasure(args []string) error {
 	if err := client.PrintResponse(result); err != nil {
 		return runtimeErr(out, fmt.Errorf("printing response: %w", err))
 	}
+	if err := client.RecordResponse(result); err != nil {
+		return runtimeErr(out, fmt.Errorf("recording response: %w", err))
+	}
 	return nil
 }
 
@@ -352,6 +380,12 @@ func runStream(args []string) error {
 	defer cancel()
 
 	out := client.Output()
+	closeSink, err := openResponseSink(client, out)
+	if err != nil {
+		return err
+	}
+	defer closeSink()
+
 	if client.Once() {
 		return runtimeErr(out, client.StreamSubscriptionOnce(ctx, target))
 	}

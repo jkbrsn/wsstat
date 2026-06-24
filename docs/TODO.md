@@ -3,6 +3,8 @@
 ## Upcoming minor
 
 - Option to log metadata when messages are received
+- CLI: reclaim `-f` as the short form of `--file` (drop `f`/`format` from `removedFlags` in
+  `cmd/wsstat/main.go`) — target v3.2.0
 
 ## Further ahead
 
