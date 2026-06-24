@@ -39,9 +39,9 @@ it again (snap dashboard → Builds → "Disconnect repo").
 1. Bump `VERSION` and merge to `main`.
 2. Trigger the `Manual Release` workflow (`workflow_dispatch`), optionally ticking
    _prerelease_ to cut an `-rc.N` tag.
-3. The workflow tests, lints, publishes the GitHub Release, and lets GitHub
-   create the remote git tag for that release.
-4. The `snap` job checks out the freshly created release tag, runs `snapcore/action-build`,
+3. The workflow tests, lints, creates or reuses the remote release tag, generates
+   the changelog, and publishes the GitHub Release.
+4. The `snap` job checks out that release tag, runs `snapcore/action-build`,
    then `snapcore/action-publish` with `release: edge`.
 5. The new revision lands on `latest/edge` and appears under "Revisions available to
    release" in the web UI.

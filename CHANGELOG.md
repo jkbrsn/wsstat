@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-06-24
+
+### Changed
+
+- (ci) The manual release workflow now creates or reuses the remote release tag before changelog generation and verifies any existing tag points at the current commit, so failed release runs can be rerun without manual tag cleanup.
+
+### Fixed
+
+- `wsstat -help` (single-dash long form) now prints the top-level overview listing both subcommands, matching `wsstat --help` and `wsstat -h`. Previously it fell through to the `measure` usage, hiding the `stream` subcommand.
+
 ## [3.0.0] - 2026-06-23
 
 ### Added
@@ -112,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/jkbrsn/wsstat/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/jkbrsn/wsstat/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/jkbrsn/wsstat/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/jkbrsn/wsstat/compare/v2.2.0...v2.2.1
