@@ -31,6 +31,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -318,9 +319,25 @@ func parseErr(err error) error {
 	return errUsageShown
 }
 
+// countingWriter wraps a buffered writer and tracks the byte count, so the response-sink
+// closer can tell whether anything was ever recorded.
+type countingWriter struct {
+	w *bufio.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
 // openResponseSink opens the --file response sink (if configured) and injects it into the
 // client, returning a closer to defer. The file is opened O_EXCL so an existing capture is
-// never clobbered. Returns a no-op closer when --file is unset.
+// never clobbered, and writes are buffered for throughput on high-frequency streams. The
+// closer flushes and closes the file, then removes it if nothing was recorded so a failed
+// or payload-less run leaves no empty file to block the next attempt. Returns a no-op closer
+// when --file is unset.
 func openResponseSink(client *app.Client, out app.Output) (func(), error) {
 	path := client.ResponseFilePath()
 	if path == "" {
@@ -330,8 +347,15 @@ func openResponseSink(client *app.Client, out app.Output) (func(), error) {
 	if err != nil {
 		return nil, runtimeErr(out, fmt.Errorf("opening response file: %w", err))
 	}
-	client.SetResponseSink(f)
-	return func() { _ = f.Close() }, nil
+	cw := &countingWriter{w: bufio.NewWriter(f)}
+	client.SetResponseSink(cw)
+	return func() {
+		_ = cw.w.Flush()
+		_ = f.Close()
+		if cw.n == 0 {
+			_ = os.Remove(path)
+		}
+	}, nil
 }
 
 func runMeasure(args []string) error {
@@ -361,11 +385,13 @@ func runMeasure(args []string) error {
 	if err := client.PrintTimingResults(target, result); err != nil {
 		return runtimeErr(out, fmt.Errorf("printing timing results: %w", err))
 	}
-	if err := client.PrintResponse(result); err != nil {
-		return runtimeErr(out, fmt.Errorf("printing response: %w", err))
-	}
+	// Record before printing so the durable side-channel capture is independent of stdout:
+	// a formatting failure on the print path must not skip the recording.
 	if err := client.RecordResponse(result); err != nil {
 		return runtimeErr(out, fmt.Errorf("recording response: %w", err))
+	}
+	if err := client.PrintResponse(result); err != nil {
+		return runtimeErr(out, fmt.Errorf("printing response: %w", err))
 	}
 	return nil
 }
