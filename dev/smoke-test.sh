@@ -70,6 +70,20 @@ check_stream_raw_clean() {
 	fi
 }
 
+# check_file_record runs a measure with --file to a fresh path and asserts the recorded
+# NDJSON file is created and captures the echoed payload. --file opens O_EXCL, so the path
+# must not exist beforehand; a temp dir gives a clean, writable target.
+check_file_record() {
+	local dir out
+	dir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$dir'" RETURN
+	out="$dir/record.jsonl"
+	"$WSSTAT" -t smoke-payload --file "$out" "$WS_URL/echo" >/dev/null 2>&1 || return 1
+	[[ -s "$out" ]] || return 1
+	grep -q "smoke-payload" "$out"
+}
+
 # check_wss_verify_ca fetches the mock's self-signed cert over the plain port and
 # trusts it via SSL_CERT_FILE, then dials wss:// WITHOUT -insecure. This is the
 # only case that exercises a successful *verifying* TLS handshake end-to-end (the
@@ -110,6 +124,7 @@ fi
 # Axis purity: text-only flags must be rejected under -o json|raw.
 check "json rejects -v"    bash -c "! $WSSTAT -o json -v -t hi $WS_URL/echo"
 check "raw measure needs msg" bash -c "! $WSSTAT -o raw $WS_URL/echo"
+check "file record"        check_file_record
 
 # --- Verbosity --------------------------------------------------------------
 check "quiet"              "$WSSTAT" -q -t hi "$WS_URL/echo"
