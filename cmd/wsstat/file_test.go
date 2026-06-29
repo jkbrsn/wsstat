@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app"
@@ -65,5 +66,43 @@ func TestOpenResponseSink(t *testing.T) {
 		data, readErr := os.ReadFile(path)
 		require.NoError(t, readErr)
 		assert.Equal(t, "existing", string(data))
+	})
+}
+
+// TestResponseSinkLifecycle exercises the main-layer wiring that the app-level sink tests
+// cannot: buffering, flush-on-close, and the remove-if-empty cleanup of the real file.
+func TestResponseSinkLifecycle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("records buffered payloads and flushes on close", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "out.jsonl")
+		client := app.NewClient(app.WithResponseFile(path))
+		closeSink, err := openResponseSink(client, app.OutputText)
+		require.NoError(t, err)
+
+		require.NoError(t, client.RecordResponse(&app.MeasurementResult{
+			Response: map[string]any{"n": 1},
+		}))
+		require.NoError(t, client.RecordResponse(&app.MeasurementResult{
+			Response: map[string]any{"n": 2},
+		}))
+		closeSink()
+
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		require.Len(t, lines, 2)
+		assert.Equal(t, `{"n":1}`, lines[0])
+		assert.Equal(t, `{"n":2}`, lines[1])
+	})
+
+	t.Run("removes the file when nothing was recorded", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "out.jsonl")
+		client := app.NewClient(app.WithResponseFile(path))
+		closeSink, err := openResponseSink(client, app.OutputText)
+		require.NoError(t, err)
+		closeSink()
+
+		assert.NoFileExists(t, path)
 	})
 }
