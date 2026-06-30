@@ -123,6 +123,58 @@ wss_verify_ca() {
 	SSL_CERT_FILE="$ca" "$B" -t hi "$WSS_URL/echo" >/dev/null 2>&1
 }
 
+# --- --file response-sink predicates ----------------------------------------
+# --file opens O_EXCL, so each case needs a path that does not exist yet; every
+# predicate mints its own temp dir and cleans up on RETURN.
+file_record_measure() {
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" -t file-payload --file "$out" "$WS_URL/echo" >/dev/null 2>&1 || return 1
+	[[ -s "$out" ]] && grep -q "file-payload" "$out"
+}
+file_record_rpc_compacts() {
+	# A JSON-RPC response is recorded as a single compact NDJSON line.
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" --rpc-method m --file "$out" "$WS_URL/jsonrpc" >/dev/null 2>&1 || return 1
+	[[ $(grep -c . "$out") -eq 1 ]] && grep -q '"result":"ok"' "$out"
+}
+file_record_stream() {
+	# Stream mode records one NDJSON line per received frame.
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" stream -t s -c 3 --file "$out" "$WS_URL/stream?rate=10" >/dev/null 2>&1 || return 1
+	[[ $(grep -c . "$out") -ge 3 ]]
+}
+file_additive_to_json() {
+	# --file is orthogonal to -o: stdout keeps the JSON contract while the sink
+	# records the verbatim response body, not the JSON envelope.
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" -o json -t file-payload --file "$out" "$WS_URL/echo" >"$OUTF" 2>/dev/null || return 1
+	grep -q "file-payload" "$out" || return 1
+	grep -q "durations_ms" "$out" && return 1      # sink is the body, not the envelope
+	if [[ $HAVE_JQ -eq 1 ]]; then
+		jq -es 'any(.[]; .durations_ms.total != null)' "$OUTF" >/dev/null || return 1
+	fi
+	return 0
+}
+file_payloadless_leaves_nothing() {
+	# A ping-mode measure records no payload; the empty capture is removed so it
+	# does not block the next run.
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" --file "$out" "$WS_URL/echo" >/dev/null 2>&1 || return 1
+	[[ ! -e "$out" ]]
+}
+file_rejects_existing() {
+	# O_EXCL: --file refuses to clobber an existing path, and says so.
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"; : >"$out"
+	"$B" -t hi --file "$out" "$WS_URL/echo" >/dev/null 2>"$ERRF" && return 1
+	grep -Eq "response file|file exists" "$ERRF"
+}
+
 echo "wsstat soak (structured matrix) against $WS_URL"
 echo "binary: $B"
 
@@ -255,6 +307,17 @@ if [[ $HAVE_JQ -eq 1 ]]; then
 else
 	S "-o json structural checks" "jq not installed"
 fi
+
+# ===========================================================================
+section "EFFECT: --file records response payloads as NDJSON"
+# --file is additive and orthogonal to -o; it has no validation rules beyond
+# O_EXCL, so coverage is behavioral: what lands in the sink, and what does not.
+pred "measure records the echoed payload"       file_record_measure
+pred "rpc response recorded as one compact line" file_record_rpc_compacts
+pred "stream records one line per frame"         file_record_stream
+pred "additive to -o json (body, not envelope)"  file_additive_to_json
+pred "payload-less run leaves no empty file"     file_payloadless_leaves_nothing
+pred "refuses to overwrite an existing path"     file_rejects_existing
 
 # ===========================================================================
 section "EFFECT (PTY): TTY-only flags exercised under a real terminal"
