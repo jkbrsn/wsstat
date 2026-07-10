@@ -158,6 +158,15 @@ func TestMeasureFlags(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-v", "stream", "example.com"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exactly one URL")
+		assert.Contains(t, err.Error(), "the subcommand must come first")
+	})
+
+	t.Run("flags after the URL get an ordering hint", func(t *testing.T) {
+		// stdlib flag stops parsing at the first positional, so -v becomes a positional.
+		_, _, err := buildMeasure([]string{"example.com", "-v"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one URL")
+		assert.Contains(t, err.Error(), "flags must come before the URL")
 	})
 
 	t.Run("headers accumulate", func(t *testing.T) {

@@ -94,6 +94,7 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Diagnostics:")
 	fmt.Fprintln(w, "      --debug                    emit core debug logs to stderr (independent of -v/-vv)")
+	fmt.Fprintln(w, "      --version                  print program version and exit")
 }
 
 // printMeasureUsage prints usage for the measure subcommand.
@@ -127,7 +128,7 @@ func printStreamUsage(w io.Writer) {
 	fmt.Fprintln(w, "Stream:")
 	fmt.Fprintln(w, "  -c, --count <int>              number of events to receive [default: 0 = unlimited]")
 	fmt.Fprintln(w, "      --once                     exit after the first event")
-	fmt.Fprintln(w, "  -b, --buffer <int>             delivery buffer size in messages [default: 0]")
+	fmt.Fprintln(w, "  -b, --buffer <int>             delivery buffer size in messages [default: 32]")
 	fmt.Fprintln(w, "      --summary-interval <duration>")
 	fmt.Fprintln(w, "                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]")
 	fmt.Fprintln(w)

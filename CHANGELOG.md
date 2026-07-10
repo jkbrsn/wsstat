@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `wsstat measure --version` and `wsstat stream --version` now print the version instead of failing with an unknown-flag error.
+
+### Fixed
+
+- Subcommand help (`wsstat measure -h`, `wsstat stream -h`) now prints to stdout, matching top-level `-h` and GNU convention, so it can be piped to a pager. Parse errors keep printing usage to stderr.
+- Misordered invocations now get targeted hints: flags after the URL (`wsstat <url> -v`) explain that flags must come before the URL, and a subcommand after global flags (`wsstat -v stream <url>`) explains that the subcommand must come first. Previously both failed with a bare "expected exactly one URL argument".
+- `-b/--buffer` help no longer claims `[default: 0]`; the effective default queue length is 32.
+
 ## [3.1.0] - 2026-06-24
 
 ### Added

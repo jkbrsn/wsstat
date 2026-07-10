@@ -36,6 +36,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/signal"
@@ -57,6 +58,10 @@ const (
 // so main should exit without printing anything further.
 var errUsageShown = errors.New("usage shown")
 
+// errVersionShown signals that --version was handled on a subcommand; main
+// exits 0 with no further output.
+var errVersionShown = errors.New("version shown")
+
 // responseFilePerm is the mode for the --file response sink (owner read/write, group/other read).
 const responseFilePerm = 0o644
 
@@ -74,7 +79,8 @@ func (e *cliError) Unwrap() error { return e.err }
 // usageErr classifies a build/validation failure as exit 2. The flag-parse sentinels
 // (already-printed usage, help) pass through unchanged for main's dispatch switch.
 func usageErr(err error) error {
-	if errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsageShown) {
+	if errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsageShown) ||
+		errors.Is(err, errVersionShown) {
 		return err
 	}
 	return &cliError{code: exitUsage, err: err}
@@ -127,7 +133,7 @@ func main() {
 	}
 
 	switch {
-	case err == nil, errors.Is(err, flag.ErrHelp):
+	case err == nil, errors.Is(err, flag.ErrHelp), errors.Is(err, errVersionShown):
 		return
 	case errors.Is(err, errUsageShown):
 		os.Exit(exitUsage)
@@ -230,10 +236,14 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 	registerRemoved(fs)
 	count := fs.Int("c", 1, "number of interactions to perform (>= 1)")
 	fs.IntVar(count, "count", 1, "number of interactions to perform (>= 1)")
-	fs.Usage = func() { printMeasureUsage(fs.Output()) }
+	fs.Usage = func() {} // parseErr owns usage printing (stdout for -h, stderr otherwise)
 
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, parseErr(err)
+		return nil, nil, parseErr(err, printMeasureUsage)
+	}
+	if cf.version {
+		fmt.Printf("wsstat %s\n", version)
+		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
 		return nil, nil, err
@@ -269,10 +279,14 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	fs.IntVar(buffer, "buffer", 0, "delivery buffer size (messages)")
 	summary := fs.Duration("summary-interval", 0,
 		"print stat summaries every interval (e.g., 5s, 1m); 0 disables")
-	fs.Usage = func() { printStreamUsage(fs.Output()) }
+	fs.Usage = func() {} // parseErr owns usage printing (stdout for -h, stderr otherwise)
 
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, parseErr(err)
+		return nil, nil, parseErr(err, printStreamUsage)
+	}
+	if cf.version {
+		fmt.Printf("wsstat %s\n", version)
+		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
 		return nil, nil, err
@@ -310,12 +324,16 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	return client, target, nil
 }
 
-// parseErr maps a FlagSet parse error to the appropriate sentinel: ErrHelp passes
-// through (help already printed), anything else became errUsageShown.
-func parseErr(err error) error {
+// parseErr maps a FlagSet parse error to the appropriate sentinel and prints the
+// command usage: to stdout for explicitly requested help (GNU convention, and
+// matching top-level -h), to stderr after a genuine parse error (whose message
+// the FlagSet already printed there).
+func parseErr(err error, usage func(io.Writer)) error {
 	if errors.Is(err, flag.ErrHelp) {
+		usage(os.Stdout)
 		return flag.ErrHelp
 	}
+	usage(os.Stderr)
 	return errUsageShown
 }
 
