@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `wsstat measure --version` and `wsstat stream --version` now print the version instead of failing with an unknown-flag error.
+
+### Fixed
+
+- (lib) Mixed subscription + measurement sessions no longer report a zeroed `MessageRTT`: `Subscribe`'s initial payload write is no longer recorded in the RTT write ledger (subscription responses were never recorded as reads, so the unbalanced ledgers discarded all RTT data). A write dropped during connection teardown likewise no longer leaves an orphan write timing.
+- (lib) `DialContext` now rejects reuse: dialing a closed instance returns `ErrClosed`, and a second dial on a live instance returns an error instead of silently leaking the previous connection and its pumps. A failed dial leaves the instance reusable.
+- (lib) Request/response read timings are now stamped when the frame arrives in the read pump rather than when the consumer drains the channel, so time spent buffered no longer inflates `MessageRTT` (matching how subscription deliveries were already stamped).
+- Subcommand help (`wsstat measure -h`, `wsstat stream -h`) now prints to stdout, matching top-level `-h` and GNU convention, so it can be piped to a pager. Parse errors keep printing usage to stderr.
+- Misordered invocations now get targeted hints: flags after the URL (`wsstat <url> -v`) explain that flags must come before the URL, and a subcommand after global flags (`wsstat -v stream <url>`) explains that the subcommand must come first. Previously both failed with a bare "expected exactly one URL argument".
+- `-b/--buffer` help no longer claims `[default: 0]`; the effective default queue length is 32.
+
 ## [3.1.0] - 2026-06-24
 
 ### Added

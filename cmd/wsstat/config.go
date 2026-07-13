@@ -54,7 +54,8 @@ type commonFlags struct {
 	subprotocol    string
 	validateUTF8   bool
 
-	debug bool
+	debug   bool
+	version bool
 }
 
 // registerCommon registers the shared flags onto fs, binding them to c.
@@ -96,6 +97,7 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 		"validate UTF-8 on inbound text frames and warn on violations (coder/websocket skips this)")
 	fs.BoolVar(&c.debug, "debug", false,
 		"emit core debug logs to stderr (independent of -v/-vv output verbosity)")
+	fs.BoolVar(&c.version, "version", false, "print program version and exit")
 }
 
 // textOnlyFlags maps the internal flag names rejected under json/raw output to
@@ -130,7 +132,7 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 	switch color {
 	case "auto", "always", "never":
 	default:
-		return nil, nil, errors.New("-color must be auto, always, or never")
+		return nil, nil, errors.New("--color must be auto, always, or never")
 	}
 
 	verbosity := 0
@@ -334,13 +336,34 @@ func setFlagNames(fs *flag.FlagSet) map[string]bool {
 func positionalURL(fs *flag.FlagSet) (*url.URL, error) {
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return nil, errors.New("expected exactly one URL argument")
+		return nil, positionalErr(rest)
 	}
 	target, err := parseWSURI(rest[0])
 	if err != nil {
 		return nil, fmt.Errorf("error parsing input URI: %w", err)
 	}
 	return target, nil
+}
+
+// positionalErr diagnoses the common orderings behind a wrong positional count:
+// a subcommand placed after global flags (dispatch keys on args[0] only), and
+// flags placed after the URL (stdlib flag stops parsing at the first positional).
+func positionalErr(rest []string) error {
+	base := errors.New("expected exactly one URL argument")
+	if len(rest) < 2 {
+		return base
+	}
+	if rest[0] == "measure" || rest[0] == "stream" {
+		return fmt.Errorf("%w: the subcommand must come first: wsstat %s [options] <url>",
+			base, rest[0])
+	}
+	for _, arg := range rest[1:] {
+		if strings.HasPrefix(arg, "-") {
+			return fmt.Errorf("%w: flags must come before the URL (found %q after %q)",
+				base, arg, rest[0])
+		}
+	}
+	return base
 }
 
 // parseWSURI parses rawURI into a URL, defaulting a missing scheme to wss://. Only the

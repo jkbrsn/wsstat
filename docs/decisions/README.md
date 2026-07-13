@@ -56,4 +56,5 @@ What follows. What becomes easier, what becomes harder, what's now load-bearing.
 | # | Title | Status |
 |---|---|---|
 | 0001 | [`-o raw` is verbatim for text/binary, compact re-encode for JSON-RPC](0001-raw-output-not-verbatim-for-rpc.md) | accepted |
-| 0002 | [Measurement API shape: connection methods plus free one-shot functions](0002-measurement-api-shape.md) | proposed |
+| 0002 | [Measurement API shape: connection methods plus free one-shot functions](0002-measurement-api-shape.md) | accepted |
+| 0003 | [JSON output schema: single monotonic version, float-ms timing precision](0003-json-output-schema-and-timing-precision.md) | accepted |

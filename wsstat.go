@@ -123,6 +123,7 @@ type WSStat struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	closed    atomic.Bool // set once Close begins; distinguishes closed from never-dialed
+	dialed    atomic.Bool // set once DialContext starts the pumps; the instance is single-use
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
@@ -206,6 +207,7 @@ type wsRead struct {
 	data        []byte
 	err         error
 	messageType int
+	at          time.Time // frame arrival, stamped in the read pump
 }
 
 // wsWrite holds the data to be written to the WebSocket connection.
@@ -382,7 +384,9 @@ func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
 		deadlineHit = readCtx.Err() == context.DeadlineExceeded && ws.ctx.Err() == nil
 		cancel()
 	}
-	return &wsRead{data: p, err: err, messageType: fromCoderType(coderType)}, deadlineHit
+	return &wsRead{
+		data: p, err: err, messageType: fromCoderType(coderType), at: time.Now(),
+	}, deadlineHit
 }
 
 // writePump writes messages to the WebSocket connection.
@@ -430,6 +434,9 @@ func (ws *WSStat) writePump() {
 // DialContext establishes a new WebSocket connection bound to ctx. Canceling ctx (or calling
 // Close) tears down the connection and unblocks in-flight reads and writes. If required, specify
 // custom headers to merge with the default headers.
+//
+// A WSStat instance is single-use: after a successful dial (or a Close), DialContext returns
+// an error; create a new instance to reconnect. A failed dial leaves the instance reusable.
 // Sets times: dialStart, wsHandshakeDone
 func (ws *WSStat) DialContext(
 	ctx context.Context, targetURL *url.URL, customHeaders http.Header,
@@ -438,6 +445,15 @@ func (ws *WSStat) DialContext(
 	// abort instead, and direct callers get the same guarantee.
 	if ctx == nil {
 		return errors.New("nil context")
+	}
+	// Close is permanent (closeOnce is consumed), so a redial would start pumps that
+	// nothing can ever cancel; a second dial on a live instance would orphan the first
+	// connection and its pumps. Guard both.
+	if ws.closed.Load() {
+		return ErrClosed
+	}
+	if !ws.dialed.CompareAndSwap(false, true) {
+		return errors.New("wsstat: instance already dialed; create a new WSStat to reconnect")
 	}
 	// Install the connection context from the caller, replacing the placeholder created in New so
 	// the pumps and read/write paths honor caller cancellation and deadlines.
@@ -462,6 +478,8 @@ func (ws *WSStat) DialContext(
 		CompressionMode: compression,
 	})
 	if err != nil {
+		// The pumps never started; allow the caller to retry on the same instance.
+		ws.dialed.Store(false)
 		if resp != nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBodyBytes))
 			defer func() {
@@ -523,58 +541,59 @@ func applyDefaultHeaders(headers http.Header) http.Header {
 	return dst
 }
 
-// WriteMessage sends a message through the WebSocket connection.
-// Sets time: MessageWrites
-func (ws *WSStat) WriteMessage(messageType int, data []byte) {
+// enqueueWrite queues a frame for the write pump without recording a write timing.
+// It reports whether the frame was queued; false means the connection is closing
+// and the frame was dropped.
+func (ws *WSStat) enqueueWrite(messageType int, data []byte) bool {
 	// Check if connection is closing before attempting to write
 	select {
 	case <-ws.ctx.Done():
 		ws.log.Debug().Msg("Dropping write message, connection closing")
-		return
+		return false
 	default:
 	}
-
-	ws.timings.mu.Lock()
-	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.timings.mu.Unlock()
 
 	select {
 	case ws.writeChan <- &wsWrite{data: data, messageType: messageType}:
-		// Message sent successfully
+		return true
 	case <-ws.ctx.Done():
 		// Connection is closing, drop the message
 		ws.log.Debug().Msg("Dropping write message, connection closing")
+		return false
 	}
 }
 
-// WriteMessageJSON sends a message through the WebSocket connection.
-// Sets time: MessageWrites
-func (ws *WSStat) WriteMessageJSON(v any) {
-	// Check if connection is closing before attempting to write
-	select {
-	case <-ws.ctx.Done():
-		ws.log.Debug().Msg("Dropping JSON write message, connection closing")
+// WriteMessage sends a message through the WebSocket connection.
+// Sets time: MessageWrites. A message dropped because the connection is closing
+// records no timing, keeping the write/read ledgers pairable.
+func (ws *WSStat) WriteMessage(messageType int, data []byte) {
+	t := time.Now()
+	if !ws.enqueueWrite(messageType, data) {
 		return
-	default:
 	}
+	ws.timings.mu.Lock()
+	ws.timings.messageWrites = append(ws.timings.messageWrites, t)
+	ws.timings.mu.Unlock()
+}
 
+// WriteMessageJSON sends a message through the WebSocket connection.
+// Sets time: MessageWrites. A message dropped because the connection is closing
+// (or one that fails to marshal) records no timing, keeping the write/read
+// ledgers pairable.
+func (ws *WSStat) WriteMessageJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		ws.log.Debug().Err(err).Msg("Failed to encode JSON")
 		return
 	}
 
-	ws.timings.mu.Lock()
-	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.timings.mu.Unlock()
-
-	select {
-	case ws.writeChan <- &wsWrite{data: b, messageType: TextMessage}:
-		// Message sent successfully
-	case <-ws.ctx.Done():
-		// Connection is closing, drop the message
-		ws.log.Debug().Msg("Dropping JSON write message, connection closing")
+	t := time.Now()
+	if !ws.enqueueWrite(TextMessage, b) {
+		return
 	}
+	ws.timings.mu.Lock()
+	ws.timings.messageWrites = append(ws.timings.messageWrites, t)
+	ws.timings.mu.Unlock()
 }
 
 // PingPong sends a ping through the WebSocket connection and blocks until the matching pong
@@ -620,6 +639,8 @@ func classifyReadErr(err error) error {
 }
 
 // handleRead processes a value received from readChan, recording read timing on success.
+// The timing is the frame's arrival in the read pump, not the moment the consumer drained
+// the channel, so time spent buffered does not inflate MessageRTT.
 func (ws *WSStat) handleRead(msg *wsRead) (int, []byte, error) {
 	if msg == nil {
 		return 0, nil, ErrClosed
@@ -628,7 +649,7 @@ func (ws *WSStat) handleRead(msg *wsRead) (int, []byte, error) {
 		return msg.messageType, nil, classifyReadErr(msg.err)
 	}
 	ws.timings.mu.Lock()
-	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
+	ws.timings.messageReads = append(ws.timings.messageReads, msg.at)
 	ws.timings.mu.Unlock()
 	return msg.messageType, msg.data, nil
 }

@@ -329,6 +329,64 @@ func TestSubscribeReceivesMessage(t *testing.T) {
 	assert.GreaterOrEqual(t, stats.LastEvent, stats.FirstEvent)
 }
 
+func TestSubscribePayloadDoesNotSkewMessageRTT(t *testing.T) {
+	// Regression: Subscribe's initial payload used to be recorded in the RTT write
+	// ledger while subscription responses never touch the read ledger, so a session
+	// mixing a subscription with request/response measurement ended with more writes
+	// than reads and calculateResultLocked silently zeroed MessageRTT.
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("hello-sub"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sub.Updates():
+		assert.Equal(t, "hello-sub", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscription message")
+	}
+
+	require.NoError(t, ws.PingPong())
+
+	result := ws.ExtractResult()
+	assert.Greater(t, result.MessageRTT, time.Duration(0),
+		"subscription payload write must not unbalance the RTT ledger")
+}
+
+func TestDialContextSingleUse(t *testing.T) {
+	t.Run("dial after close is rejected", func(t *testing.T) {
+		ws := New()
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+		ws.Close()
+		// Close is permanent: a redial would start pumps nothing can ever cancel.
+		err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
+		assert.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("second dial on a live instance is rejected", func(t *testing.T) {
+		ws := New()
+		defer ws.Close()
+		require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+		err := ws.DialContext(context.Background(), echoServerAddrWs, http.Header{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already dialed")
+	})
+
+	t.Run("failed dial leaves the instance reusable", func(t *testing.T) {
+		ws := New()
+		defer ws.Close()
+		badTarget, err := url.Parse("ws://127.0.0.1:1")
+		require.NoError(t, err)
+		require.Error(t, ws.DialContext(context.Background(), badTarget, http.Header{}))
+		assert.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+	})
+}
+
 func TestSubscriptionSurvivesIdleBeyondTimeout(t *testing.T) {
 	// Regression: the per-read dial/read timeout must not tear down a long-lived
 	// subscription that is merely idle. A 5s (here 100ms) silence used to finalize

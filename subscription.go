@@ -205,9 +205,12 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 	sub := ws.registerSubscription(state)
 	go ws.watchSubscription(state)
 
-	// Send initial subscription request if payload is provided.
+	// Send the initial subscription request if a payload is provided. The write is
+	// deliberately untimed: subscription responses are consumed by the dispatch path
+	// and never recorded as reads, so a timed write here would unbalance the
+	// write/read ledgers and zero out MessageRTT for mixed sessions.
 	if len(opts.Payload) > 0 {
-		ws.WriteMessage(opts.MessageType, opts.Payload)
+		ws.enqueueWrite(opts.MessageType, opts.Payload)
 	}
 
 	return sub, nil
@@ -349,7 +352,12 @@ func (ws *WSStat) dispatchIncoming(read *wsRead) bool {
 		return false
 	}
 
-	receivedAt := time.Now()
+	// Use the read pump's arrival stamp so subscription and request/response
+	// paths report the same moment for the same frame.
+	receivedAt := read.at
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
 
 	if read.err != nil {
 		for _, state := range states {

@@ -14,21 +14,34 @@ This project provides a way to stat a WebSocket connection; measure the latency 
 The CLI client provides a simple and easy to use tool to check the status of a WebSocket endpoint:
 
 ```sh
-~ wsstat example.org
+~ wsstat -v echo.websocket.org
 
-Target: example.org
-IP: 1.2.3.4
+Target: echo.websocket.org
+IP: 66.241.124.119
+Messages sent: 1
 WS version: 13
 TLS version: TLS 1.3
 
   DNS Lookup    TCP Connection    TLS Handshake    WS Handshake    Message RTT
-|     61ms  |           22ms  |          44ms  |         29ms  |        27ms  |
+|  1.541ms  |      287.437ms  |     321.186ms  |    730.487ms  |   518.387ms  |
 |           |                 |                |               |              |
-|  DNS lookup:61ms            |                |               |              |
-|                 TCP connected:84ms           |               |              |
-|                                       TLS done:128ms         |              |
-|                                                        WS done:158ms        |
--                                                                         Total:186ms
+|  DNS lookup:1.541ms         |                |               |              |
+|                 TCP connected:288.979ms      |               |              |
+|                                       TLS done:610.165ms     |              |
+|                                                        WS done:1340.652ms   |
+-                                                                         Total:2366.209ms
+```
+
+Without `-v`, output is a compact summary:
+
+```sh
+~ wsstat echo.websocket.org
+
+URL: echo.websocket.org
+IP:  66.241.124.119
+
+Round-trip time: 492.884ms (1 message)
+Total time: 2296.079ms
 ```
 
 The client replicates what [reorx/httpstat](https://github.com/reorx/httpstat) and [davecheney/httpstat](https://github.com/davecheney/httpstat) does for HTTP, but for WebSocket. It is said that imitation is the sincerest form of flattery, and inspiration has for certain been sourced from these projects.
@@ -51,17 +64,15 @@ Install via Go:
 
 ```sh
 # To install the latest version, specify other releases with @<tag>
-go install github.com/jkbrsn/wsstat/v3@latest
+go install github.com/jkbrsn/wsstat/v3/cmd/wsstat@latest
 
-# To include the version in the binary, run the install from the root of the repo
-git clone github.com/jkbrsn/wsstat
+# To include the version in the binary, build from a clone of the repo
+git clone https://github.com/jkbrsn/wsstat.git
 cd wsstat
-git fetch --all
-git checkout origin/main
 go install -ldflags "-X main.version=$(cat VERSION)" ./cmd/wsstat
 ```
 
-Note: installing the package with `@latest`  will always install the latest version no matter the other parameters of the command.
+Note: a remote `go install ...@<tag>` cannot inject the version via ldflags, so a binary installed that way reports its version as `unknown`. Build from a clone (as above) to get the version stamped.
 
 The snap is listed here: [snapcraft.io/wsstat](https://snapcraft.io/wsstat)
 
@@ -136,6 +147,9 @@ wsstat --rpc-method eth_blockNumber wss://rpc.example.com/ws
 # Start a stream
 wsstat stream --summary-interval 5s wss://stream.example.com/feed
 
+# Record response payloads to a file as NDJSON (in addition to normal output)
+wsstat stream --file capture.ndjson wss://stream.example.com/feed
+
 # Attach headers to dial request
 wsstat -H "Authorization: Bearer TOKEN" -H "Origin: https://foo" wss://api.example.com/ws
 
@@ -191,8 +205,9 @@ wsstat stream --once -t '{"method":"subscribe_ticker"}' wss://example.org/ws
 Output is split across three orthogonal axes:
 
 - `-o, --output text|json|raw` — the whole-stdout contract. `json` emits
-  newline-delimited envelopes with a stable schema (`-v`/`-vv` never change which
-  fields appear); `raw` writes payload bytes verbatim with nothing added — no
+  newline-delimited envelopes with a stable, published schema (see
+  [docs/schema/](./docs/schema/); `-v`/`-vv` never change which fields appear);
+  `raw` writes payload bytes verbatim with nothing added — no
   label, color, or trailing newline, so frames stay binary-safe and stream frames
   concatenate undelimited (use `-o json` when you need a delimiter). In measure
   mode `raw` requires `--text` or `--rpc-method`; with `--rpc-method` the response
@@ -202,6 +217,11 @@ Output is split across three orthogonal axes:
   pretty-prints; `compact` puts each message on one line.
 - `--clip` — clips each rendered line to the terminal width with a trailing `...`
   (text output, TTY only; a no-op when piped or redirected).
+
+Orthogonal to all three axes, `--file <path>` additionally records each response
+payload to `<path>` as NDJSON, one per line. It captures response bodies only
+(summaries and other chrome still go to stdout), refuses to overwrite an
+existing file, and removes the file again if nothing was recorded.
 
 ```sh
 # Machine-readable streaming summaries and events

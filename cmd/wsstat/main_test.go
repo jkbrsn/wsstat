@@ -77,6 +77,10 @@ func TestErrorClassification(t *testing.T) {
 		assert.ErrorIs(t, usageErr(errUsageShown), errUsageShown)
 	})
 
+	t.Run("version-shown passes through", func(t *testing.T) {
+		assert.ErrorIs(t, usageErr(errVersionShown), errVersionShown)
+	})
+
 	t.Run("validation becomes exit 2", func(t *testing.T) {
 		var ce *cliError
 		require.ErrorAs(t, usageErr(errors.New("count must be greater than 0")), &ce)
