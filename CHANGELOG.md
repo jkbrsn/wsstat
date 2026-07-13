@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Repeatable `-t` in `stream` mode.** `wsstat stream` now accepts `-t/--text` multiple times and sends each message in argv order on the same connection, enabling multi-frame conversations (e.g. subscribe then unsubscribe) against a single server-side session. Sends are spaced by the new `--send-delay <duration>` flag (default `1s`) so responses interleave predictably under `-o json`. The first message remains the subscribe payload; receiving (`-c`, `--once`, `--timeout`) is unchanged and a single `-t` behaves exactly as before. `measure` mode rejects repeated `-t`.
+
 ## [3.1.1] - 2026-07-13
 
 ### Fixed

@@ -72,6 +72,9 @@ func (c *Client) runSubscriptionLoop(
 		defer ticker.Stop()
 	}
 
+	sender := newPendingSender(c.pendingSends(), c.sendDelay)
+	defer sender.stop()
+
 	messageIndex := 0
 	limit := c.count
 
@@ -103,12 +106,62 @@ func (c *Client) runSubscriptionLoop(
 				c.handleSubscriptionTick(wsClient, target)
 				return nil
 			}
+		case <-sender.c():
+			sender.send(wsClient)
 		case <-tickerC(ticker):
 			c.handleSubscriptionTick(wsClient, target)
 			if c.output == OutputText {
 				fmt.Println()
 			}
 		}
+	}
+}
+
+// pendingSends returns the text messages to send after the initial subscribe payload.
+func (c *Client) pendingSends() []string {
+	if len(c.textMessages) < 2 {
+		return nil
+	}
+	return c.textMessages[1:]
+}
+
+// pendingSender staggers the post-subscribe text messages. It is driven from the
+// subscription loop goroutine, so ordering against the transport's write pump is
+// guaranteed without extra coordination. With no pending messages its channel is
+// nil and the loop's select never fires.
+type pendingSender struct {
+	msgs  []string
+	delay time.Duration
+	timer *time.Timer
+}
+
+// newPendingSender creates a sender for msgs, arming the first send after delay.
+func newPendingSender(msgs []string, delay time.Duration) *pendingSender {
+	s := &pendingSender{msgs: msgs, delay: delay}
+	if len(msgs) > 0 {
+		s.timer = time.NewTimer(delay)
+	}
+	return s
+}
+
+// c returns the channel that fires when the next message is due.
+func (s *pendingSender) c() <-chan time.Time {
+	return timerC(s.timer)
+}
+
+// send writes the next message and re-arms the timer while messages remain.
+func (s *pendingSender) send(ws *wsstat.WSStat) {
+	ws.WriteMessage(wsstat.TextMessage, []byte(s.msgs[0]))
+	s.msgs = s.msgs[1:]
+	if len(s.msgs) > 0 {
+		s.timer.Reset(s.delay)
+	}
+}
+
+// stop releases the timer.
+func (s *pendingSender) stop() {
+	if s.timer != nil {
+		s.timer.Stop()
 	}
 }
 
@@ -122,10 +175,10 @@ func (c *Client) emitMessage(index int, msg wsstat.SubscriptionMessage) error {
 	return c.printSubscriptionMessage(index, msg)
 }
 
-// subscriptionPayload returns the payload to be sent to the server.
+// subscriptionPayload returns the initial payload to be sent to the server.
 func (c *Client) subscriptionPayload() (int, []byte, error) {
-	if c.textMessage != "" {
-		return wsstat.TextMessage, []byte(c.textMessage), nil
+	if len(c.textMessages) > 0 {
+		return wsstat.TextMessage, []byte(c.textMessages[0]), nil
 	}
 	if c.rpcMethod != "" {
 		req := buildRPCRequest(c.rpcMethod, c.rpcVersion)

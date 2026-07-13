@@ -15,7 +15,7 @@ func TestClientValidate(t *testing.T) {
 	})
 
 	t.Run("mutually exclusive", func(t *testing.T) {
-		c := &Client{count: 1, textMessage: "hi", rpcMethod: "foo"}
+		c := &Client{count: 1, textMessages: []string{"hi"}, rpcMethod: "foo"}
 		assert.Error(t, c.Validate())
 	})
 
@@ -26,7 +26,7 @@ func TestClientValidate(t *testing.T) {
 	})
 
 	t.Run("valid", func(t *testing.T) {
-		c := &Client{count: 2, textMessage: "hi"}
+		c := &Client{count: 2, textMessages: []string{"hi"}}
 		require.NoError(t, c.Validate())
 	})
 
@@ -88,6 +88,21 @@ func TestClientValidate(t *testing.T) {
 		assert.Error(t, c.Validate())
 	})
 
+	t.Run("negative send delay", func(t *testing.T) {
+		c := &Client{sendDelay: -1}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("multiple text messages require stream mode", func(t *testing.T) {
+		c := &Client{textMessages: []string{"a", "b"}}
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("multiple text messages allowed in stream mode", func(t *testing.T) {
+		c := &Client{mode: ModeStream, textMessages: []string{"a", "b"}}
+		require.NoError(t, c.Validate())
+	})
+
 	t.Run("invalid color", func(t *testing.T) {
 		c := &Client{colorMode: "purple"}
 		assert.Error(t, c.Validate())
@@ -114,7 +129,7 @@ func TestValidateComplexCombinations(t *testing.T) {
 		},
 		{
 			name:    "text and rpc method both set",
-			client:  Client{textMessage: "hi", rpcMethod: "test"},
+			client:  Client{textMessages: []string{"hi"}, rpcMethod: "test"},
 			wantErr: true,
 			errMsg:  "mutually exclusive",
 		},

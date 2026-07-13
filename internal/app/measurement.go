@@ -17,7 +17,7 @@ func (c *Client) measureText(
 	target *url.URL,
 	header http.Header,
 ) (*MeasurementResult, error) {
-	msgs := repeat(c.textMessage, c.count)
+	msgs := repeat(c.textMessages[0], c.count)
 
 	opts := append(c.wsstatOptions(), wsstat.WithHeaders(header))
 	result, rawResponses, err := wsstat.MeasureText(ctx, target, msgs, opts...)

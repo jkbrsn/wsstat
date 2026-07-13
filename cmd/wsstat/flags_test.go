@@ -90,6 +90,43 @@ func TestHeaderList(t *testing.T) {
 	})
 }
 
+func TestTextList(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Set accumulates values in order", func(t *testing.T) {
+		var l textList
+		require.NoError(t, l.Set("subscribe"))
+		require.NoError(t, l.Set("unsubscribe"))
+		assert.Equal(t, textList{"subscribe", "unsubscribe"}, l)
+	})
+
+	t.Run("Set keeps values verbatim", func(t *testing.T) {
+		var l textList
+		require.NoError(t, l.Set("  padded  "))
+		require.NoError(t, l.Set(""))
+		assert.Equal(t, textList{"  padded  ", ""}, l)
+	})
+
+	t.Run("String returns comma-separated list", func(t *testing.T) {
+		l := textList{"one", "two"}
+		assert.Equal(t, "one, two", l.String())
+	})
+
+	t.Run("String returns empty for nil", func(t *testing.T) {
+		var l textList
+		assert.Equal(t, "", l.String())
+	})
+
+	t.Run("Values returns copy", func(t *testing.T) {
+		l := textList{"one", "two"}
+		values := l.Values()
+		assert.Equal(t, []string{"one", "two"}, values)
+
+		values[0] = "modified"
+		assert.Equal(t, "one", l[0])
+	})
+}
+
 func TestResolveList(t *testing.T) {
 	t.Parallel()
 

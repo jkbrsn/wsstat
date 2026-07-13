@@ -16,37 +16,46 @@ func TestResolveTextPayload(t *testing.T) {
 
 	t.Run("plain value passes through", func(t *testing.T) {
 		t.Parallel()
-		c := &commonFlags{text: "ping"}
+		c := &commonFlags{text: textList{"ping"}}
 		require.NoError(t, resolveTextPayload(c))
-		assert.Equal(t, "ping", c.text)
+		assert.Equal(t, textList{"ping"}, c.text)
 	})
 
-	t.Run("empty value passes through", func(t *testing.T) {
+	t.Run("empty value is dropped", func(t *testing.T) {
 		t.Parallel()
-		c := &commonFlags{text: ""}
+		c := &commonFlags{text: textList{""}}
 		require.NoError(t, resolveTextPayload(c))
 		assert.Empty(t, c.text)
 	})
 
 	t.Run("escaped leading at", func(t *testing.T) {
 		t.Parallel()
-		c := &commonFlags{text: "@@literal"}
+		c := &commonFlags{text: textList{"@@literal"}}
 		require.NoError(t, resolveTextPayload(c))
-		assert.Equal(t, "@literal", c.text)
+		assert.Equal(t, textList{"@literal"}, c.text)
 	})
 
 	t.Run("reads from file verbatim", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "payload.json")
 		require.NoError(t, os.WriteFile(path, []byte("{\"a\":1}\n"), 0o600))
-		c := &commonFlags{text: "@" + path}
+		c := &commonFlags{text: textList{"@" + path}}
 		require.NoError(t, resolveTextPayload(c))
-		assert.Equal(t, "{\"a\":1}\n", c.text, "trailing newline is preserved")
+		assert.Equal(t, textList{"{\"a\":1}\n"}, c.text, "trailing newline is preserved")
+	})
+
+	t.Run("expands each entry independently", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "payload.json")
+		require.NoError(t, os.WriteFile(path, []byte("from file"), 0o600))
+		c := &commonFlags{text: textList{"plain", "@" + path, ""}}
+		require.NoError(t, resolveTextPayload(c))
+		assert.Equal(t, textList{"plain", "from file"}, c.text, "order kept, empties dropped")
 	})
 
 	t.Run("missing file errors", func(t *testing.T) {
 		t.Parallel()
-		c := &commonFlags{text: "@" + filepath.Join(t.TempDir(), "nope")}
+		c := &commonFlags{text: textList{"@" + filepath.Join(t.TempDir(), "nope")}}
 		err := resolveTextPayload(c)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reading --text payload")
@@ -64,9 +73,9 @@ func TestResolveTextPayload(t *testing.T) {
 		os.Stdin = f
 		defer func() { os.Stdin = prev }()
 
-		c := &commonFlags{text: "@-"}
+		c := &commonFlags{text: textList{"@-"}}
 		require.NoError(t, resolveTextPayload(c))
-		assert.Equal(t, "from stdin", c.text)
+		assert.Equal(t, textList{"from stdin"}, c.text)
 	})
 }
 

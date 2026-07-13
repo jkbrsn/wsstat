@@ -160,6 +160,54 @@ func newSubscriptionTestServer(t *testing.T) subscriptionTestServer {
 	}
 }
 
+// conversationTestServer is a test server that records every inbound frame and
+// echoes each back prefixed with "ack:", for testing multi-message stream sends.
+type conversationTestServer struct {
+	wsURL    *url.URL
+	received <-chan string
+	cleanup  func()
+}
+
+// newConversationTestServer creates a new conversation test server.
+func newConversationTestServer(t *testing.T) conversationTestServer {
+	t.Helper()
+
+	received := make(chan string, 8) //revive:disable-line:add-constant test buffer size
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
+
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			received <- string(data)
+			reply := append([]byte("ack:"), data...)
+			if err := conn.Write(ctx, websocket.MessageText, reply); err != nil {
+				return
+			}
+		}
+	}))
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	return conversationTestServer{
+		wsURL:    wsURL,
+		received: received,
+		cleanup:  server.Close,
+	}
+}
+
 func decodeJSONLine(t *testing.T, output string) map[string]any {
 	t.Helper()
 	trimmed := strings.TrimSpace(output)
