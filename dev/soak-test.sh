@@ -94,6 +94,21 @@ summary_interval_fires() {
 	[[ "$n" -ge 2 ]]
 }
 json_measure_total() { "$B" -o json -t hi "$WS_URL/echo" 2>/dev/null | jq -es 'any(.[]; .durations_ms.total != null)' >/dev/null; }
+
+# Repeated -t conversation payloads against the stateful /subscriptions endpoint.
+SUB_BTC='{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}'
+UNSUB_BTC='{"method":"unsubscribe","subscription":{"type":"trades","coin":"BTC"}}'
+# multi_send_ordered asserts the full conversation semantics: three frames on one
+# connection produce, in order, a subscribe ack, the duplicate rejection (only
+# reachable on a second frame of the same session), and an unsubscribe ack.
+# -o json gives one NDJSON line per reply, so order is asserted by line number.
+multi_send_ordered() {
+	"$B" stream -c 3 -o json --send-delay 100ms \
+		-t "$SUB_BTC" -t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions" >"$OUTF" 2>/dev/null || return 1
+	sed -n 1p "$OUTF" | grep -q '"method":"subscribe"' || return 1
+	sed -n 2p "$OUTF" | grep -q "Already subscribed" || return 1
+	sed -n 3p "$OUTF" | grep -q '"method":"unsubscribe"'
+}
 json_stream_method()  { "$B" stream -o json -t s -c 3 "$WS_URL/stream?rate=10" 2>/dev/null | jq -es 'all(.[]; .schema_version != null and .type != null) and any(.[]; .type == "subscription_message" and .payload.method == "subscription")' >/dev/null; }
 
 # _pty_maxwidth COLS -- CMD...  -> widest output line in columns (ANSI/CR stripped)
@@ -231,6 +246,9 @@ ok "stream --color always"         -- "$B" stream --color always -c 3 -t s "$WS_
 ok "stream -H + -c"                -- "$B" stream -H "X-Smoke: 1" -c 3 -t s "$WS_URL/stream?rate=10"
 ok "stream --timeout + -c"         -- "$B" stream --timeout 5s -c 3 -t s "$WS_URL/stream?rate=10"
 ok "stream once + -o json"         -- "$B" stream --once -o json -t s "$WS_URL/stream?rate=10"
+ok "stream repeated -t"            -- "$B" stream -c 2 --send-delay 100ms -t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions"
+ok "stream repeated --text (alias)" -- "$B" stream -c 2 --send-delay 100ms --text "$SUB_BTC" --text "$UNSUB_BTC" "$WS_URL/subscriptions"
+ok "stream repeated -t default delay" -- "$B" stream -c 2 -t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions"
 
 # ===========================================================================
 section "REJECT: mutually exclusive / invalid-value rules"
@@ -261,6 +279,10 @@ reject "stream -c negative"        "zero or greater"           -- "$B" stream -c
 reject "stream --once + -c"        "cannot be combined"        -- "$B" stream --once -c 3 -t s "$WS_URL/stream"
 reject "stream --once + --count"   "cannot be combined"        -- "$B" stream --once --count 3 -t s "$WS_URL/stream"
 reject "stream summary + -o raw"   "no effect with -o raw"     -- "$B" stream --summary-interval 1s -o raw -t s "$WS_URL/stream"
+reject "stream --send-delay single -t" "no effect without repeated -t" -- "$B" stream --send-delay 1s -t s "$WS_URL/stream"
+reject "stream --send-delay no -t"     "no effect without repeated -t" -- "$B" stream --send-delay 1s "$WS_URL/stream"
+reject "stream --send-delay negative"  "zero or greater"               -- "$B" stream --send-delay -1s -t a -t b "$WS_URL/stream"
+reject "measure repeated -t"           "stream subcommand"             -- "$B" -t a -t b "$WS_URL/echo"
 
 section "REJECT: v2 flags removed in v3"
 reject "-subscribe"      "removed in v3" -- "$B" -subscribe -t hi "$WS_URL/stream"
@@ -276,6 +298,7 @@ reject "measure + --once"             "not defined" -- "$B" --once -t hi "$WS_UR
 reject "measure + -b"                 "not defined" -- "$B" -b 8 -t hi "$WS_URL/echo"
 reject "measure + --buffer"           "not defined" -- "$B" --buffer 8 -t hi "$WS_URL/echo"
 reject "measure + --summary-interval" "not defined" -- "$B" --summary-interval 1s -t hi "$WS_URL/echo"
+reject "measure + --send-delay"       "not defined" -- "$B" --send-delay 1s -t hi "$WS_URL/echo"
 
 # ===========================================================================
 section "EFFECT: output contracts produce the right bytes"
@@ -299,6 +322,8 @@ section "EFFECT: stream output contracts"
 pred "stream -o raw is header/summary-free" stream_raw_clean
 # --summary-interval fires at least one periodic summary before the count ends.
 pred "stream --summary-interval fires periodically" summary_interval_fires
+# Repeated -t: three staggered frames on one connection, replies in send order.
+pred "stream repeated -t conversation is ordered" multi_send_ordered
 
 section "EFFECT: -o json is valid, schema-stable JSON"
 if [[ $HAVE_JQ -eq 1 ]]; then

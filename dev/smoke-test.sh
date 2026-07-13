@@ -53,6 +53,16 @@ check_teardown_bound() {
 	[[ "$ms" -lt 2500 ]]
 }
 
+# check_multi_send drives a two-frame conversation on one connection: subscribe,
+# then a duplicate subscribe --send-delay later. The second reply must be the
+# server's "Already subscribed" rejection, which is only reachable when both
+# frames land on the same server-side session.
+check_multi_send() {
+	local sub='{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}'
+	"$WSSTAT" stream -c 2 --send-delay 100ms -t "$sub" -t "$sub" "$WS_URL/subscriptions" 2>/dev/null \
+		| grep -q "Already subscribed"
+}
+
 # check_stream_raw_clean asserts `stream -o raw` emits only verbatim payload
 # bytes: the concatenated JSON frames, with no "Streaming subscription events"
 # header and no "Subscription summary" block. Frames are undelimited, so a clean
@@ -141,6 +151,7 @@ check "stream bounded"     "$WSSTAT" stream -t sub -c 3 "$WS_URL/stream?rate=10"
 check "buffer size"        "$WSSTAT" stream -b 8 -t sub -c 3 "$WS_URL/stream?rate=10"
 check "stream raw clean"   check_stream_raw_clean
 check "summary-interval"   check_summary_interval
+check "repeated -t conversation" check_multi_send
 
 # --- Failure & edge paths ---------------------------------------------------
 check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"
