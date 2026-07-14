@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-14
+
 ### Added
 
 - **`ping` subcommand.** `wsstat ping <url>` dials once and sends a WebSocket ping frame every `-i/--interval`, printing a per-ping RTT line and a `ping(8)`-style `STATS` summary; a missed pong is a survivable `timeout` and the run continues, exit 1 covers total loss and dial failure. See the README's "Ping Mode" section and `wsstat ping -h` for the full flag and output contract.
@@ -154,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/jkbrsn/wsstat/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/jkbrsn/wsstat/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/jkbrsn/wsstat/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/jkbrsn/wsstat/compare/v3.0.0...v3.0.1
