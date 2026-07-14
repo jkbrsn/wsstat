@@ -165,8 +165,9 @@ For a full list of the available options, run `wsstat -h`, `wsstat measure -h`, 
 ### Modes
 
 `wsstat <url>` (or `wsstat measure <url>`) measures connection latency. `wsstat
-stream <url>` keeps the socket open for long-lived feeds. A host literally named
-`measure`/`stream` must be spelled with a scheme (`wsstat wss://stream`).
+stream <url>` keeps the socket open for long-lived feeds. `wsstat ping <url>`
+watches ping/pong latency over time. A host literally named
+`measure`/`stream`/`ping` must be spelled with a scheme (`wsstat wss://ping`).
 
 In measure mode, `-c N` aggregates timing across all interactions; the response
 printed is the first one (measure does not concatenate responses).
@@ -214,6 +215,39 @@ wsstat stream -c 4 -o json \
   wss://example.org/ws
 ```
 
+### Ping Mode
+
+`wsstat ping <url>` dials once and sends a WebSocket ping frame every
+`-i/--interval` (default `1s`) on that connection, printing a per-ping RTT line
+as each pong arrives and a `ping(8)`-style summary at the end:
+
+```sh
+wsstat ping -c 5 wss://echo.example.com
+```
+
+```text
+PING wss://echo.example.com (dns 5ms, tcp 10ms, tls 12ms, ws 7ms)
+pong: seq=1 rtt=12.3ms
+pong: seq=2 rtt=11.8ms
+pong: seq=3 rtt=12.1ms
+...
+--- wss://echo.example.com ping statistics ---
+5 sent, 5 received, 0.0% loss
+rtt min/avg/max/stddev = 11.8/12.1/12.3/0.2 ms
+```
+
+With no `-c` the run continues until you interrupt it (`Ctrl-C`) or the optional
+`-w/--deadline` elapses, like `ping(8)`. `-o json` emits one `ping_reply` record
+per ping and a final `ping_summary` (which stays the last record even on total
+loss); `-q` prints the summary block only.
+
+A missed pong ends the run: wsstat tears the connection down after `--timeout`
+(default `5s`) of silence and does not redial in this version, so `ping` measures
+latency over a healthy connection and reports cleanly when it drops. Keep the
+interval below `--timeout` (raise `--timeout` for a longer interval). The exit
+code is 0 when at least one pong was received and 1 on total loss or a dial
+failure, so `wsstat ping -c 3 <url>` doubles as a liveness gate.
+
 ### Output
 
 Output is split across three orthogonal axes:
@@ -256,6 +290,10 @@ rejected under `-o json|raw`.
 | 1    | Runtime failure (dial, measurement, stream, or output write) |
 | 2    | Usage error (bad flag or argument) |
 | 130  | Interrupted; a second `Ctrl-C` forces teardown |
+
+In `ping` mode exit 1 also covers total loss (zero pongs received), while partial
+loss with at least one pong still exits 0, so `wsstat ping -c N <url>` works as a
+liveness gate.
 
 Usage errors (exit 2) always print plain text to stderr. Under `-o json`, a
 runtime failure (exit 1) prints a `{"type":"error"}` envelope to stdout so a

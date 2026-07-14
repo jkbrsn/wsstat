@@ -12,6 +12,7 @@ type RGB struct {
 var (
 	WSOrange = RGB{255, 102, 0}   // WebSocket orange (#ff6600)
 	TeaGreen = RGB{211, 249, 181} // Tea green (#d3f9b5)
+	Red      = RGB{255, 85, 85}   // Soft red (#ff5555), used for failure lines
 )
 
 // Sprint returns the text with ANSI color codes applied

@@ -9,6 +9,8 @@
     { "$ref": "#/$defs/response" },
     { "$ref": "#/$defs/subscription_summary" },
     { "$ref": "#/$defs/subscription_message" },
+    { "$ref": "#/$defs/ping_reply" },
+    { "$ref": "#/$defs/ping_summary" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -139,6 +141,36 @@
         "payload": {
           "description": "Decoded message payload; shape varies (JSON value or string)."
         }
+      }
+    },
+    "ping_reply": {
+      "type": "object",
+      "description": "One record per ping in ping mode. A pong carries rtt_ms; a lost ping sets lost=true and error (rtt_ms omitted). A loss ends the run.",
+      "required": ["schema_version", "type", "seq"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "ping_reply" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "rtt_ms": { "$ref": "#/$defs/ms" },
+        "lost": { "type": "boolean" },
+        "error": { "type": "string" }
+      }
+    },
+    "ping_summary": {
+      "type": "object",
+      "description": "Final record in ping mode: counts, loss, and RTT aggregates over received pongs. The min/avg/max/stddev fields are omitted when no pong was received.",
+      "required": ["schema_version", "type", "url", "sent", "received", "loss_pct"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "ping_summary" },
+        "url": { "type": "string" },
+        "sent": { "type": "integer", "minimum": 0 },
+        "received": { "type": "integer", "minimum": 0 },
+        "loss_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "min_ms": { "$ref": "#/$defs/ms" },
+        "avg_ms": { "$ref": "#/$defs/ms" },
+        "max_ms": { "$ref": "#/$defs/ms" },
+        "stddev_ms": { "$ref": "#/$defs/ms" }
       }
     },
     "error": {

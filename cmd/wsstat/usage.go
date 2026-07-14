@@ -18,6 +18,9 @@ func printHelpFor(rest []string, w io.Writer) {
 		case "stream":
 			printStreamUsage(w)
 			return
+		case "ping":
+			printPingUsage(w)
+			return
 		}
 	}
 	printTopUsage(w)
@@ -32,10 +35,12 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat <url>                    measure connection latency (bare form)")
 	fmt.Fprintln(w, "  wsstat measure [options] <url>  measure connection latency")
 	fmt.Fprintln(w, "  wsstat stream  [options] <url>  stream subscription events")
+	fmt.Fprintln(w, "  wsstat ping    [options] <url>  ping/pong latency over time")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "COMMANDS:")
 	fmt.Fprintln(w, "  measure   send ping/text/JSON-RPC and report timing (DNS, TCP, TLS, WS, RTT)")
 	fmt.Fprintln(w, "  stream    keep the connection open and forward incoming frames")
+	fmt.Fprintln(w, "  ping      send a ping frame every interval and report per-ping RTT + a summary")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  --version                       print program version and exit")
 	fmt.Fprintln(w, "  -h, --help                      show this help")
@@ -48,7 +53,7 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Under -o json a runtime failure (exit 1) prints a {\"type\":\"error\"} envelope to stdout.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run 'wsstat measure -h' or 'wsstat stream -h' for command-specific flags.")
+	fmt.Fprintln(w, "Run 'wsstat measure -h', 'wsstat stream -h', or 'wsstat ping -h' for command-specific flags.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  wsstat wss://echo.example.com")
@@ -56,6 +61,7 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat measure --rpc-method eth_blockNumber wss://rpc.example.com/ws")
 	fmt.Fprintln(w, "  wsstat stream --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(w, "  wsstat stream --once -o json wss://api.example.com/ws")
+	fmt.Fprintln(w, "  wsstat ping -c 5 wss://echo.example.com")
 }
 
 // printCommonFlags prints the flags shared by every subcommand.
@@ -135,6 +141,31 @@ func printStreamUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Note: -t may be repeated; each message is sent in order on the same connection, --send-delay apart.")
 	fmt.Fprintln(w, "        If the receive limit (-c, --once) is reached first, remaining sends are skipped.")
+	fmt.Fprintln(w)
+	printCommonFlags(w)
+}
+
+// printPingUsage prints usage for the ping subcommand.
+func printPingUsage(w io.Writer) {
+	fmt.Fprintln(w, "wsstat ping - continuous WebSocket ping/pong latency monitoring")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "USAGE:")
+	fmt.Fprintln(w, "  wsstat ping [options] <url>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Ping:")
+	fmt.Fprintln(w, "  -c, --count <int>              number of pings to send [default: 0 = until interrupted]")
+	fmt.Fprintln(w, "  -i, --interval <duration>      delay between pings, e.g. 500ms, 2s [default: 1s; min 10ms]")
+	fmt.Fprintln(w, "  -w, --deadline <duration>      max total run time, e.g. 10s [default: 0 = none]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Dials once and sends a ping frame every interval on that connection, printing a")
+	fmt.Fprintln(w, "  per-ping RTT line and, at the end, a ping(8)-style summary (sent/received/loss,")
+	fmt.Fprintln(w, "  min/avg/max/stddev). The run ends at --count, on Ctrl-C or --deadline, or when a ping")
+	fmt.Fprintln(w, "  is lost: a missed pong tears the connection down (no redial in v1), so a loss is")
+	fmt.Fprintln(w, "  terminal. The interval must stay below --timeout (default 5s), else the connection is")
+	fmt.Fprintln(w, "  dropped between pings; raise --timeout for a longer interval.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Exit 0 if at least one pong was received (partial loss included); exit 1 on total")
+	fmt.Fprintln(w, "  loss or dial failure, so `wsstat ping -c 3 <url>` works as a liveness gate.")
 	fmt.Fprintln(w)
 	printCommonFlags(w)
 }

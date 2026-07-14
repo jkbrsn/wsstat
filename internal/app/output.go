@@ -95,6 +95,15 @@ func (c *Client) colorizeGreen(text string) string {
 	return color.TeaGreen.Sprint(text)
 }
 
+// colorizeRed returns the text with red color applied if color output is enabled. Used for
+// ping connection-death lines.
+func (c *Client) colorizeRed(text string) string {
+	if !c.colorEnabled() {
+		return text
+	}
+	return color.Red.Sprint(text)
+}
+
 // printJSONLine prints a JSON line.
 func (*Client) printJSONLine(payload any) error {
 	data, err := json.Marshal(payload)
@@ -290,6 +299,77 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 	if c.verbosityLevel >= 1 {
 		_ = c.PrintTimingResults(target, &MeasurementResult{Result: result})
 	}
+}
+
+// dialTimingSummary renders the one-line dial-phase breakdown for the ping header. The tls
+// segment is omitted for ws:// targets (no TLS handshake).
+func dialTimingSummary(result *wsstat.Result) string {
+	segs := []string{
+		"dns " + formatDuration(result.DNSLookup),
+		"tcp " + formatDuration(result.TCPConnection),
+	}
+	if result.TLSHandshake > 0 {
+		segs = append(segs, "tls "+formatDuration(result.TLSHandshake))
+	}
+	segs = append(segs, "ws "+formatDuration(result.WSHandshake))
+	return strings.Join(segs, ", ")
+}
+
+// printPingHeader prints the "PING <url> (dns .. tcp .. ws ..)" line from the dial timings.
+// JSON/raw output and -q suppress it (the dial breakdown is measure mode's job and stays out
+// of the JSON contract in v1); -v adds the target/TLS request-detail block.
+func (c *Client) printPingHeader(target *url.URL, result *wsstat.Result) error {
+	if c.output != OutputText || c.quiet {
+		return nil
+	}
+	fmt.Printf("%s %s (%s)\n",
+		c.colorizeOrange("PING"), target.String(), dialTimingSummary(result))
+	if c.verbosityLevel >= 1 {
+		return c.PrintRequestDetails(&MeasurementResult{Result: result})
+	}
+	return nil
+}
+
+// printPingReply prints a single ping outcome. JSON emits one ping_reply record; text prints a
+// colored line (green pong, red loss). -q suppresses text reply lines (the summary block is
+// still printed), matching `ping -q`.
+func (c *Client) printPingReply(
+	seq int, rtt time.Duration, outcome pingOutcome, reason string,
+) error {
+	if c.output == OutputJSON {
+		return c.printJSONLine(c.pingReplyJSONFor(seq, rtt, outcome, reason))
+	}
+	if c.output == OutputRaw || c.quiet {
+		return nil
+	}
+	if outcome == pingPong {
+		fmt.Printf("%s seq=%d rtt=%s\n", c.colorizeGreen("pong:"), seq, formatDuration(rtt))
+	} else {
+		fmt.Printf("%s seq=%d %s\n", c.colorizeRed("lost:"), seq, reason)
+	}
+	return nil
+}
+
+// printPingSummary prints the closing statistics block. JSON emits one ping_summary record;
+// text prints the "--- <url> ping statistics ---" block, omitting the rtt line when no pong
+// was received. Printed on every termination path, including under -q.
+func (c *Client) printPingSummary(report *PingReport) error {
+	if c.output == OutputJSON {
+		return c.printJSONLine(c.pingSummaryJSONFor(report))
+	}
+	if c.output == OutputRaw {
+		return nil
+	}
+	fmt.Println()
+	fmt.Printf("--- %s ping statistics ---\n", report.Target.String())
+	fmt.Printf("%d sent, %d received, %.1f%% loss\n",
+		report.Sent, report.Received, report.LossPct())
+	if report.Received > 0 {
+		fmt.Printf("rtt min/avg/max/stddev = %s/%s/%s/%s ms\n",
+			msString(report.Min), msString(report.Avg),
+			msString(report.Max), msString(report.Stddev))
+	}
+	return nil
 }
 
 // printTimingResultsBasic prints a concise timing summary used for verbosity level 0.

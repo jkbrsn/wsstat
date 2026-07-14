@@ -84,11 +84,12 @@ type Client struct {
 	verbosityLevel int  // 0 = summary, 1 = extended, >=2 = full detail
 
 	// Mode
-	mode            Mode // measure or stream
+	mode            Mode // measure, stream, or ping
 	once            bool // stream: exit after the first event
 	buffer          int
 	summaryInterval time.Duration
 	sendDelay       time.Duration // stream: delay between successive text message sends
+	interval        time.Duration // ping: delay between successive ping frames
 
 	// TLS configuration
 	insecure bool // skip TLS certificate verification
@@ -240,6 +241,12 @@ func WithSendDelay(d time.Duration) Option {
 	return func(c *Client) { c.sendDelay = d }
 }
 
+// WithInterval sets the ping-mode delay between successive ping frames. Zero applies the
+// default (1s) in Validate; values below 10ms are rejected there to keep the tool polite.
+func WithInterval(d time.Duration) Option {
+	return func(c *Client) { c.interval = d }
+}
+
 // WithInsecure configures whether to skip TLS certificate verification.
 func WithInsecure(insecure bool) Option {
 	return func(c *Client) { c.insecure = insecure }
@@ -323,6 +330,9 @@ func (c *Client) TextMessages() []string { return c.textMessages }
 
 // SendDelay returns the stream-mode delay between successive text message sends.
 func (c *Client) SendDelay() time.Duration { return c.sendDelay }
+
+// Interval returns the ping-mode delay between successive ping frames.
+func (c *Client) Interval() time.Duration { return c.interval }
 
 // wsstatOptions builds wsstat options based on client configuration.
 func (c *Client) wsstatOptions() []wsstat.Option {
@@ -461,6 +471,10 @@ func (c *Client) Validate() error {
 
 	if c.sendDelay < 0 {
 		return errors.New("send-delay must be zero or greater")
+	}
+
+	if c.mode == ModePing {
+		return c.validatePing()
 	}
 
 	if c.mode == ModeStream {

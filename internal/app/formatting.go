@@ -84,6 +84,11 @@ func msPtr(d time.Duration) *float64 {
 	return &ms
 }
 
+// floatPtr returns a pointer to v. Unlike msPtr it never collapses zero to nil, so a
+// legitimately-zero aggregate (e.g. single-sample ping stddev) stays present in JSON rather
+// than being dropped by omitempty.
+func floatPtr(v float64) *float64 { return &v }
+
 func parseHeaders(pairs []string) (http.Header, error) {
 	header := http.Header{}
 	for _, pair := range pairs {

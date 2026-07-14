@@ -3,8 +3,15 @@ package main
 import (
 	"errors"
 	"flag"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jkbrsn/wsstat/v3/internal/app"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,5 +132,115 @@ func TestDispatchRouting(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "wss://example.com", target.String())
 		assert.True(t, client.Once())
+	})
+}
+
+// pingTestServer starts a WebSocket server and returns its ws:// URL. When answer is true it
+// reads in the background, so coder auto-answers pings; when false it never reads, so pings go
+// unanswered and time out client-side. Torn down via t.Cleanup.
+//
+//revive:disable-next-line:flag-parameter test-server behavior toggle
+func pingTestServer(t *testing.T, answer bool) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		if answer {
+			ctx := conn.CloseRead(r.Context())
+			<-ctx.Done()
+			return
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// runPingExitCode runs runPing with stdout suppressed and maps its error to a process exit code.
+func runPingExitCode(t *testing.T, args []string) int {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	runErr := runPing(args)
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	_, _ = io.Copy(io.Discard, r)
+	_ = r.Close()
+
+	if runErr == nil {
+		return 0
+	}
+	if errors.Is(runErr, errPingTotalLoss) {
+		return exitRuntime // main exits exitRuntime on this sentinel without extra output
+	}
+	var ce *cliError
+	if errors.As(runErr, &ce) {
+		return ce.code
+	}
+	return exitRuntime
+}
+
+// TestRunPingExitCodes exercises the runtime exit-code contract end-to-end against a live
+// WebSocket server: a pong yields exit 0, total loss yields exit 1, and a deadline terminates
+// the run on its own with exit 0.
+func TestRunPingExitCodes(t *testing.T) {
+	t.Run("count reached exits 0", func(t *testing.T) {
+		url := pingTestServer(t, true)
+		assert.Equal(t, 0, runPingExitCode(t, []string{"-c", "2", "-i", "20ms", url}))
+	})
+
+	t.Run("total loss exits 1", func(t *testing.T) {
+		url := pingTestServer(t, false)
+		code := runPingExitCode(t, []string{
+			"-c", "2", "-i", "20ms", "--timeout", "150ms", "--close-timeout", "150ms", url,
+		})
+		assert.Equal(t, exitRuntime, code)
+	})
+
+	t.Run("deadline self-terminates exit 0", func(t *testing.T) {
+		url := pingTestServer(t, true)
+		assert.Equal(t, 0, runPingExitCode(t, []string{"-w", "300ms", "-i", "100ms", url}))
+	})
+}
+
+// TestBuildPingUsageErrors verifies ping-mode usage rejections map to exit 2 and a valid
+// invocation parses cleanly.
+func TestBuildPingUsageErrors(t *testing.T) {
+	t.Parallel()
+
+	usageCases := []struct {
+		name string
+		args []string
+	}{
+		{"text rejected", []string{"-t", "hi", "wss://example.com"}},
+		{"empty text rejected", []string{"-t", "", "wss://example.com"}},
+		{"rpc-method rejected", []string{"--rpc-method", "eth_x", "wss://example.com"}},
+		{"empty rpc-method rejected", []string{"--rpc-method", "", "wss://example.com"}},
+		{"file rejected", []string{"--file", "cap.ndjson", "wss://example.com"}},
+		{"raw output rejected", []string{"-o", "raw", "wss://example.com"}},
+		{"zero deadline rejected", []string{"-w", "0s", "wss://example.com"}},
+		{"interval below floor rejected", []string{"-i", "1ms", "wss://example.com"}},
+	}
+	for _, tc := range usageCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildPing(tc.args)
+			var ce *cliError
+			require.ErrorAs(t, usageErr(err), &ce)
+			assert.Equal(t, exitUsage, ce.code)
+		})
+	}
+
+	t.Run("valid ping parses", func(t *testing.T) {
+		cfg, err := buildPing([]string{"-c", "3", "-i", "500ms", "wss://example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "wss://example.com", cfg.target.String())
+		assert.Equal(t, 3, cfg.client.Count())
+		assert.Equal(t, 500*time.Millisecond, cfg.client.Interval())
+		assert.Equal(t, time.Duration(0), cfg.deadline)
 	})
 }

@@ -37,6 +37,9 @@ const (
 	ModeMeasure Mode = iota
 	// ModeStream streams subscription events.
 	ModeStream
+	// ModePing sends periodic WebSocket ping frames on one connection and reports
+	// per-ping RTT plus a ping(8)-style summary.
+	ModePing
 )
 
 // ParseOutput normalizes and validates an output contract string. An empty

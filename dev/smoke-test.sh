@@ -53,6 +53,26 @@ check_teardown_bound() {
 	[[ "$ms" -lt 2500 ]]
 }
 
+# check_ping_json asserts `ping -c 2 -o json` emits exactly two ping_reply records and one
+# ping_summary record. coder answers ping frames below the handler, so both pings pong.
+check_ping_json() {
+	"$WSSTAT" ping -c 2 -i 50ms -o json "$WS_URL/echo" 2>/dev/null | jq -es '
+		([.[] | select(.type == "ping_reply")]   | length == 2) and
+		([.[] | select(.type == "ping_summary")] | length == 1)
+	' >/dev/null
+}
+
+# check_ping_total_loss drives ping against /push, a write-only peer that never reads and so
+# never answers a ping. The connection stays fed by its pushed frames, so the ping times out
+# on its own deadline (a real no-response), the run ends with zero pongs, and the exit code is
+# exactly 1 -- the CLI-surface liveness-gate contract. --close-timeout bounds the teardown
+# against the non-echoing peer so the case stays fast.
+check_ping_total_loss() {
+	"$WSSTAT" ping -c 1 -i 300ms --timeout 500ms --close-timeout 300ms \
+		"$WS_URL/push?rate=20" >/dev/null 2>&1
+	[[ $? -eq 1 ]]
+}
+
 # check_multi_send drives a two-frame conversation on one connection: subscribe,
 # then a duplicate subscribe --send-delay later. The second reply must be the
 # server's "Already subscribed" rejection, which is only reachable when both
@@ -152,6 +172,19 @@ check "buffer size"        "$WSSTAT" stream -b 8 -t sub -c 3 "$WS_URL/stream?rat
 check "stream raw clean"   check_stream_raw_clean
 check "summary-interval"   check_summary_interval
 check "repeated -t conversation" check_multi_send
+
+# --- Ping subcommand --------------------------------------------------------
+# /echo pongs every ping (coder answers below the handler); /push never reads, so
+# it never pongs and drives the total-loss (exit 1) path end to end.
+check "ping bounded"       "$WSSTAT" ping -c 3 -i 100ms "$WS_URL/echo"
+if [[ $HAVE_JQ -eq 1 ]]; then
+	check "ping json"      check_ping_json
+else
+	skip "ping json" "jq not installed"
+fi
+check "ping total loss"    check_ping_total_loss
+# Usage rejection: ping mode has no payload, so -t is an argument error (exit 2).
+check "ping rejects -t"    bash -c "! $WSSTAT ping -t hi $WS_URL/echo"
 
 # --- Failure & edge paths ---------------------------------------------------
 check "timeout trips"      bash -c "! $WSSTAT -timeout 1s -t hi $WS_URL/slow"

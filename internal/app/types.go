@@ -95,6 +95,35 @@ type subscriptionEntryJSON struct {
 	Error              string   `json:"error,omitempty"`
 }
 
+// pingReplyJSON is one NDJSON record per ping in ping mode. On a pong rtt_ms is set; on a
+// timeout or connection death lost is true and error carries the detail (rtt_ms omitted).
+// A pong sets RTTMs (a non-nil pointer, so a sub-microsecond RTT that rounds to 0.0 still
+// serializes); a lost reply leaves it nil and sets Lost + Error.
+type pingReplyJSON struct {
+	Schema string   `json:"schema_version"`
+	Type   string   `json:"type"` // "ping_reply"
+	Seq    int      `json:"seq"`
+	RTTMs  *float64 `json:"rtt_ms,omitempty"` // nil (omitted) when lost
+	Lost   bool     `json:"lost,omitempty"`
+	Error  string   `json:"error,omitempty"` // timeout / close detail
+}
+
+// pingSummaryJSON is the final NDJSON record in ping mode: counts, loss, and RTT aggregates.
+// The RTT fields are pointers so they stay present (and zero-valued, e.g. a single-sample
+// stddev) whenever a pong was received, and are omitted only when received == 0.
+type pingSummaryJSON struct {
+	Schema   string   `json:"schema_version"`
+	Type     string   `json:"type"` // "ping_summary"
+	URL      string   `json:"url"`
+	Sent     int      `json:"sent"`
+	Received int      `json:"received"`
+	LossPct  float64  `json:"loss_pct"`
+	MinMs    *float64 `json:"min_ms,omitempty"` // nil (omitted) when received == 0
+	AvgMs    *float64 `json:"avg_ms,omitempty"`
+	MaxMs    *float64 `json:"max_ms,omitempty"`
+	StddevMs *float64 `json:"stddev_ms,omitempty"`
+}
+
 // errorOutputJSON is the schema-stable error envelope emitted under -o json when a runtime
 // failure occurs, so a `wsstat ... -o json | jq` pipeline always receives a parseable record
 // on the failure path instead of falling back to plain stderr text.
