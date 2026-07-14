@@ -251,7 +251,7 @@ func interruptContext() (context.Context, context.CancelFunc) {
 // buildMeasure parses measure-mode args and returns a validated client and target.
 func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("measure", flag.ContinueOnError)
-	var cf commonFlags
+	cf := newCommonFlags()
 	registerCommon(fs, &cf)
 	registerRemoved(fs)
 	count := fs.Int("c", 1, "number of interactions to perform (>= 1)")
@@ -289,7 +289,7 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 // Whether --once was requested is available via client.Once().
 func buildStream(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("stream", flag.ContinueOnError)
-	var cf commonFlags
+	cf := newCommonFlags()
 	registerCommon(fs, &cf)
 	registerRemoved(fs)
 	count := fs.Int("c", 0, "number of events to receive; 0 = unlimited")
@@ -353,20 +353,60 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	return client, target, nil
 }
 
-// rejectPingIncompatible rejects payload and response-recording flags that ping mode does not
-// support, keyed on whether each was set rather than its resolved value, so an explicitly empty
-// value (-t ”, --rpc-method ”, --file ”) is rejected too. Mirrors the app-layer validatePing
-// rejections for the direct-API path. --rpc-version-without-a-message is left to resolveCommon.
-func rejectPingIncompatible(set map[string]bool) error {
-	switch {
-	case set["t"] || set["text"]:
-		return errors.New("-t/--text is not supported in ping mode")
-	case set["rpc-method"]:
-		return errors.New("--rpc-method is not supported in ping mode")
-	case set["file"]:
-		return errors.New("--file has no meaning in ping mode (no response payloads)")
+// unsupportedFlag describes a flag a subcommand rejects: the reason shown in the error,
+// and whether the flag takes a value (its arity), so the stub registration consumes any
+// value token: -t @- must not read stdin, and a following value must not be misread as
+// the positional URL.
+type unsupportedFlag struct {
+	reason string
+	valued bool
+}
+
+// pingUnsupported maps the flags the ping subcommand rejects (internal flag name,
+// without dashes) to their rejection details.
+var pingUnsupported = map[string]unsupportedFlag{
+	"t":           {"ping sends ping frames, not messages", true},
+	"text":        {"ping sends ping frames, not messages", true},
+	"rpc-method":  {"ping sends ping frames, not messages", true},
+	"rpc-version": {"ping sends ping frames, not messages", true},
+	"file":        {"ping has no response payloads to record", true},
+	"body":        {"ping renders no response bodies", true},
+	"clip":        {"ping renders no response bodies", false},
+}
+
+// registerUnsupported registers a subcommand's unsupported flags as inert stubs on fs,
+// matching each flag's arity. Whether one was actually used is reported by
+// unsupportedFlagError after Parse, keyed on the flag being set rather than its resolved
+// value, so an explicitly empty value (-t ”, --file ”) is rejected too. Mirrors the
+// app-layer validatePing rejections for the direct-API path.
+func registerUnsupported(fs *flag.FlagSet, flags map[string]unsupportedFlag) {
+	for name, f := range flags {
+		if f.valued {
+			fs.String(name, "", "not supported by this subcommand")
+		} else {
+			fs.Bool(name, false, "not supported by this subcommand")
+		}
 	}
-	return nil
+}
+
+// unsupportedFlagError returns a targeted error if any of the subcommand's unsupported
+// flags was explicitly set on fs. Detection runs after Parse, so it sees only genuine
+// flag tokens, never values that merely look like one.
+func unsupportedFlagError(fs *flag.FlagSet, cmd string, flags map[string]unsupportedFlag) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if err != nil {
+			return
+		}
+		if u, ok := flags[f.Name]; ok {
+			dashes := "--"
+			if len(f.Name) == 1 {
+				dashes = "-"
+			}
+			err = fmt.Errorf("%s%s is not supported in %s mode: %s", dashes, f.Name, cmd, u.reason)
+		}
+	})
+	return err
 }
 
 // pingConfig bundles the validated ping-mode settings. The deadline is CLI-layer-only (it
@@ -380,8 +420,11 @@ type pingConfig struct {
 // buildPing parses ping-mode args and returns the validated ping configuration.
 func buildPing(args []string) (pingConfig, error) {
 	fs := flag.NewFlagSet("ping", flag.ContinueOnError)
-	var cf commonFlags
-	registerCommon(fs, &cf)
+	cf := newCommonFlags()
+	registerOutputFlags(fs, &cf)
+	registerConnectionFlags(fs, &cf)
+	registerDiagnosticFlags(fs, &cf)
+	registerUnsupported(fs, pingUnsupported)
 	registerRemoved(fs)
 	count := fs.Int("c", 0, "number of pings to send; 0 = until interrupted")
 	fs.IntVar(count, "count", 0, "number of pings to send; 0 = until interrupted")
@@ -402,14 +445,11 @@ func buildPing(args []string) (pingConfig, error) {
 		return pingConfig{}, err
 	}
 
-	set := setFlagNames(fs)
-	// Reject payload/recording flags before resolveCommon expands them: ping mode has no
-	// payload, and keying on whether the flag was set (not its resolved value) catches an
-	// explicitly empty -t '' and stops -t @- from blocking on stdin only to be dropped.
-	if err := rejectPingIncompatible(set); err != nil {
+	if err := unsupportedFlagError(fs, "ping", pingUnsupported); err != nil {
 		return pingConfig{}, err
 	}
 
+	set := setFlagNames(fs)
 	opts, target, err := resolveCommon(fs, &cf, app.ModePing)
 	if err != nil {
 		return pingConfig{}, err

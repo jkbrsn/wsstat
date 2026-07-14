@@ -221,7 +221,10 @@ func TestBuildPingUsageErrors(t *testing.T) {
 		{"empty text rejected", []string{"-t", "", "wss://example.com"}},
 		{"rpc-method rejected", []string{"--rpc-method", "eth_x", "wss://example.com"}},
 		{"empty rpc-method rejected", []string{"--rpc-method", "", "wss://example.com"}},
+		{"rpc-version rejected", []string{"--rpc-version", "1.0", "wss://example.com"}},
 		{"file rejected", []string{"--file", "cap.ndjson", "wss://example.com"}},
+		{"body rejected", []string{"--body", "compact", "wss://example.com"}},
+		{"clip rejected", []string{"--clip", "wss://example.com"}},
 		{"raw output rejected", []string{"-o", "raw", "wss://example.com"}},
 		{"zero deadline rejected", []string{"-w", "0s", "wss://example.com"}},
 		{"interval below floor rejected", []string{"-i", "1ms", "wss://example.com"}},
@@ -243,4 +246,41 @@ func TestBuildPingUsageErrors(t *testing.T) {
 		assert.Equal(t, 500*time.Millisecond, cfg.client.Interval())
 		assert.Equal(t, time.Duration(0), cfg.deadline)
 	})
+
+	t.Run("unsupported flag error names the mode", func(t *testing.T) {
+		_, err := buildPing([]string{"-t", "hi", "wss://example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "-t is not supported in ping mode")
+	})
+
+	t.Run("unsupported stub consumes its value", func(t *testing.T) {
+		// The value token must be swallowed by the stub, not misread as the URL:
+		// the error is the targeted rejection, not a positional-argument error.
+		_, err := buildPing([]string{"--file", "wss://other.example.com", "wss://example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--file is not supported in ping mode")
+	})
+}
+
+// TestPingUsageOmitsUnsupportedFlags pins the registration/usage invariant: every flag
+// ping rejects is both stub-registered (so buildPing errors) and absent from its help.
+func TestPingUsageOmitsUnsupportedFlags(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	printPingUsage(&buf)
+	help := buf.String()
+
+	for name, u := range pingUnsupported {
+		if len(name) > 1 {
+			assert.NotContains(t, help, "--"+name, "ping help must not advertise --%s", name)
+		}
+		args := []string{"-" + name, "wss://example.com"}
+		if u.valued {
+			args = []string{"-" + name, "x", "wss://example.com"}
+		}
+		_, err := buildPing(args)
+		require.Error(t, err, "-%s must be rejected in ping mode", name)
+		assert.Contains(t, err.Error(), "not supported in ping mode")
+	}
 }
