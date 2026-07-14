@@ -26,6 +26,8 @@ const (
 	pingServerCloseAfter
 	// pingServerDelayRead ignores pings for delayRead (they time out), then answers.
 	pingServerDelayRead
+	// pingServerChatty answers pings while continuously pushing unsolicited text frames.
+	pingServerChatty
 )
 
 type pingServerOpts struct {
@@ -58,6 +60,8 @@ func newPingServer(t *testing.T, opts pingServerOpts) *url.URL {
 			}
 			readCtx := conn.CloseRead(ctx)
 			<-readCtx.Done()
+		case pingServerChatty:
+			pushChatter(conn.CloseRead(ctx), conn)
 		case pingServerCloseAfter:
 			readCtx := conn.CloseRead(ctx)
 			select {
@@ -75,6 +79,21 @@ func newPingServer(t *testing.T, opts pingServerOpts) *url.URL {
 	u, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
 	require.NoError(t, err)
 	return u
+}
+
+// pushChatter writes unsolicited text frames every 2ms until the connection or context ends,
+// simulating a feed endpoint that talks without being asked.
+func pushChatter(ctx context.Context, conn *websocket.Conn) {
+	for {
+		if err := conn.Write(ctx, websocket.MessageText, []byte("chatter")); err != nil {
+			return
+		}
+		select {
+		case <-time.After(2 * time.Millisecond):
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func TestPingStats(t *testing.T) {
@@ -171,6 +190,69 @@ func TestRunPingContextCancelPrintsSummary(t *testing.T) {
 
 	require.NotNil(t, report)
 	assert.GreaterOrEqual(t, report.Received, 1, "at least one pong before cancel")
+	assert.Equal(t, report.Received, report.Sent,
+		"a canceled in-flight ping must not count as loss")
+	assert.Contains(t, out, "STATS ")
+}
+
+func TestRunPingSurvivesChattyPeer(t *testing.T) {
+	// A peer that pushes unsolicited data frames must not starve pong processing: without
+	// discarded reads the pump stalls once readChan's 8-slot buffer fills, coder/websocket
+	// stops reading, and every subsequent ping times out against a healthy endpoint.
+	u := newPingServer(t, pingServerOpts{mode: pingServerChatty})
+	c := &Client{
+		count: 5, mode: ModePing, interval: 20 * time.Millisecond, timeout: 2 * time.Second,
+	}
+	require.NoError(t, c.Validate())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var report *PingReport
+	out := captureStdoutFrom(t, func() error {
+		var err error
+		report, err = c.RunPing(ctx, u)
+		return err
+	})
+
+	require.NotNil(t, report)
+	assert.Equal(t, 5, report.Sent)
+	assert.Equal(t, 5, report.Received, "pongs must get through despite unsolicited data frames")
+	assert.Equal(t, 5, strings.Count(out, "pong: seq="))
+}
+
+func TestRunPingCancelInterruptsBlockedPing(t *testing.T) {
+	// Cancellation (Ctrl-C, --deadline) must cut short a ping blocked on an unresponsive
+	// peer instead of waiting out the full --timeout: PingPongContext bounds the pong wait
+	// by the caller context too.
+	u := newPingServer(t, pingServerOpts{mode: pingServerNoRead})
+	c := &Client{
+		count:      0,
+		mode:       ModePing,
+		interval:   10 * time.Millisecond,
+		timeout:    30 * time.Second,
+		closeGrace: 100 * time.Millisecond,
+	}
+	require.NoError(t, c.Validate())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	var report *PingReport
+	out := captureStdoutFrom(t, func() error {
+		var err error
+		report, err = c.RunPing(ctx, u)
+		return err
+	})
+
+	assert.Less(t, time.Since(start), 5*time.Second, "cancel must not wait out --timeout")
+	require.NotNil(t, report)
+	assert.Zero(t, report.Sent, "a canceled in-flight ping is not counted")
+	assert.Zero(t, report.Received)
 	assert.Contains(t, out, "STATS ")
 }
 
@@ -235,11 +317,14 @@ func TestRunPingTimeoutIsSurvivable(t *testing.T) {
 	// The server ignores the first ping (it times out) then starts answering. With unbounded
 	// reads the connection survives the timeout, so later pings pong: a run continues through
 	// a transient loss rather than ending on it. This is the core of the fix.
+	// Margins are deliberately wide (delayRead is 2.5x the ping timeout) so scheduling
+	// jitter under -race and CI repetition cannot let the server answer before the first
+	// ping's timeout fires.
 	u := newPingServer(t, pingServerOpts{
-		mode: pingServerDelayRead, delayRead: 90 * time.Millisecond,
+		mode: pingServerDelayRead, delayRead: 150 * time.Millisecond,
 	})
 	c := &Client{
-		count:    5,
+		count:    8,
 		mode:     ModePing,
 		interval: 50 * time.Millisecond,
 		timeout:  60 * time.Millisecond,
@@ -257,7 +342,7 @@ func TestRunPingTimeoutIsSurvivable(t *testing.T) {
 	})
 
 	require.NotNil(t, report)
-	assert.Equal(t, 5, report.Sent, "all pings fire; the run is not cut short by the timeout")
+	assert.Equal(t, 8, report.Sent, "all pings fire; the run is not cut short by the timeout")
 	assert.GreaterOrEqual(t, report.Received, 1, "connection survives the timeout and later pongs")
 	assert.Contains(t, out, "timeout: seq=1", "the first ping times out")
 	assert.Contains(t, out, "pong: seq=", "a later ping succeeds on the same connection")

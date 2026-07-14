@@ -137,6 +137,7 @@ type WSStat struct {
 	compress       bool              // negotiate permessage-deflate
 	validateUTF8   bool              // validate UTF-8 on inbound text frames
 	unboundedReads bool              // drop the read pump's per-read timeout (long-lived sessions)
+	discardReads   bool              // drop unclaimed inbound data frames instead of queueing them
 	invalidUTF8    atomic.Int64      // count of text frames that failed UTF-8 validation
 
 	// Close-handshake frame, settable via CloseWith before teardown.
@@ -185,6 +186,7 @@ func New(opts ...Option) *WSStat {
 		compress:                  cfg.compress,
 		validateUTF8:              cfg.validateUTF8,
 		unboundedReads:            cfg.unboundedReads,
+		discardReads:              cfg.discardReads,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
@@ -355,17 +357,30 @@ func (ws *WSStat) readPump() {
 			ws.log.Warn().Int("bytes", len(read.data)).Msg("received text frame with invalid UTF-8")
 		}
 
-		// Message read successfully, dispatch if not handled by subscription
-		if ws.dispatchIncoming(read) {
-			continue
-		}
-
-		select {
-		case ws.readChan <- read:
-		case <-ws.ctx.Done():
-			ws.log.Debug().Msg("Context done, dropping read message")
+		if !ws.deliverRead(read) {
 			return
 		}
+	}
+}
+
+// deliverRead routes a successfully-read frame: subscription dispatch first; in discard mode
+// unclaimed frames are dropped so the pump keeps reading (no consumer drains readChan, and a
+// blocked pump would also starve pong control-frame handling — coder/websocket processes
+// control frames only inside Read); otherwise the frame is queued for the read methods.
+// Reports false when the pump should exit.
+func (ws *WSStat) deliverRead(read *wsRead) bool {
+	if ws.dispatchIncoming(read) {
+		return true
+	}
+	if ws.discardReads {
+		return true
+	}
+	select {
+	case ws.readChan <- read:
+		return true
+	case <-ws.ctx.Done():
+		ws.log.Debug().Msg("Context done, dropping read message")
+		return false
 	}
 }
 
@@ -604,6 +619,13 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 // are recorded around the single call.
 // Sets result times: MessageReads, MessageWrites
 func (ws *WSStat) PingPong() error {
+	return ws.PingPongContext(context.Background())
+}
+
+// PingPongContext is PingPong with the pong wait additionally bounded by ctx: the round-trip
+// ends at the earliest of ctx's cancellation, the connection's context, and the read timeout.
+// It lets a caller-side deadline or interrupt cut short a ping blocked on an unresponsive peer.
+func (ws *WSStat) PingPongContext(ctx context.Context) error {
 	if ws.closed.Load() {
 		return ErrClosed
 	}
@@ -616,8 +638,10 @@ func (ws *WSStat) PingPong() error {
 	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
 	ws.timings.mu.Unlock()
 
-	pingCtx, cancel := context.WithTimeout(ws.ctx, ws.timeout)
+	pingCtx, cancel := context.WithTimeout(ctx, ws.timeout)
 	defer cancel()
+	stop := context.AfterFunc(ws.ctx, cancel)
+	defer stop()
 	if err := conn.Ping(pingCtx); err != nil {
 		return err
 	}
@@ -1068,6 +1092,9 @@ type options struct {
 	// subscription), for long-lived sessions where control-frame traffic (ping/pong)
 	// carries the connection but never surfaces as a read.
 	unboundedReads bool
+	// discardReads drops inbound data frames not claimed by a subscription instead of
+	// queueing them on the read channel, for sessions that never call ReadMessage.
+	discardReads bool
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -1087,6 +1114,13 @@ func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout =
 // after the last data frame. PingPong keeps its own per-ping timeout, so a lost pong is still
 // detected; it just no longer kills the connection.
 func WithUnboundedReads() Option { return func(o *options) { o.unboundedReads = true } }
+
+// WithDiscardReads drops inbound data frames not claimed by a subscription instead of
+// queueing them on the read channel. Without it, a session that never calls ReadMessage
+// (such as a ping/pong monitor) fills the read channel after bufferSize unsolicited frames
+// from a chatty peer; the blocked read pump then stops calling Read, which also starves
+// pong control-frame processing. Error reads are still delivered to the read channel.
+func WithDiscardReads() Option { return func(o *options) { o.discardReads = true } }
 
 // WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
 // before forcing the connection shut. Zero or negative fires the teardown immediately

@@ -40,7 +40,7 @@ const (
 	// pingDead is a closed connection or other transport error; it ends the run.
 	pingDead
 	// pingCanceled marks a ping interrupted mid-flight by context cancellation (Ctrl-C or
-	// --deadline). It counts as sent but prints no reply line and ends the run.
+	// --deadline). It counts as neither sent nor lost, prints no reply line, and ends the run.
 	pingCanceled
 )
 
@@ -148,19 +148,16 @@ func (c *Client) pingTimeout() time.Duration {
 	return defaultReadTimeout
 }
 
-// classifyPing maps a PingPong error to an outcome and a human reason. With unbounded reads a
-// missed pong surfaces as a clean context.DeadlineExceeded and leaves the connection alive, so
-// it is a survivable timeout; anything else (a peer close, a transport error) means the
-// connection is gone. Only stdlib and wsstat sentinels are consulted (no coder/websocket import).
+// classifyPing maps a non-nil PingPong error to an outcome and a human reason. With unbounded
+// reads a missed pong surfaces as a clean context.DeadlineExceeded and leaves the connection
+// alive, so it is a survivable timeout; anything else (a peer close, a transport error) means
+// the connection is gone. Only stdlib and wsstat sentinels are consulted (no coder/websocket
+// import).
 func (c *Client) classifyPing(err error) (pingOutcome, string) {
-	switch {
-	case err == nil:
-		return pingPong, ""
-	case errors.Is(err, context.DeadlineExceeded):
+	if errors.Is(err, context.DeadlineExceeded) {
 		return pingTimeout, fmt.Sprintf("no response within %s", c.pingTimeout())
-	default:
-		return pingDead, deadReason(err)
 	}
+	return pingDead, deadReason(err)
 }
 
 // deadReason renders the human reason for a terminal ping loss.
@@ -189,8 +186,12 @@ func (c *Client) RunPing(ctx context.Context, target *url.URL) (*PingReport, err
 
 	// Unbounded reads keep the connection alive while only ping/pong traffic flows: pongs are
 	// control frames the read pump never sees as reads, so the default per-read timeout would
-	// otherwise close the socket one --timeout after dial.
-	ws := wsstat.New(append(c.wsstatOptions(), wsstat.WithUnboundedReads())...)
+	// otherwise close the socket one --timeout after dial. Discarded reads keep the pump
+	// running against a chatty peer (welcome messages, heartbeats, feed data): nothing here
+	// consumes data frames, and a stalled pump would starve pong processing and misreport a
+	// healthy endpoint as total loss.
+	ws := wsstat.New(append(
+		c.wsstatOptions(), wsstat.WithUnboundedReads(), wsstat.WithDiscardReads())...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
 		return nil, handleConnectionError(err, target.String())
@@ -241,23 +242,30 @@ loop:
 
 // pingOnce sends one ping, records it, and prints the reply line, returning the outcome. A pong
 // or a survivable timeout lets the run continue; pingDead (a closed connection) and pingCanceled
-// (a context canceled mid-ping) end it. A canceled ping still counts as sent but prints no reply
-// line, since a --deadline expiry is not a real loss. The error return is an output-write error.
+// (a context canceled mid-ping) end it. A pong that arrived in the same instant the context was
+// canceled is still a received pong (the run then ends via the loop's context check), so a
+// --deadline that fires just after the reply cannot flip a live host to total loss. A canceled
+// ping with no pong counts as neither sent nor lost: its wait was cut short of the full timeout
+// window, so letting it into the stats would report phantom loss on every Ctrl-C. sent otherwise
+// counts attempts, so a write that failed on an already-dead connection is included (unlike
+// ping(8), which counts only transmitted probes). The error return is an output-write error.
 func (c *Client) pingOnce(
 	ctx context.Context, ws *wsstat.WSStat, stats *pingStats, seq int,
 ) (pingOutcome, error) {
 	start := time.Now()
-	pingErr := ws.PingPong()
+	pingErr := ws.PingPongContext(ctx)
 	rtt := time.Since(start)
-	stats.sent++
 
+	if pingErr == nil {
+		stats.sent++
+		stats.observe(rtt)
+		return pingPong, c.printPingReply(seq, rtt, pingPong, "")
+	}
 	if ctx.Err() != nil {
 		return pingCanceled, nil
 	}
+	stats.sent++
 	outcome, reason := c.classifyPing(pingErr)
-	if outcome == pingPong {
-		stats.observe(rtt)
-	}
 	return outcome, c.printPingReply(seq, rtt, outcome, reason)
 }
 

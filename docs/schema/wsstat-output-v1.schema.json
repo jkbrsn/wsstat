@@ -145,7 +145,7 @@
     },
     "ping_reply": {
       "type": "object",
-      "description": "One record per ping in ping mode. A pong carries rtt_ms; a lost ping sets lost=true and error (rtt_ms omitted). A loss ends the run.",
+      "description": "One record per ping in ping mode. A pong carries rtt_ms; a lost ping sets lost=true and error (rtt_ms omitted). A timeout loss is survivable and the run continues; only a connection loss ends the run.",
       "required": ["schema_version", "type", "seq"],
       "properties": {
         "schema_version": { "$ref": "#/$defs/schemaVersion" },

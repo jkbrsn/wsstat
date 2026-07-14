@@ -70,6 +70,20 @@ func TestRemovedFlagsRejected(t *testing.T) {
 	}
 }
 
+// TestMeasureStreamRejectPingFlags pins that ping-only flags stay unknown outside ping
+// mode: a refactor that re-broadens flag registration must not let -w/--deadline parse in
+// measure or stream.
+func TestMeasureStreamRejectPingFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, flagArg := range []string{"-w", "--deadline"} {
+		_, _, err := buildMeasure([]string{flagArg, "10s", "wss://example.com"})
+		assert.ErrorIs(t, err, errUsageShown, "measure must reject %s", flagArg)
+		_, _, err = buildStream([]string{flagArg, "10s", "wss://example.com"})
+		assert.ErrorIs(t, err, errUsageShown, "stream must reject %s", flagArg)
+	}
+}
+
 // TestErrorClassification verifies the exit-code contract: flag-parse sentinels pass
 // through untouched, post-parse validation maps to exit 2, and runtime failures map to
 // exit 1 carrying the output contract for the JSON envelope.
