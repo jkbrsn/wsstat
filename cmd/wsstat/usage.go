@@ -134,6 +134,7 @@ func printStreamUsage(w io.Writer) {
 	fmt.Fprintln(w, "                                 print stat summaries every interval (e.g., 5s, 1m) [default: disabled]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Note: -t may be repeated; each message is sent in order on the same connection, --send-delay apart.")
+	fmt.Fprintln(w, "        If the receive limit (-c, --once) is reached first, remaining sends are skipped.")
 	fmt.Fprintln(w)
 	printCommonFlags(w)
 }

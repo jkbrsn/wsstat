@@ -204,7 +204,8 @@ In `stream`, `-t` may be repeated to hold a multi-frame conversation on a single
 connection: each message is sent in argv order, spaced by `--send-delay`
 (default `1s`) so the server can answer each frame before the next arrives. The
 first message is the subscribe payload; receiving is unchanged, so `-c`,
-`--once`, and `--timeout` still bound the read side:
+`--once`, and `--timeout` still bound the read side. If the receive limit is
+reached before all messages are sent, the remaining sends are skipped:
 
 ```sh
 wsstat stream -c 4 -o json \
