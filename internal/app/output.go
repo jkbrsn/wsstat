@@ -331,8 +331,8 @@ func (c *Client) printPingHeader(target *url.URL, result *wsstat.Result) error {
 }
 
 // printPingReply prints a single ping outcome. JSON emits one ping_reply record; text prints a
-// colored line (green pong, red loss). -q suppresses text reply lines (the summary block is
-// still printed), matching `ping -q`.
+// colored line (green pong, orange timeout, red connection loss). -q suppresses text reply lines
+// (the summary block is still printed), matching `ping -q`.
 func (c *Client) printPingReply(
 	seq int, rtt time.Duration, outcome pingOutcome, reason string,
 ) error {
@@ -342,10 +342,15 @@ func (c *Client) printPingReply(
 	if c.output == OutputRaw || c.quiet {
 		return nil
 	}
-	if outcome == pingPong {
+	switch outcome {
+	case pingPong:
 		fmt.Printf("%s seq=%d rtt=%s\n", c.colorizeGreen("pong:"), seq, formatDuration(rtt))
-	} else {
+	case pingTimeout:
+		fmt.Printf("%s seq=%d (%s)\n", c.colorizeOrange("timeout:"), seq, c.pingTimeout())
+	case pingDead:
 		fmt.Printf("%s seq=%d %s\n", c.colorizeRed("lost:"), seq, reason)
+	default:
+		// pingCanceled is handled before printing; nothing to render.
 	}
 	return nil
 }

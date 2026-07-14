@@ -24,11 +24,14 @@ const (
 	pingServerNoRead
 	// pingServerCloseAfter answers for closeAfter, then closes the connection normally.
 	pingServerCloseAfter
+	// pingServerDelayRead ignores pings for delayRead (they time out), then answers.
+	pingServerDelayRead
 )
 
 type pingServerOpts struct {
 	mode       pingServerMode
 	closeAfter time.Duration
+	delayRead  time.Duration
 }
 
 // newPingServer starts an httptest WebSocket server whose ping handling follows opts, and
@@ -47,6 +50,14 @@ func newPingServer(t *testing.T, opts pingServerOpts) *url.URL {
 		switch opts.mode {
 		case pingServerNoRead:
 			<-ctx.Done()
+		case pingServerDelayRead:
+			select {
+			case <-time.After(opts.delayRead):
+			case <-ctx.Done():
+				return
+			}
+			readCtx := conn.CloseRead(ctx)
+			<-readCtx.Done()
 		case pingServerCloseAfter:
 			readCtx := conn.CloseRead(ctx)
 			select {
@@ -188,8 +199,9 @@ func TestRunPingConnectionDeath(t *testing.T) {
 }
 
 func TestRunPingZeroPongs(t *testing.T) {
-	// A server that never answers ends the run on the first missed pong: wsstat's read pump
-	// drops the idle socket after the timeout, so a loss is terminal even though -c is 3.
+	// A server that never answers times out every ping. With unbounded reads a timeout is
+	// survivable, so the run does not end early: all -c pings fire, each a timeout, and the
+	// summary reports total loss.
 	u := newPingServer(t, pingServerOpts{mode: pingServerNoRead})
 	c := &Client{
 		count:      3,
@@ -211,13 +223,44 @@ func TestRunPingZeroPongs(t *testing.T) {
 	})
 
 	require.NotNil(t, report)
-	assert.Equal(t, 1, report.Sent, "the run ends on the first missed pong")
+	assert.Equal(t, 3, report.Sent, "all pings fire; a timeout is survivable")
 	assert.Equal(t, 0, report.Received)
 	assert.InDelta(t, 100.0, report.LossPct(), 0.001)
-	assert.Equal(t, 1, strings.Count(out, "lost: seq="))
-	assert.Contains(t, out, "no response within 120ms")
-	assert.Contains(t, out, "1 sent, 0 received, 100.0% loss")
+	assert.Equal(t, 3, strings.Count(out, "timeout: seq="))
+	assert.Contains(t, out, "3 sent, 0 received, 100.0% loss")
 	assert.NotContains(t, out, "min/avg/max/stddev")
+}
+
+func TestRunPingTimeoutIsSurvivable(t *testing.T) {
+	// The server ignores the first ping (it times out) then starts answering. With unbounded
+	// reads the connection survives the timeout, so later pings pong: a run continues through
+	// a transient loss rather than ending on it. This is the core of the fix.
+	u := newPingServer(t, pingServerOpts{
+		mode: pingServerDelayRead, delayRead: 90 * time.Millisecond,
+	})
+	c := &Client{
+		count:    5,
+		mode:     ModePing,
+		interval: 50 * time.Millisecond,
+		timeout:  60 * time.Millisecond,
+	}
+	require.NoError(t, c.Validate())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var report *PingReport
+	out := captureStdoutFrom(t, func() error {
+		var err error
+		report, err = c.RunPing(ctx, u)
+		return err
+	})
+
+	require.NotNil(t, report)
+	assert.Equal(t, 5, report.Sent, "all pings fire; the run is not cut short by the timeout")
+	assert.GreaterOrEqual(t, report.Received, 1, "connection survives the timeout and later pongs")
+	assert.Contains(t, out, "timeout: seq=1", "the first ping times out")
+	assert.Contains(t, out, "pong: seq=", "a later ping succeeds on the same connection")
 }
 
 func TestRunPingTinyIntervalStaysSequential(t *testing.T) {
@@ -291,12 +334,20 @@ func TestPingReplyOutput(t *testing.T) {
 		assert.Equal(t, "pong: seq=2 rtt=12.3ms\n", out)
 	})
 
-	t.Run("text loss", func(t *testing.T) {
+	t.Run("text timeout", func(t *testing.T) {
 		c := &Client{output: OutputText, colorMode: "never"}
 		out := captureStdoutFrom(t, func() error {
-			return c.printPingReply(3, 0, pingLost, "connection closed")
+			return c.printPingReply(3, 0, pingTimeout, "no response within 5s")
 		})
-		assert.Equal(t, "lost: seq=3 connection closed\n", out)
+		assert.Equal(t, "timeout: seq=3 (5s)\n", out)
+	})
+
+	t.Run("text connection loss", func(t *testing.T) {
+		c := &Client{output: OutputText, colorMode: "never"}
+		out := captureStdoutFrom(t, func() error {
+			return c.printPingReply(4, 0, pingDead, "connection closed")
+		})
+		assert.Equal(t, "lost: seq=4 connection closed\n", out)
 	})
 
 	t.Run("quiet suppresses text reply", func(t *testing.T) {
@@ -323,7 +374,7 @@ func TestPingReplyOutput(t *testing.T) {
 	t.Run("json lost record", func(t *testing.T) {
 		c := &Client{output: OutputJSON}
 		out := captureStdoutFrom(t, func() error {
-			return c.printPingReply(5, 0, pingLost, "no response within 5s")
+			return c.printPingReply(5, 0, pingTimeout, "no response within 5s")
 		})
 		p := decodeJSONLine(t, out)
 		assert.Equal(t, "ping_reply", p["type"])

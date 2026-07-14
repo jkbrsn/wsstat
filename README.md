@@ -229,10 +229,11 @@ wsstat ping -c 5 wss://echo.example.com
 PING wss://echo.example.com (dns 5ms, tcp 10ms, tls 12ms, ws 7ms)
 pong: seq=1 rtt=12.3ms
 pong: seq=2 rtt=11.8ms
-pong: seq=3 rtt=12.1ms
+timeout: seq=3 (5s)
+pong: seq=4 rtt=12.1ms
 ...
 --- wss://echo.example.com ping statistics ---
-5 sent, 5 received, 0.0% loss
+5 sent, 4 received, 20.0% loss
 rtt min/avg/max/stddev = 11.8/12.1/12.3/0.2 ms
 ```
 
@@ -241,11 +242,11 @@ With no `-c` the run continues until you interrupt it (`Ctrl-C`) or the optional
 per ping and a final `ping_summary` (which stays the last record even on total
 loss); `-q` prints the summary block only.
 
-A missed pong ends the run: wsstat tears the connection down after `--timeout`
-(default `5s`) of silence and does not redial in this version, so `ping` measures
-latency over a healthy connection and reports cleanly when it drops. Keep the
-interval below `--timeout` (raise `--timeout` for a longer interval). The exit
-code is 0 when at least one pong was received and 1 on total loss or a dial
+A missed pong (no reply within `--timeout`, default `5s`) is reported as a
+`timeout` line and the run **continues**, exactly like `ping(8)` — so a transient
+drop shows up as loss in the summary without ending the run. The run ends only at
+`--count`, on `Ctrl-C`/`--deadline`, or when the connection actually closes. The
+exit code is 0 when at least one pong was received and 1 on total loss or a dial
 failure, so `wsstat ping -c 3 <url>` doubles as a liveness gate.
 
 ### Output

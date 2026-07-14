@@ -110,8 +110,8 @@ func TestClientValidate(t *testing.T) {
 	})
 }
 
-// TestValidatePing exercises the ModePing branch: the interval default/floor, the
-// interval-below-timeout rule, and the rejection of measure/stream-only knobs.
+// TestValidatePing exercises the ModePing branch: the interval default/floor and the rejection
+// of measure/stream-only knobs.
 func TestValidatePing(t *testing.T) {
 	t.Parallel()
 
@@ -132,13 +132,10 @@ func TestValidatePing(t *testing.T) {
 		assert.ErrorContains(t, c.Validate(), "at least")
 	})
 
-	t.Run("interval must be below timeout", func(t *testing.T) {
-		c := &Client{mode: ModePing, interval: 6 * time.Second, timeout: 5 * time.Second}
-		assert.ErrorContains(t, c.Validate(), "below the read timeout")
-	})
-
-	t.Run("interval below custom timeout ok", func(t *testing.T) {
-		c := &Client{mode: ModePing, interval: 6 * time.Second, timeout: 10 * time.Second}
+	t.Run("interval above timeout allowed", func(t *testing.T) {
+		// Unbounded reads keep the connection alive between pings, so a long interval no
+		// longer needs to stay below --timeout.
+		c := &Client{mode: ModePing, interval: 30 * time.Second, timeout: 5 * time.Second}
 		require.NoError(t, c.Validate())
 	})
 

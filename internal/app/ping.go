@@ -25,17 +25,23 @@ const (
 	pctScale = 100
 )
 
-// pingOutcome classifies a single ping's result. There are only two: a pong was received, or
-// the ping was lost. A loss is always terminal here: wsstat's read pump tears down the socket
-// after ws.timeout of silence (no active subscription in ping mode), so a connection cannot
-// survive a missed pong, and redial-on-drop is deliberately out of scope for v1.
+// pingOutcome classifies a single ping's result. The connection dials with WithUnboundedReads,
+// so a missed pong no longer tears the socket down: a timeout is a survivable loss and the run
+// continues, exactly like ping(8). Only a real connection close (or a context canceled mid-ping)
+// ends the run.
 type pingOutcome int
 
 const (
 	// pingPong is a successful round-trip (a pong was received).
 	pingPong pingOutcome = iota
-	// pingLost is a missed pong or a dead connection; it ends the run.
-	pingLost
+	// pingTimeout is a missed pong within the per-ping timeout; the connection survives, so
+	// the run continues.
+	pingTimeout
+	// pingDead is a closed connection or other transport error; it ends the run.
+	pingDead
+	// pingCanceled marks a ping interrupted mid-flight by context cancellation (Ctrl-C or
+	// --deadline). It counts as sent but prints no reply line and ends the run.
+	pingCanceled
 )
 
 // pingStats accumulates per-ping RTTs across a run: sent/received counts, min/max/sum, and a
@@ -104,9 +110,7 @@ func (r *PingReport) LossPct() float64 {
 
 // validatePing checks ping-mode configuration and applies the interval default. Ping dials once
 // and sends bare ping frames, so it rejects every measure/stream-only knob that implies a
-// payload, a second message, or a summary cadence. The interval must stay below the read
-// timeout: wsstat's read pump drops an idle socket after that timeout, so a longer interval
-// would tear the connection down between pings.
+// payload, a second message, or a summary cadence.
 func (c *Client) validatePing() error {
 	switch {
 	case c.output == OutputRaw:
@@ -132,11 +136,6 @@ func (c *Client) validatePing() error {
 	if c.interval < minPingInterval {
 		return fmt.Errorf("interval must be at least %s", minPingInterval)
 	}
-	if c.interval >= c.pingTimeout() {
-		return fmt.Errorf(
-			"interval (%s) must be below the read timeout (%s); raise --timeout",
-			c.interval, c.pingTimeout())
-	}
 	return nil
 }
 
@@ -149,26 +148,34 @@ func (c *Client) pingTimeout() time.Duration {
 	return defaultReadTimeout
 }
 
-// pingLossReason renders a human reason for a terminal ping loss. wsstat's read pump drops the
-// socket after pingTimeout of silence, so an unanswered ping surfaces as a closed socket
-// (net.ErrClosed) or a bare deadline rather than a mid-flight timeout; both mean "no pong in
-// time". A peer-initiated close surfaces as wsstat.ErrClosed. Only stdlib and wsstat sentinels
-// are consulted (no coder/websocket import).
-func (c *Client) pingLossReason(err error) string {
+// classifyPing maps a PingPong error to an outcome and a human reason. With unbounded reads a
+// missed pong surfaces as a clean context.DeadlineExceeded and leaves the connection alive, so
+// it is a survivable timeout; anything else (a peer close, a transport error) means the
+// connection is gone. Only stdlib and wsstat sentinels are consulted (no coder/websocket import).
+func (c *Client) classifyPing(err error) (pingOutcome, string) {
 	switch {
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, net.ErrClosed):
-		return fmt.Sprintf("no response within %s", c.pingTimeout())
-	case errors.Is(err, wsstat.ErrClosed):
-		return "connection closed"
+	case err == nil:
+		return pingPong, ""
+	case errors.Is(err, context.DeadlineExceeded):
+		return pingTimeout, fmt.Sprintf("no response within %s", c.pingTimeout())
 	default:
-		return err.Error()
+		return pingDead, deadReason(err)
 	}
 }
 
-// RunPing dials the target once, then sends a WebSocket ping frame every --interval on that
-// connection, printing a per-ping RTT line live and a ping(8)-style summary at the end. The run
-// ends when the count is reached, the context is canceled (Ctrl-C or --deadline), or a ping is
-// lost (a missed pong or a closed connection); all paths print the summary.
+// deadReason renders the human reason for a terminal ping loss.
+func deadReason(err error) string {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, wsstat.ErrClosed) {
+		return "connection closed"
+	}
+	return err.Error()
+}
+
+// RunPing dials the target once (with unbounded reads so an idle connection is not torn down
+// between pings), then sends a WebSocket ping frame every --interval on that connection, printing
+// a per-ping RTT line live and a ping(8)-style summary at the end. A missed pong is reported and
+// the run continues; the run ends only when the count is reached, the context is canceled (Ctrl-C
+// or --deadline), or the connection closes. All paths print the summary.
 //
 // The error return is reserved for runtime failures the caller must surface as a non-zero exit
 // (bad header, dial failure, output-write failure). Context cancellation and connection loss are
@@ -180,7 +187,10 @@ func (c *Client) RunPing(ctx context.Context, target *url.URL) (*PingReport, err
 		return nil, err
 	}
 
-	ws := wsstat.New(c.wsstatOptions()...)
+	// Unbounded reads keep the connection alive while only ping/pong traffic flows: pongs are
+	// control frames the read pump never sees as reads, so the default per-read timeout would
+	// otherwise close the socket one --timeout after dial.
+	ws := wsstat.New(append(c.wsstatOptions(), wsstat.WithUnboundedReads())...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
 		return nil, handleConnectionError(err, target.String())
@@ -204,11 +214,14 @@ loop:
 		if ctx.Err() != nil {
 			break
 		}
-		alive, err := c.pingOnce(ctx, ws, stats, seq)
+		outcome, err := c.pingOnce(ctx, ws, stats, seq)
 		if err != nil {
 			return nil, err
 		}
-		if !alive || (c.count != 0 && seq == c.count) {
+		if outcome == pingDead || outcome == pingCanceled {
+			break
+		}
+		if c.count != 0 && seq == c.count {
 			break
 		}
 
@@ -226,26 +239,26 @@ loop:
 	return report, nil
 }
 
-// pingOnce sends one ping, records it, and prints the reply line. It returns alive=false when
-// the run should end (a lost ping or a context canceled mid-ping); the second return is an
-// output-write error only. A ping interrupted by ctx cancellation (Ctrl-C or --deadline) still
-// counts as sent but prints no reply line, since a --deadline expiry is not a real loss.
+// pingOnce sends one ping, records it, and prints the reply line, returning the outcome. A pong
+// or a survivable timeout lets the run continue; pingDead (a closed connection) and pingCanceled
+// (a context canceled mid-ping) end it. A canceled ping still counts as sent but prints no reply
+// line, since a --deadline expiry is not a real loss. The error return is an output-write error.
 func (c *Client) pingOnce(
 	ctx context.Context, ws *wsstat.WSStat, stats *pingStats, seq int,
-) (bool, error) {
+) (pingOutcome, error) {
 	start := time.Now()
 	pingErr := ws.PingPong()
 	rtt := time.Since(start)
 	stats.sent++
 
 	if ctx.Err() != nil {
-		return false, nil
+		return pingCanceled, nil
 	}
-	if pingErr != nil {
-		return false, c.printPingReply(seq, rtt, pingLost, c.pingLossReason(pingErr))
+	outcome, reason := c.classifyPing(pingErr)
+	if outcome == pingPong {
+		stats.observe(rtt)
 	}
-	stats.observe(rtt)
-	return true, c.printPingReply(seq, rtt, pingPong, "")
+	return outcome, c.printPingReply(seq, rtt, outcome, reason)
 }
 
 // pingReplyJSONFor builds the NDJSON envelope for a single ping reply.
@@ -254,8 +267,12 @@ func (*Client) pingReplyJSONFor(
 ) pingReplyJSON {
 	rec := pingReplyJSON{Schema: JSONSchemaVersion, Type: "ping_reply", Seq: seq}
 	if outcome == pingPong {
-		rec.RTTMs = new(msFloat(rtt))
+		// Pointer (not omitempty float) so a sub-microsecond RTT that rounds to 0.0 still
+		// serializes; a lost reply leaves it nil.
+		ms := msFloat(rtt)
+		rec.RTTMs = &ms
 	} else {
+		// pingTimeout and pingDead both record a lost ping with a reason.
 		rec.Lost = true
 		rec.Error = reason
 	}
@@ -273,10 +290,11 @@ func (*Client) pingSummaryJSONFor(report *PingReport) pingSummaryJSON {
 		LossPct:  report.LossPct(),
 	}
 	if report.Received > 0 {
-		rec.MinMs = new(msFloat(report.Min))
-		rec.AvgMs = new(msFloat(report.Avg))
-		rec.MaxMs = new(msFloat(report.Max))
-		rec.StddevMs = new(msFloat(report.Stddev))
+		// Pointers (not omitempty floats) so a legitimately-zero aggregate — e.g. a
+		// single-sample stddev — stays present whenever a pong was received.
+		minMs, avgMs := msFloat(report.Min), msFloat(report.Avg)
+		maxMs, stddevMs := msFloat(report.Max), msFloat(report.Stddev)
+		rec.MinMs, rec.AvgMs, rec.MaxMs, rec.StddevMs = &minMs, &avgMs, &maxMs, &stddevMs
 	}
 	return rec
 }

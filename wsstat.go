@@ -127,16 +127,17 @@ type WSStat struct {
 	wgPumps   sync.WaitGroup
 
 	// instance configuration
-	timeout      time.Duration
-	closeGrace   time.Duration
-	tlsConf      *tls.Config
-	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
-	readLimit    int64             // max inbound message size; -1 disables the limit
-	subprotocols []string          // WebSocket subprotocols to negotiate
-	headers      http.Header       // headers merged into every handshake
-	compress     bool              // negotiate permessage-deflate
-	validateUTF8 bool              // validate UTF-8 on inbound text frames
-	invalidUTF8  atomic.Int64      // count of text frames that failed UTF-8 validation
+	timeout        time.Duration
+	closeGrace     time.Duration
+	tlsConf        *tls.Config
+	resolves       map[string]string // DNS resolution overrides: "host:port" → "address"
+	readLimit      int64             // max inbound message size; -1 disables the limit
+	subprotocols   []string          // WebSocket subprotocols to negotiate
+	headers        http.Header       // headers merged into every handshake
+	compress       bool              // negotiate permessage-deflate
+	validateUTF8   bool              // validate UTF-8 on inbound text frames
+	unboundedReads bool              // drop the read pump's per-read timeout (long-lived sessions)
+	invalidUTF8    atomic.Int64      // count of text frames that failed UTF-8 validation
 
 	// Close-handshake frame, settable via CloseWith before teardown.
 	closeStatus atomic.Int64           // handshake close code (default StatusNormalClosure)
@@ -183,6 +184,7 @@ func New(opts ...Option) *WSStat {
 		headers:                   cfg.headers,
 		compress:                  cfg.compress,
 		validateUTF8:              cfg.validateUTF8,
+		unboundedReads:            cfg.unboundedReads,
 		subscriptions:             make(map[string]*subscriptionState),
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
@@ -367,15 +369,16 @@ func (ws *WSStat) readPump() {
 	}
 }
 
-// readFrame reads one frame, bounding the read with the dial/read timeout only when
-// no subscription is active. Subscriptions are long-lived and idle by nature, so a
-// per-read deadline would tear them down after a quiet interval; while one is active
-// the read blocks until ws.ctx is canceled (Close). deadlineHit reports that the bound
-// fired (a one-shot timeout) rather than a real transport error or context cancel.
+// readFrame reads one frame, bounding the read with the dial/read timeout only when no
+// subscription is active and WithUnboundedReads was not set. Subscriptions (and unbounded-read
+// sessions such as a ping/pong monitor) are long-lived and idle by nature, so a per-read
+// deadline would tear them down after a quiet interval; in those modes the read blocks until
+// ws.ctx is canceled (Close). deadlineHit reports that the bound fired (a one-shot timeout)
+// rather than a real transport error or context cancel.
 func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
 	readCtx := ws.ctx
 	var cancel context.CancelFunc
-	if !ws.hasActiveSubscriptions() {
+	if !ws.unboundedReads && !ws.hasActiveSubscriptions() {
 		readCtx, cancel = context.WithTimeout(ws.ctx, ws.timeout)
 	}
 	coderType, p, err := conn.Read(readCtx)
@@ -1061,6 +1064,10 @@ type options struct {
 	headers      http.Header       // headers merged into every handshake
 	compress     bool              // negotiate permessage-deflate
 	validateUTF8 bool              // validate UTF-8 on inbound text frames
+	// unboundedReads drops the per-read timeout on the read pump (like an active
+	// subscription), for long-lived sessions where control-frame traffic (ping/pong)
+	// carries the connection but never surfaces as a read.
+	unboundedReads bool
 }
 
 // WithBufferSize sets the buffer size for read/write/pong channels.
@@ -1071,6 +1078,15 @@ func WithLogger(logger zerolog.Logger) Option { return func(o *options) { o.logg
 
 // WithTimeout sets the timeout used for dialing and read deadlines.
 func WithTimeout(d time.Duration) Option { return func(o *options) { o.timeout = d } }
+
+// WithUnboundedReads drops the read pump's per-read timeout so an idle connection is not torn
+// down after the read/dial timeout elapses with no inbound data frame. It matches how reads
+// behave while a subscription is active. Use it for long-lived sessions driven by control
+// frames the read pump never sees as reads: a ping/pong monitor sends ping frames and receives
+// pongs (both handled below Read), so without this the connection would be closed one timeout
+// after the last data frame. PingPong keeps its own per-ping timeout, so a lost pong is still
+// detected; it just no longer kills the connection.
+func WithUnboundedReads() Option { return func(o *options) { o.unboundedReads = true } }
 
 // WithCloseGrace bounds how long Close waits for the peer's closing-handshake echo
 // before forcing the connection shut. Zero or negative fires the teardown immediately
