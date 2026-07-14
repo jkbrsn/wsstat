@@ -53,8 +53,9 @@ send it that signal — do **not** just `docker compose down`, which leaves the
 
 ```bash
 pkill -INT -f 'dev/run.sh up'    # Ctrl+C the mock; its trap tears the stack down
-# host-run mock instead? stop the go process:
-pkill -f 'dev/mock-server'
+# host-run mock instead? kill by port -- `go run .` compiles to /tmp/go-build…/exe/mock-server,
+# so a pkill on 'dev/mock-server' misses it:
+fuser -k 17080/tcp 17443/tcp
 ```
 
 Or skip the manual lifecycle entirely: `make smoke` / `make soak` build, run, and

@@ -110,6 +110,24 @@ multi_send_ordered() {
 	sed -n 3p "$OUTF" | grep -q '"method":"unsubscribe"'
 }
 json_stream_method()  { "$B" stream -o json -t s -c 3 "$WS_URL/stream?rate=10" 2>/dev/null | jq -es 'all(.[]; .schema_version != null and .type != null) and any(.[]; .type == "subscription_message" and .payload.method == "subscription")' >/dev/null; }
+recv_limit_skips_sends() {
+	# Receive limit reached before all sends: the remaining -t frames are skipped
+	# and the run still exits 0 with exactly one reply received (the stream ends
+	# with a subscription_summary record either way, so count message records).
+	"$B" stream -c 1 -o json --send-delay 200ms \
+		-t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions" >"$OUTF" 2>/dev/null || return 1
+	[[ $(grep -c '"type":"subscription_message"' "$OUTF") -eq 1 ]] &&
+		! grep -q '"method":"unsubscribe"' "$OUTF"
+}
+send_delay_staggers() {
+	# --send-delay's only failure mode is being ignored (an undelayed conversation
+	# still arrives in order): two sends 600ms apart put a floor on the wall clock.
+	local t0 t1; t0=$(date +%s%N)
+	"$B" stream -c 2 --send-delay 600ms \
+		-t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions" >/dev/null 2>&1 || return 1
+	t1=$(date +%s%N)
+	[[ $(( (t1 - t0) / 1000000 )) -ge 550 ]]
+}
 
 # _pty_maxwidth COLS -- CMD...  -> widest output line in columns (ANSI/CR stripped)
 _pty_maxwidth() {
@@ -190,6 +208,36 @@ file_rejects_existing() {
 	grep -Eq "response file|file exists" "$ERRF"
 }
 
+# --- ping-mode predicates ----------------------------------------------------
+ping_json_shape() {
+	# Exactly one ping_reply per ping, and ping_summary is the final record.
+	"$B" ping -c 2 -i 50ms -o json "$WS_URL/echo" 2>/dev/null | jq -es '
+		([.[] | select(.type == "ping_reply")]   | length == 2) and
+		(last | .type == "ping_summary" and .loss_pct == 0)' >/dev/null
+}
+ping_deadline_ends() {
+	# No -c: only --deadline bounds the run, so this is the row that catches a
+	# broken -w. timeout(1) is the hang backstop that keeps the harness moving.
+	timeout 5 "$B" ping -w 500ms -i 100ms "$WS_URL/echo" >"$OUTF" 2>/dev/null || return 1
+	grep -q "STATS" "$OUTF"
+}
+ping_timeout_survivable() {
+	# A missed pong is survivable: the run outlives the first timeout and keeps
+	# pinging until --count, so both pings time out instead of the first one
+	# killing the connection.
+	timeout 15 "$B" ping -c 2 -i 100ms --timeout 400ms --close-timeout 300ms \
+		"$WS_URL/push?rate=20" >"$OUTF" 2>/dev/null && return 1
+	[[ $(grep -c "timeout: seq=" "$OUTF") -eq 2 ]] && grep -q "2 sent, 0 received" "$OUTF"
+}
+ping_total_loss() {
+	# /push never reads, so it never pongs: the single ping times out on its own
+	# deadline, the run exits 1 (the liveness-gate contract), and the summary
+	# reports total loss. --close-timeout bounds the non-echoing teardown.
+	timeout 10 "$B" ping -c 1 -i 100ms --timeout 500ms --close-timeout 300ms \
+		"$WS_URL/push?rate=20" >"$OUTF" 2>/dev/null && return 1
+	grep -q "1 sent, 0 received, 100.0% loss" "$OUTF"
+}
+
 echo "wsstat soak (structured matrix) against $WS_URL"
 echo "binary: $B"
 
@@ -251,6 +299,18 @@ ok "stream repeated --text (alias)" -- "$B" stream -c 2 --send-delay 100ms --tex
 ok "stream repeated -t default delay" -- "$B" stream -c 2 -t "$SUB_BTC" -t "$UNSUB_BTC" "$WS_URL/subscriptions"
 
 # ===========================================================================
+section "POSITIVE: ping-mode flags (each flag, both aliases)"
+ok "ping -c bounded"           -- "$B" ping -c 3 -i 50ms "$WS_URL/echo"
+ok "ping --count (alias)"      -- "$B" ping --count 3 -i 50ms "$WS_URL/echo"
+ok "ping --interval (alias)"   -- "$B" ping -c 2 --interval 50ms "$WS_URL/echo"
+ok "ping -w deadline"          -- timeout 5 "$B" ping -w 400ms -i 100ms "$WS_URL/echo"
+ok "ping --deadline (alias)"   -- timeout 5 "$B" ping --deadline 400ms -i 100ms "$WS_URL/echo"
+ok "ping -o json"              -- "$B" ping -c 2 -i 50ms -o json "$WS_URL/echo"
+ok "ping -q"                   -- "$B" ping -c 2 -i 50ms -q "$WS_URL/echo"
+ok "ping -v"                   -- "$B" ping -c 2 -i 50ms -v "$WS_URL/echo"
+ok "ping wss + -k"             -- "$B" ping -c 2 -i 50ms -k "$WSS_URL/echo"
+
+# ===========================================================================
 section "REJECT: mutually exclusive / invalid-value rules"
 reject "-q + -v"             "cannot be combined"            -- "$B" -q -v -t hi "$WS_URL/echo"
 reject "-q + -vv"            "cannot be combined"            -- "$B" -q -vv -t hi "$WS_URL/echo"
@@ -283,6 +343,26 @@ reject "stream --send-delay single -t" "no effect without repeated -t" -- "$B" s
 reject "stream --send-delay no -t"     "no effect without repeated -t" -- "$B" stream --send-delay 1s "$WS_URL/stream"
 reject "stream --send-delay negative"  "zero or greater"               -- "$B" stream --send-delay -1s -t a -t b "$WS_URL/stream"
 reject "measure repeated -t"           "stream subcommand"             -- "$B" -t a -t b "$WS_URL/echo"
+
+section "REJECT: ping-mode rules"
+# Flags without meaning in ping mode are stub-registered and rejected outright;
+# a row per flag guards against a regression back to silent accept.
+reject "ping + -t"            "not supported in ping mode" -- "$B" ping -t hi "$WS_URL/echo"
+reject "ping + --text"        "not supported in ping mode" -- "$B" ping --text hi "$WS_URL/echo"
+reject "ping + --rpc-method"  "not supported in ping mode" -- "$B" ping --rpc-method m "$WS_URL/echo"
+reject "ping + --rpc-version" "not supported in ping mode" -- "$B" ping --rpc-version 1.0 "$WS_URL/echo"
+reject "ping + --file"        "not supported in ping mode" -- "$B" ping --file rec.ndjson "$WS_URL/echo"
+reject "ping + --body"        "not supported in ping mode" -- "$B" ping --body compact "$WS_URL/echo"
+reject "ping + --clip"        "not supported in ping mode" -- "$B" ping --clip "$WS_URL/echo"
+reject "ping + -o raw"        "no meaning in ping mode"    -- "$B" ping -o raw "$WS_URL/echo"
+reject "ping -c negative"     "zero or greater"            -- "$B" ping -c -1 "$WS_URL/echo"
+reject "ping -w zero"         "greater than zero"          -- "$B" ping -w 0s "$WS_URL/echo"
+reject "ping -i below floor"  "at least 10ms"              -- "$B" ping -i 1ms "$WS_URL/echo"
+# Stream-only flags under ping: the flag package must reject them outright.
+reject "ping + --once"             "not defined" -- "$B" ping --once "$WS_URL/echo"
+reject "ping + --buffer"           "not defined" -- "$B" ping --buffer 8 "$WS_URL/echo"
+reject "ping + --summary-interval" "not defined" -- "$B" ping --summary-interval 1s "$WS_URL/echo"
+reject "ping + --send-delay"       "not defined" -- "$B" ping --send-delay 1s "$WS_URL/echo"
 
 section "REJECT: v2 flags removed in v3"
 reject "-subscribe"      "removed in v3" -- "$B" -subscribe -t hi "$WS_URL/stream"
@@ -324,6 +404,10 @@ pred "stream -o raw is header/summary-free" stream_raw_clean
 pred "stream --summary-interval fires periodically" summary_interval_fires
 # Repeated -t: three staggered frames on one connection, replies in send order.
 pred "stream repeated -t conversation is ordered" multi_send_ordered
+# Repeated -t edge: the receive limit ends the run before the second send fires.
+pred "stream -c 1 skips the remaining sends" recv_limit_skips_sends
+# --send-delay observably staggers the sends rather than being dropped.
+pred "stream --send-delay staggers sends" send_delay_staggers
 
 section "EFFECT: -o json is valid, schema-stable JSON"
 if [[ $HAVE_JQ -eq 1 ]]; then
@@ -331,6 +415,22 @@ if [[ $HAVE_JQ -eq 1 ]]; then
 	pred "stream  -o json frames carry method"    json_stream_method
 else
 	S "-o json structural checks" "jq not installed"
+fi
+
+# ===========================================================================
+section "EFFECT: ping output"
+outhas   "ping prints pong lines"      'pong: seq=1 rtt='                             -- "$B" ping -c 2 -i 50ms "$WS_URL/echo"
+outhas   "ping STATS summary"          'STATS .*2 sent, 2 received, 0.0% loss'        -- "$B" ping -c 2 -i 50ms "$WS_URL/echo"
+outhas   "ping rtt stats line"         'rtt: min=.*ms avg=.*ms max=.*ms stddev=.*ms'  -- "$B" ping -c 2 -i 50ms "$WS_URL/echo"
+outlacks "ping -q drops pong lines"    'pong: seq='                                   -- "$B" ping -c 2 -i 50ms -q "$WS_URL/echo"
+outhas   "ping -q keeps the summary"   'STATS '                                       -- "$B" ping -c 2 -i 50ms -q "$WS_URL/echo"
+pred "ping -w ends an unbounded run"                ping_deadline_ends
+pred "ping missed pong is survivable (2 timeouts)"   ping_timeout_survivable
+pred "ping total loss: exit 1 and 100% loss summary" ping_total_loss
+if [[ $HAVE_JQ -eq 1 ]]; then
+	pred "ping -o json shape (replies + final summary)" ping_json_shape
+else
+	S "ping -o json shape" "jq not installed"
 fi
 
 # ===========================================================================
