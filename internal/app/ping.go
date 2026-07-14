@@ -21,6 +21,11 @@ const (
 	// defaultReadTimeout mirrors the core's read/dial timeout default (wsstat.defaultTimeout),
 	// used to render loss reasons when --timeout is unset.
 	defaultReadTimeout = 5 * time.Second
+	// pingCloseGrace bounds the closing handshake so teardown cannot blow past --deadline:
+	// the deferred Close runs after the deadline fires, and the default 3s grace would let a
+	// non-echoing peer hold the process well beyond the advertised max run time. An echoing
+	// peer completes the handshake in one RTT, far under this cap.
+	pingCloseGrace = 500 * time.Millisecond
 	// pctScale converts a fraction to a percentage.
 	pctScale = 100
 )
@@ -191,7 +196,8 @@ func (c *Client) RunPing(ctx context.Context, target *url.URL) (*PingReport, err
 	// consumes data frames, and a stalled pump would starve pong processing and misreport a
 	// healthy endpoint as total loss.
 	ws := wsstat.New(append(
-		c.wsstatOptions(), wsstat.WithUnboundedReads(), wsstat.WithDiscardReads())...)
+		c.wsstatOptions(), wsstat.WithUnboundedReads(), wsstat.WithDiscardReads(),
+		wsstat.WithCloseGrace(pingCloseGrace))...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
 		return nil, handleConnectionError(err, target.String())
