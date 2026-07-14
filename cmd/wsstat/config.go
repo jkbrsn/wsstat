@@ -86,6 +86,8 @@ func registerMessagingFlags(fs *flag.FlagSet, c *commonFlags) {
 // registerResponseFlags registers the response-payload flags (recording and rendering of
 // what comes back). Ping mode has no response payloads and skips this group.
 func registerResponseFlags(fs *flag.FlagSet, c *commonFlags) {
+	fs.StringVar(&c.file, "f", "",
+		"record response payloads to PATH as NDJSON, one per line (fails if PATH exists)")
 	fs.StringVar(&c.file, "file", "",
 		"record response payloads to PATH as NDJSON, one per line (fails if PATH exists)")
 	fs.StringVar(&c.body, "body", c.body, "body rendering for text output: auto or compact")

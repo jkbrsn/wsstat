@@ -266,7 +266,7 @@ Output is split across three orthogonal axes:
 - `--clip` — clips each rendered line to the terminal width with a trailing `...`
   (text output, TTY only; a no-op when piped or redirected).
 
-Orthogonal to all three axes, `--file <path>` additionally records each response
+Orthogonal to all three axes, `-f/--file <path>` additionally records each response
 payload to `<path>` as NDJSON, one per line. It captures response bodies only
 (summaries and other chrome still go to stdout), refuses to overwrite an
 existing file, and removes the file again if nothing was recorded.

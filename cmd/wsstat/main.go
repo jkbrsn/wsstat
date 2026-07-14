@@ -116,7 +116,6 @@ var removedFlags = map[string]string{
 	"s":              "use the `stream` subcommand: wsstat stream <url>",
 	"subscribe-once": "use `stream --once`: wsstat stream --once <url>",
 	"format":         "use -o (text|json|raw), --body, and/or --clip",
-	"f":              "use -o (text|json|raw), --body, and/or --clip",
 	"no-tls":         "type a ws:// URL instead",
 }
 
@@ -205,9 +204,7 @@ func registerRemoved(fs *flag.FlagSet) {
 	for _, name := range []string{"subscribe", "s", "subscribe-once", "no-tls"} {
 		fs.Bool(name, false, "removed in v3")
 	}
-	for _, name := range []string{"format", "f"} {
-		fs.String(name, "", "removed in v3")
-	}
+	fs.String("format", "", "removed in v3")
 }
 
 // removedFlagError returns a targeted migration error if any flag removed in v3
@@ -369,6 +366,7 @@ var pingUnsupported = map[string]unsupportedFlag{
 	"text":        {"ping sends ping frames, not messages", true},
 	"rpc-method":  {"ping sends ping frames, not messages", true},
 	"rpc-version": {"ping sends ping frames, not messages", true},
+	"f":           {"ping has no response payloads to record", true},
 	"file":        {"ping has no response payloads to record", true},
 	"body":        {"ping renders no response bodies", true},
 	"clip":        {"ping renders no response bodies", false},

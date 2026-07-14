@@ -165,6 +165,13 @@ file_record_measure() {
 	"$B" -t file-payload --file "$out" "$WS_URL/echo" >/dev/null 2>&1 || return 1
 	[[ -s "$out" ]] && grep -q "file-payload" "$out"
 }
+file_record_short_alias() {
+	# -f is the short form of --file (reclaimed in v3.2 from the removed v2 -format alias).
+	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
+	out="$dir/rec.jsonl"
+	"$B" -t file-payload -f "$out" "$WS_URL/echo" >/dev/null 2>&1 || return 1
+	[[ -s "$out" ]] && grep -q "file-payload" "$out"
+}
 file_record_rpc_compacts() {
 	# A JSON-RPC response is recorded as a single compact NDJSON line.
 	local dir out; dir=$(mktemp -d); trap "rm -rf '$dir'" RETURN
@@ -352,6 +359,7 @@ reject "ping + --text"        "not supported in ping mode" -- "$B" ping --text h
 reject "ping + --rpc-method"  "not supported in ping mode" -- "$B" ping --rpc-method m "$WS_URL/echo"
 reject "ping + --rpc-version" "not supported in ping mode" -- "$B" ping --rpc-version 1.0 "$WS_URL/echo"
 reject "ping + --file"        "not supported in ping mode" -- "$B" ping --file rec.ndjson "$WS_URL/echo"
+reject "ping + -f"            "not supported in ping mode" -- "$B" ping -f rec.ndjson "$WS_URL/echo"
 reject "ping + --body"        "not supported in ping mode" -- "$B" ping --body compact "$WS_URL/echo"
 reject "ping + --clip"        "not supported in ping mode" -- "$B" ping --clip "$WS_URL/echo"
 reject "ping + -o raw"        "no meaning in ping mode"    -- "$B" ping -o raw "$WS_URL/echo"
@@ -369,7 +377,6 @@ reject "-subscribe"      "removed in v3" -- "$B" -subscribe -t hi "$WS_URL/strea
 reject "-s"              "removed in v3" -- "$B" -s -t hi "$WS_URL/stream"
 reject "-subscribe-once" "removed in v3" -- "$B" -subscribe-once -t hi "$WS_URL/stream"
 reject "-format"         "removed in v3" -- "$B" -format json -t hi "$WS_URL/echo"
-reject "-f"              "removed in v3" -- "$B" -f json -t hi "$WS_URL/echo"
 reject "-no-tls"         "removed in v3" -- "$B" -no-tls -t hi "$WS_URL/echo"
 
 section "REJECT: cross-mode flags must error, not be silently dropped"
@@ -438,6 +445,7 @@ section "EFFECT: --file records response payloads as NDJSON"
 # --file is additive and orthogonal to -o; it has no validation rules beyond
 # O_EXCL, so coverage is behavioral: what lands in the sink, and what does not.
 pred "measure records the echoed payload"       file_record_measure
+pred "-f short alias records the same"           file_record_short_alias
 pred "rpc response recorded as one compact line" file_record_rpc_compacts
 pred "stream records one line per frame"         file_record_stream
 pred "additive to -o json (body, not envelope)"  file_additive_to_json

@@ -31,6 +31,12 @@ func TestFileFlagRoundTrips(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "/tmp/out.jsonl", client.ResponseFilePath())
 	})
+
+	t.Run("-f is the short form", func(t *testing.T) {
+		client, _, err := buildMeasure([]string{"-f", "/tmp/out.jsonl", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/out.jsonl", client.ResponseFilePath())
+	})
 }
 
 func TestOpenResponseSink(t *testing.T) {

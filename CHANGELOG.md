@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **(lib) `WithUnboundedReads` option.** Drops the read pump's per-read timeout so long-lived sessions carried only by control frames (e.g. a ping/pong monitor) are not torn down as idle.
 - **(lib) `WithDiscardReads` option.** Makes the read pump drop data frames not claimed by a subscription instead of queueing them, so a session that never reads keeps processing pongs against a chatty peer.
 - **(lib) `PingPongContext` method.** `PingPong` additionally bounded by a caller context, so cancellation interrupts a ping blocked on an unresponsive peer instead of waiting out the full read timeout.
+- `-f` is now the short form of `--file`. The v2 `-format` alias it previously belonged to keeps its "removed in v3" hint under the long name only.
 - **Repeatable `-t` in `stream` mode.** `wsstat stream` now accepts `-t/--text` multiple times, sending each message in argv order on the same connection, spaced by the new `--send-delay` flag (default `1s`); a single `-t` behaves as before and `measure` rejects repeats. See the README's "Stream Mode" section for details.
 
 ## [3.1.1] - 2026-07-13

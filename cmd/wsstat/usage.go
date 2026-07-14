@@ -94,7 +94,7 @@ func printOutputFlags(w io.Writer, mode string) {
 		fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
 	}
 	if !ping {
-		fmt.Fprintln(w, "      --file <path>              also record response payloads to PATH as NDJSON (fails if PATH exists)")
+		fmt.Fprintln(w, "  -f, --file <path>              also record response payloads to PATH as NDJSON (fails if PATH exists)")
 		fmt.Fprintln(w, "      --body <string>            text body rendering: auto, compact [default: auto]")
 		fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
 	}
