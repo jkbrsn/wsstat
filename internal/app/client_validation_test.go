@@ -2,6 +2,7 @@ package app
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,6 +108,55 @@ func TestClientValidate(t *testing.T) {
 		c := &Client{colorMode: "purple"}
 		assert.Error(t, c.Validate())
 	})
+}
+
+// TestValidatePing exercises the ModePing branch: the interval default/floor and the rejection
+// of measure/stream-only knobs.
+func TestValidatePing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("defaults interval to 1s", func(t *testing.T) {
+		c := &Client{mode: ModePing}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, time.Second, c.Interval())
+	})
+
+	t.Run("unlimited count allowed", func(t *testing.T) {
+		c := &Client{mode: ModePing, count: 0}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, 0, c.Count())
+	})
+
+	t.Run("interval below floor rejected", func(t *testing.T) {
+		c := &Client{mode: ModePing, interval: time.Millisecond}
+		assert.ErrorContains(t, c.Validate(), "at least")
+	})
+
+	t.Run("interval above timeout allowed", func(t *testing.T) {
+		// Unbounded reads keep the connection alive between pings, so a long interval no
+		// longer needs to stay below --timeout.
+		c := &Client{mode: ModePing, interval: 30 * time.Second, timeout: 5 * time.Second}
+		require.NoError(t, c.Validate())
+	})
+
+	rejections := []struct {
+		name   string
+		client Client
+	}{
+		{"text", Client{mode: ModePing, textMessages: []string{"hi"}}},
+		{"rpc method", Client{mode: ModePing, rpcMethod: "eth_x"}},
+		{"once", Client{mode: ModePing, once: true}},
+		{"buffer", Client{mode: ModePing, buffer: 8}},
+		{"summary interval", Client{mode: ModePing, summaryInterval: time.Second}},
+		{"send delay", Client{mode: ModePing, sendDelay: time.Second}},
+		{"raw output", Client{mode: ModePing, output: "raw"}},
+		{"file sink", Client{mode: ModePing, responseFilePath: "cap.ndjson"}},
+	}
+	for _, tc := range rejections {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			assert.Error(t, tc.client.Validate())
+		})
+	}
 }
 
 //revive:disable:function-length comprehensive table-driven test

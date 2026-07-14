@@ -97,10 +97,10 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	defer server.cleanup()
 
 	c := &Client{
-		count:       2,
-		mode:        ModeStream,
+		count:        2,
+		mode:         ModeStream,
 		textMessages: []string{"start"},
-		quiet:       true,
+		quiet:        true,
 	}
 	require.NoError(t, c.Validate())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -167,9 +167,9 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	defer server.cleanup()
 
 	c := &Client{
-		mode:        ModeStream,
+		mode:         ModeStream,
 		textMessages: []string{"start"},
-		quiet:       true,
+		quiet:        true,
 	}
 	require.NoError(t, c.Validate())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -261,9 +261,9 @@ func TestStreamSubscriptionRawIsByteClean(t *testing.T) {
 	defer server.cleanup()
 
 	c := &Client{
-		count:       2,
-		mode:        ModeStream,
-		output:      OutputRaw,
+		count:        2,
+		mode:         ModeStream,
+		output:       OutputRaw,
 		textMessages: []string{"start"},
 	}
 	require.NoError(t, c.Validate())

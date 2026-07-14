@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Repeatable `-t` in `stream` mode.** `wsstat stream` now accepts `-t/--text` multiple times and sends each message in argv order on the same connection, enabling multi-frame conversations (e.g. subscribe then unsubscribe) against a single server-side session. Sends are spaced by the new `--send-delay <duration>` flag (default `1s`) so responses interleave predictably under `-o json`. The first message remains the subscribe payload; receiving (`-c`, `--once`, `--timeout`) is unchanged and a single `-t` behaves exactly as before; if the receive limit is reached before all messages are sent, the remaining sends are skipped. `measure` mode rejects repeated `-t`.
+- **`ping` subcommand.** `wsstat ping <url>` dials once and sends a WebSocket ping frame every `-i/--interval`, printing a per-ping RTT line and a `ping(8)`-style `STATS` summary; a missed pong is a survivable `timeout` and the run continues, exit 1 covers total loss and dial failure. See the README's "Ping Mode" section and `wsstat ping -h` for the full flag and output contract.
+- **(lib) `WithUnboundedReads` option.** Drops the read pump's per-read timeout so long-lived sessions carried only by control frames (e.g. a ping/pong monitor) are not torn down as idle.
+- **(lib) `WithDiscardReads` option.** Makes the read pump drop data frames not claimed by a subscription instead of queueing them, so a session that never reads keeps processing pongs against a chatty peer.
+- **(lib) `PingPongContext` method.** `PingPong` additionally bounded by a caller context, so cancellation interrupts a ping blocked on an unresponsive peer instead of waiting out the full read timeout.
+- **Repeatable `-t` in `stream` mode.** `wsstat stream` now accepts `-t/--text` multiple times, sending each message in argv order on the same connection, spaced by the new `--send-delay` flag (default `1s`); a single `-t` behaves as before and `measure` rejects repeats. See the README's "Stream Mode" section for details.
 
 ## [3.1.1] - 2026-07-13
 

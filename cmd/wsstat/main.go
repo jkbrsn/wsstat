@@ -19,6 +19,14 @@
 //	wsstat stream -t '{"method":"subscribe"}' wss://stream.example.com
 //	wsstat stream --once -t '{"method":"ticker"}' wss://api.example.com
 //
+// # Ping Mode
+//
+// To watch ping/pong latency over time, use the ping subcommand, which sends a WebSocket
+// ping frame every interval on a single connection and prints per-ping RTT plus a summary:
+//
+//	wsstat ping -c 5 wss://echo.example.com
+//	wsstat ping -i 500ms -w 30s wss://echo.example.com
+//
 // # Architecture
 //
 // The package is organized into:
@@ -62,6 +70,12 @@ var errUsageShown = errors.New("usage shown")
 // errVersionShown signals that --version was handled on a subcommand; main
 // exits 0 with no further output.
 var errVersionShown = errors.New("version shown")
+
+// errPingTotalLoss signals ping-mode total loss (zero pongs received). RunPing has already
+// printed the per-ping lines and the summary, so main exits with the runtime code without
+// printing an additional error line or JSON envelope, keeping ping_summary the final record.
+// A dial failure (nothing printed yet) still flows through runtimeErr instead.
+var errPingTotalLoss = errors.New("no pongs received")
 
 // responseFilePerm is the mode for the --file response sink (owner read/write, group/other read).
 const responseFilePerm = 0o644
@@ -123,6 +137,8 @@ func main() {
 		err = runStream(args[1:])
 	case args[0] == "measure":
 		err = runMeasure(args[1:])
+	case args[0] == "ping":
+		err = runPing(args[1:])
 	case args[0] == "--version" || args[0] == "-version":
 		fmt.Printf("wsstat %s\n", version)
 		return
@@ -138,6 +154,9 @@ func main() {
 		return
 	case errors.Is(err, errUsageShown):
 		os.Exit(exitUsage)
+	case errors.Is(err, errPingTotalLoss):
+		// The summary already reported the loss; exit non-zero without extra output.
+		os.Exit(exitRuntime)
 	default:
 		fail(err)
 	}
@@ -232,7 +251,7 @@ func interruptContext() (context.Context, context.CancelFunc) {
 // buildMeasure parses measure-mode args and returns a validated client and target.
 func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("measure", flag.ContinueOnError)
-	var cf commonFlags
+	cf := newCommonFlags()
 	registerCommon(fs, &cf)
 	registerRemoved(fs)
 	count := fs.Int("c", 1, "number of interactions to perform (>= 1)")
@@ -270,7 +289,7 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 // Whether --once was requested is available via client.Once().
 func buildStream(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("stream", flag.ContinueOnError)
-	var cf commonFlags
+	cf := newCommonFlags()
 	registerCommon(fs, &cf)
 	registerRemoved(fs)
 	count := fs.Int("c", 0, "number of events to receive; 0 = unlimited")
@@ -332,6 +351,123 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, fmt.Errorf("invalid settings: %w", err)
 	}
 	return client, target, nil
+}
+
+// unsupportedFlag describes a flag a subcommand rejects: the reason shown in the error,
+// and whether the flag takes a value (its arity), so the stub registration consumes any
+// value token: -t @- must not read stdin, and a following value must not be misread as
+// the positional URL.
+type unsupportedFlag struct {
+	reason string
+	valued bool
+}
+
+// pingUnsupported maps the flags the ping subcommand rejects (internal flag name,
+// without dashes) to their rejection details.
+var pingUnsupported = map[string]unsupportedFlag{
+	"t":           {"ping sends ping frames, not messages", true},
+	"text":        {"ping sends ping frames, not messages", true},
+	"rpc-method":  {"ping sends ping frames, not messages", true},
+	"rpc-version": {"ping sends ping frames, not messages", true},
+	"file":        {"ping has no response payloads to record", true},
+	"body":        {"ping renders no response bodies", true},
+	"clip":        {"ping renders no response bodies", false},
+}
+
+// registerUnsupported registers a subcommand's unsupported flags as inert stubs on fs,
+// matching each flag's arity. Whether one was actually used is reported by
+// unsupportedFlagError after Parse, keyed on the flag being set rather than its resolved
+// value, so an explicitly empty value (-t ”, --file ”) is rejected too. Mirrors the
+// app-layer validatePing rejections for the direct-API path.
+func registerUnsupported(fs *flag.FlagSet, flags map[string]unsupportedFlag) {
+	for name, f := range flags {
+		if f.valued {
+			fs.String(name, "", "not supported by this subcommand")
+		} else {
+			fs.Bool(name, false, "not supported by this subcommand")
+		}
+	}
+}
+
+// unsupportedFlagError returns a targeted error if any of the subcommand's unsupported
+// flags was explicitly set on fs. Detection runs after Parse, so it sees only genuine
+// flag tokens, never values that merely look like one.
+func unsupportedFlagError(fs *flag.FlagSet, cmd string, flags map[string]unsupportedFlag) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if err != nil {
+			return
+		}
+		if u, ok := flags[f.Name]; ok {
+			dashes := "--"
+			if len(f.Name) == 1 {
+				dashes = "-"
+			}
+			err = fmt.Errorf("%s%s is not supported in %s mode: %s", dashes, f.Name, cmd, u.reason)
+		}
+	})
+	return err
+}
+
+// pingConfig bundles the validated ping-mode settings. The deadline is CLI-layer-only (it
+// never reaches app.Client), so it rides alongside the client rather than inside it.
+type pingConfig struct {
+	client   *app.Client
+	target   *url.URL
+	deadline time.Duration
+}
+
+// buildPing parses ping-mode args and returns the validated ping configuration.
+func buildPing(args []string) (pingConfig, error) {
+	fs := flag.NewFlagSet("ping", flag.ContinueOnError)
+	cf := newCommonFlags()
+	registerOutputFlags(fs, &cf)
+	registerConnectionFlags(fs, &cf)
+	registerDiagnosticFlags(fs, &cf)
+	registerUnsupported(fs, pingUnsupported)
+	registerRemoved(fs)
+	count := fs.Int("c", 0, "number of pings to send; 0 = until interrupted")
+	fs.IntVar(count, "count", 0, "number of pings to send; 0 = until interrupted")
+	interval := fs.Duration("i", time.Second, "delay between pings (e.g., 500ms, 2s)")
+	fs.DurationVar(interval, "interval", time.Second, "delay between pings (e.g., 500ms, 2s)")
+	deadline := fs.Duration("w", 0, "max total run time (e.g., 10s); 0 = no deadline")
+	fs.DurationVar(deadline, "deadline", 0, "max total run time (e.g., 10s); 0 = no deadline")
+	fs.Usage = func() {} // parseErr owns usage printing (stdout for -h, stderr otherwise)
+
+	if err := fs.Parse(args); err != nil {
+		return pingConfig{}, parseErr(err, printPingUsage)
+	}
+	if cf.version {
+		fmt.Printf("wsstat %s\n", version)
+		return pingConfig{}, errVersionShown
+	}
+	if err := removedFlagError(fs); err != nil {
+		return pingConfig{}, err
+	}
+
+	if err := unsupportedFlagError(fs, "ping", pingUnsupported); err != nil {
+		return pingConfig{}, err
+	}
+
+	set := setFlagNames(fs)
+	opts, target, err := resolveCommon(fs, &cf, app.ModePing)
+	if err != nil {
+		return pingConfig{}, err
+	}
+	if *count < 0 {
+		return pingConfig{}, errors.New("count must be zero or greater")
+	}
+	// --deadline is validated here (not in Validate) since it never reaches app.Client.
+	if (set["w"] || set["deadline"]) && *deadline <= 0 {
+		return pingConfig{}, errors.New("--deadline must be greater than zero")
+	}
+	opts = append(opts, app.WithCount(*count), app.WithInterval(*interval))
+
+	client := app.NewClient(opts...)
+	if err := client.Validate(); err != nil {
+		return pingConfig{}, fmt.Errorf("invalid settings: %w", err)
+	}
+	return pingConfig{client: client, target: target, deadline: *deadline}, nil
 }
 
 // parseErr maps a FlagSet parse error to the appropriate sentinel and prints the
@@ -444,4 +580,35 @@ func runStream(args []string) error {
 		return runtimeErr(out, client.StreamSubscriptionOnce(ctx, target))
 	}
 	return runtimeErr(out, client.StreamSubscription(ctx, target))
+}
+
+// runPing runs ping mode. Unlike runMeasure/runStream it does not funnel every returned error
+// through runtimeErr: RunPing swallows context cancellation (Ctrl-C, --deadline) and connection
+// loss, returning the report with a nil error, so those never become exit 1. runPing derives
+// the exit code from the report instead: zero pongs received (total loss) is exit 1, making
+// `wsstat ping -c N <url>` a usable liveness gate; any pong received is exit 0. Only dial and
+// output-write failures flow through the error return.
+func runPing(args []string) error {
+	cfg, err := buildPing(args)
+	if err != nil {
+		return usageErr(err)
+	}
+
+	ctx, cancel := interruptContext()
+	defer cancel()
+	if cfg.deadline > 0 {
+		var deadlineCancel context.CancelFunc
+		ctx, deadlineCancel = context.WithTimeout(ctx, cfg.deadline)
+		defer deadlineCancel()
+	}
+
+	out := cfg.client.Output()
+	report, err := cfg.client.RunPing(ctx, cfg.target)
+	if err != nil {
+		return runtimeErr(out, err)
+	}
+	if report.Received == 0 {
+		return errPingTotalLoss
+	}
+	return nil
 }

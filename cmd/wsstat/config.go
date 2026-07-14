@@ -58,23 +58,44 @@ type commonFlags struct {
 	version bool
 }
 
-// registerCommon registers the shared flags onto fs, binding them to c.
-func registerCommon(fs *flag.FlagSet, c *commonFlags) {
-	fs.Var(&c.headers, "H", "HTTP header to include with the request (repeatable; format: \"Key: Value\")")
-	fs.Var(&c.headers, "header", "HTTP header to include with the request (repeatable; format: \"Key: Value\")")
-	fs.Var(&c.resolves, "resolve", "resolve host:port to address (repeatable; format: \"HOST:PORT:ADDRESS\")")
+// newCommonFlags returns commonFlags with the resolved defaults pre-set, so a subcommand
+// that skips a registration group still passes validation with the same defaults the
+// flags would have carried. Registration binds flag defaults from these fields.
+func newCommonFlags() commonFlags {
+	return commonFlags{output: "text", body: "auto", color: "auto", rpcVersion: "2.0"}
+}
 
+// registerCommon registers all shared flag groups onto fs, binding them to c. Subcommands
+// that support only a subset (ping) call the group functions individually instead.
+func registerCommon(fs *flag.FlagSet, c *commonFlags) {
+	registerMessagingFlags(fs, c)
+	registerResponseFlags(fs, c)
+	registerOutputFlags(fs, c)
+	registerConnectionFlags(fs, c)
+	registerDiagnosticFlags(fs, c)
+}
+
+// registerMessagingFlags registers the outbound-payload flags (what gets sent).
+func registerMessagingFlags(fs *flag.FlagSet, c *commonFlags) {
 	fs.StringVar(&c.rpcMethod, "rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
-	fs.StringVar(&c.rpcVersion, "rpc-version", "2.0", "JSON-RPC version for --rpc-method: 2.0 or 1.0")
+	fs.StringVar(&c.rpcVersion, "rpc-version", c.rpcVersion, "JSON-RPC version for --rpc-method: 2.0 or 1.0")
 	fs.Var(&c.text, "t", "text message to send (repeatable in stream mode; @file or @- reads payload from a file or stdin)")
 	fs.Var(&c.text, "text", "text message to send (repeatable in stream mode; @file or @- reads payload from a file or stdin)")
+}
 
-	fs.StringVar(&c.output, "o", "text", "output contract: text, json, or raw")
-	fs.StringVar(&c.output, "output", "text", "output contract: text, json, or raw")
+// registerResponseFlags registers the response-payload flags (recording and rendering of
+// what comes back). Ping mode has no response payloads and skips this group.
+func registerResponseFlags(fs *flag.FlagSet, c *commonFlags) {
 	fs.StringVar(&c.file, "file", "",
 		"record response payloads to PATH as NDJSON, one per line (fails if PATH exists)")
-	fs.StringVar(&c.body, "body", "auto", "body rendering for text output: auto or compact")
+	fs.StringVar(&c.body, "body", c.body, "body rendering for text output: auto or compact")
 	fs.BoolVar(&c.clip, "clip", false, "clip each rendered line to terminal width (text output, TTY only)")
+}
+
+// registerOutputFlags registers the output-contract and verbosity flags.
+func registerOutputFlags(fs *flag.FlagSet, c *commonFlags) {
+	fs.StringVar(&c.output, "o", c.output, "output contract: text, json, or raw")
+	fs.StringVar(&c.output, "output", c.output, "output contract: text, json, or raw")
 	fs.BoolVar(&c.showSecrets, "show-secrets", false,
 		"show sensitive header values in -vv output instead of masking them")
 	fs.BoolVar(&c.quiet, "q", false, "suppress all output except the response")
@@ -82,10 +103,16 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.BoolVar(&c.v1, "v", false, "increase verbosity (level 1)")
 	fs.BoolVar(&c.v1, "verbose", false, "increase verbosity (level 1)")
 	fs.BoolVar(&c.v2, "vv", false, "increase verbosity (level 2)")
+	fs.StringVar(&c.color, "color", c.color, "color output: auto, always, or never")
+}
 
+// registerConnectionFlags registers the dial- and transport-level flags.
+func registerConnectionFlags(fs *flag.FlagSet, c *commonFlags) {
+	fs.Var(&c.headers, "H", "HTTP header to include with the request (repeatable; format: \"Key: Value\")")
+	fs.Var(&c.headers, "header", "HTTP header to include with the request (repeatable; format: \"Key: Value\")")
+	fs.Var(&c.resolves, "resolve", "resolve host:port to address (repeatable; format: \"HOST:PORT:ADDRESS\")")
 	fs.BoolVar(&c.insecure, "k", false, "skip TLS certificate verification")
 	fs.BoolVar(&c.insecure, "insecure", false, "skip TLS certificate verification")
-	fs.StringVar(&c.color, "color", "auto", "color output: auto, always, or never")
 	fs.DurationVar(&c.timeout, "timeout", 0, "read/dial timeout (e.g., 30s, 1m); 0 uses default (5s)")
 	fs.DurationVar(&c.closeTimeout, "close-timeout", 0,
 		"max wait for the peer's close echo before forcing teardown; 0 uses default (3s); capped at 5s")
@@ -95,6 +122,10 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 		"WebSocket subprotocol(s) to negotiate, in preference order (comma-separated)")
 	fs.BoolVar(&c.validateUTF8, "validate-utf8", false,
 		"validate UTF-8 on inbound text frames and warn on violations (coder/websocket skips this)")
+}
+
+// registerDiagnosticFlags registers the diagnostics flags.
+func registerDiagnosticFlags(fs *flag.FlagSet, c *commonFlags) {
 	fs.BoolVar(&c.debug, "debug", false,
 		"emit core debug logs to stderr (independent of -v/-vv output verbosity)")
 	fs.BoolVar(&c.version, "version", false, "print program version and exit")

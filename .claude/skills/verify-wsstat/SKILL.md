@@ -17,6 +17,15 @@ make build            # -> ./bin/wsstat
 ./dev/run.sh up       # Dockerized mock on ws://localhost:17080 and wss://localhost:17443
 ```
 
+`run.sh up` runs in the **foreground** and blocks until Ctrl+C, which fires its
+teardown trap (`docker compose down`). To drive the binary from the same session
+you must background it — and then **you** own the teardown (see below):
+
+```bash
+./dev/run.sh up &     # background so you can drive; you must tear it down when done
+until curl -fsS http://localhost:17080/healthz >/dev/null 2>&1; do sleep 0.5; done
+```
+
 No Docker? Run the mock on the host instead:
 
 ```bash
@@ -33,6 +42,24 @@ Pick the endpoint that isolates the changed feature (`/echo`, `/jsonrpc`,
 ./bin/wsstat measure -t ping ws://localhost:17080/echo
 ./bin/wsstat stream -c 2 -o json -t '{"method":"subscribe","subscription":{}}' ws://localhost:17080/subscriptions
 ```
+
+## Tear down
+
+Always stop the stack you started — a backgrounded `run.sh up` keeps blocking and
+holds ports 17080/17443 otherwise. Ctrl+C (SIGINT) is the clean teardown: it fires
+run.sh's trap, which runs `docker compose down`. From a non-interactive session,
+send it that signal — do **not** just `docker compose down`, which leaves the
+`run.sh` process orphaned:
+
+```bash
+pkill -INT -f 'dev/run.sh up'    # Ctrl+C the mock; its trap tears the stack down
+# host-run mock instead? kill by port -- `go run .` compiles to /tmp/go-build…/exe/mock-server,
+# so a pkill on 'dev/mock-server' misses it:
+fuser -k 17080/tcp 17443/tcp
+```
+
+Or skip the manual lifecycle entirely: `make smoke` / `make soak` build, run, and
+tear the stack down in one shot — prefer these unless you need ad-hoc drive commands.
 
 ## Make it stick
 

@@ -18,6 +18,9 @@ func printHelpFor(rest []string, w io.Writer) {
 		case "stream":
 			printStreamUsage(w)
 			return
+		case "ping":
+			printPingUsage(w)
+			return
 		}
 	}
 	printTopUsage(w)
@@ -32,10 +35,12 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat <url>                    measure connection latency (bare form)")
 	fmt.Fprintln(w, "  wsstat measure [options] <url>  measure connection latency")
 	fmt.Fprintln(w, "  wsstat stream  [options] <url>  stream subscription events")
+	fmt.Fprintln(w, "  wsstat ping    [options] <url>  ping/pong latency over time")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "COMMANDS:")
 	fmt.Fprintln(w, "  measure   send ping/text/JSON-RPC and report timing (DNS, TCP, TLS, WS, RTT)")
 	fmt.Fprintln(w, "  stream    keep the connection open and forward incoming frames")
+	fmt.Fprintln(w, "  ping      send a ping frame every interval and report per-ping RTT + a summary")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  --version                       print program version and exit")
 	fmt.Fprintln(w, "  -h, --help                      show this help")
@@ -48,7 +53,7 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Under -o json a runtime failure (exit 1) prints a {\"type\":\"error\"} envelope to stdout.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run 'wsstat measure -h' or 'wsstat stream -h' for command-specific flags.")
+	fmt.Fprintln(w, "Run 'wsstat measure -h', 'wsstat stream -h', or 'wsstat ping -h' for command-specific flags.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  wsstat wss://echo.example.com")
@@ -56,32 +61,73 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat measure --rpc-method eth_blockNumber wss://rpc.example.com/ws")
 	fmt.Fprintln(w, "  wsstat stream --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(w, "  wsstat stream --once -o json wss://api.example.com/ws")
+	fmt.Fprintln(w, "  wsstat ping -c 5 wss://echo.example.com")
 }
 
-// printCommonFlags prints the flags shared by every subcommand.
-func printCommonFlags(w io.Writer) {
+// The -t usage line differs per mode: stream sends each -t in order on the open
+// connection; measure accepts exactly one.
+const (
+	textDescSingle     = "text message to send (@file or @- reads file/stdin)"
+	textDescRepeatable = "text message to send (repeatable; @file or @- reads file/stdin)"
+)
+
+// printInputFlags prints the outbound-payload section with the mode's -t description.
+func printInputFlags(w io.Writer, textDesc string) {
 	fmt.Fprintln(w, "Input (choose one):")
 	fmt.Fprintln(w, "      --rpc-method <string>      JSON-RPC method name to send (id=1, jsonrpc=2.0)")
 	fmt.Fprintln(w, "      --rpc-version <string>     JSON-RPC version for --rpc-method: 2.0 or 1.0 [default: 2.0]")
-	fmt.Fprintln(w, "  -t, --text <string>            text message to send (@file or @- reads file/stdin; repeatable in stream mode)")
+	fmt.Fprintln(w, "  -t, --text <string>            "+textDesc)
 	fmt.Fprintln(w)
+}
+
+// printOutputFlags prints the output section for mode ("measure", "stream", "ping").
+// Ping has no response payloads, so --file/--body/--clip and their notes are omitted;
+// the stream-frame and rpc-decode raw notes appear only where they apply.
+func printOutputFlags(w io.Writer, mode string) {
+	ping := mode == "ping"
+
 	fmt.Fprintln(w, "Output:")
-	fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
-	fmt.Fprintln(w, "      --file <path>              also record response payloads to PATH as NDJSON (fails if PATH exists)")
-	fmt.Fprintln(w, "      --body <string>            text body rendering: auto, compact [default: auto]")
-	fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
-	fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
+	if ping {
+		// Ping has no response payloads, so raw is rejected by validation and hidden here.
+		fmt.Fprintln(w, "  -o, --output <string>          output contract: text or json [default: text]")
+	} else {
+		fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
+	}
+	if !ping {
+		fmt.Fprintln(w, "      --file <path>              also record response payloads to PATH as NDJSON (fails if PATH exists)")
+		fmt.Fprintln(w, "      --body <string>            text body rendering: auto, compact [default: auto]")
+		fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
+	}
+	if ping {
+		fmt.Fprintln(w, "  -q, --quiet                    suppress per-ping lines; print only the summary")
+	} else {
+		fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
+	}
 	fmt.Fprintln(w, "  -v, --verbose                  increase verbosity (level 1)")
 	fmt.Fprintln(w, "  -vv                            increase verbosity (level 2)")
 	fmt.Fprintln(w, "      --show-secrets             show sensitive header values in -vv (masked by default)")
 	fmt.Fprintln(w, "      --color <string>           color output: auto, always, never [default: auto]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	if ping {
+		fmt.Fprintln(w, "  Note: --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	} else {
+		fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
+	}
 	fmt.Fprintln(w, "        NO_COLOR (any value) in the environment forces color off under --color auto.")
-	fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
-	fmt.Fprintln(w, "        -o raw concatenates stream frames undelimited (binary-safe); use -o json for delimited streaming.")
-	fmt.Fprintln(w, "        --file is additive and orthogonal to -o: it records response bodies only; summaries and chrome still go to stdout.")
+	if !ping {
+		fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
+	}
+	if mode == "stream" {
+		fmt.Fprintln(w, "        -o raw concatenates stream frames undelimited (binary-safe); use -o json for delimited streaming.")
+	}
+	if !ping {
+		fmt.Fprintln(w, "        --file is additive and orthogonal to -o: it records response bodies only; summaries and chrome still go to stdout.")
+	}
 	fmt.Fprintln(w)
+}
+
+// printConnectionFlags prints the dial- and transport-level section (identical everywhere).
+func printConnectionFlags(w io.Writer) {
 	fmt.Fprintln(w, "Connection:")
 	fmt.Fprintln(w, "  -H, --header <string>          HTTP header to include (repeatable; \"Key: Value\")")
 	fmt.Fprintln(w, "      --resolve <string>         resolve host:port to address (repeatable; \"HOST:PORT:ADDRESS\")")
@@ -92,6 +138,10 @@ func printCommonFlags(w io.Writer) {
 	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
 	fmt.Fprintln(w, "      --validate-utf8            validate UTF-8 on inbound text frames; warn on violations")
 	fmt.Fprintln(w)
+}
+
+// printDiagnosticFlags prints the diagnostics section (identical everywhere).
+func printDiagnosticFlags(w io.Writer) {
 	fmt.Fprintln(w, "Diagnostics:")
 	fmt.Fprintln(w, "      --debug                    emit core debug logs to stderr (independent of -v/-vv)")
 	fmt.Fprintln(w, "      --version                  print program version and exit")
@@ -109,8 +159,12 @@ func printMeasureUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -c, --count <int>              number of interactions to perform [default: 1; >= 1]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Note: timing is aggregated across all interactions; the response shown is the first.")
+	fmt.Fprintln(w, "        Repeated -t requires the stream subcommand; measure sends a single message.")
 	fmt.Fprintln(w)
-	printCommonFlags(w)
+	printInputFlags(w, textDescSingle)
+	printOutputFlags(w, "measure")
+	printConnectionFlags(w)
+	printDiagnosticFlags(w)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Verbosity Levels (text output):")
 	fmt.Fprintln(w, "  (default)                      minimal request info with summary timings")
@@ -136,5 +190,34 @@ func printStreamUsage(w io.Writer) {
 	fmt.Fprintln(w, "  Note: -t may be repeated; each message is sent in order on the same connection, --send-delay apart.")
 	fmt.Fprintln(w, "        If the receive limit (-c, --once) is reached first, remaining sends are skipped.")
 	fmt.Fprintln(w)
-	printCommonFlags(w)
+	printInputFlags(w, textDescRepeatable)
+	printOutputFlags(w, "stream")
+	printConnectionFlags(w)
+	printDiagnosticFlags(w)
+}
+
+// printPingUsage prints usage for the ping subcommand.
+func printPingUsage(w io.Writer) {
+	fmt.Fprintln(w, "wsstat ping - continuous WebSocket ping/pong latency monitoring")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "USAGE:")
+	fmt.Fprintln(w, "  wsstat ping [options] <url>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Ping:")
+	fmt.Fprintln(w, "  -c, --count <int>              number of pings to send [default: 0 = until interrupted]")
+	fmt.Fprintln(w, "  -i, --interval <duration>      delay between pings, e.g. 500ms, 2s [default: 1s; min 10ms]")
+	fmt.Fprintln(w, "  -w, --deadline <duration>      max total run time, e.g. 10s [default: 0 = none]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Dials once and sends a ping frame every interval on that connection, printing a")
+	fmt.Fprintln(w, "  per-ping RTT line and, at the end, a summary (sent/received/loss and rtt")
+	fmt.Fprintln(w, "  min/avg/max/stddev). A missed pong (no reply within --timeout, default 5s) is")
+	fmt.Fprintln(w, "  reported and the run continues, like ping(8); the run ends at --count, on Ctrl-C or")
+	fmt.Fprintln(w, "  --deadline, or when the connection closes.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Exit 0 if at least one pong was received (partial loss included); exit 1 on total")
+	fmt.Fprintln(w, "  loss or dial failure, so `wsstat ping -c 3 <url>` works as a liveness gate.")
+	fmt.Fprintln(w)
+	printOutputFlags(w, "ping")
+	printConnectionFlags(w)
+	printDiagnosticFlags(w)
 }
