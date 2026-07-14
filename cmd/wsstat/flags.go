@@ -35,6 +35,26 @@ func (h *headerList) Values() []string {
 	return append([]string(nil), *h...)
 }
 
+// textList is a flag.Value implementation that accumulates repeated -t / --text entries.
+// Values are kept verbatim; @-expansion and empty filtering happen in resolveTextPayload.
+type textList []string
+
+// Set appends the text message to the list.
+func (l *textList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// String returns the string representation of the flag value.
+func (l *textList) String() string {
+	return strings.Join(*l, ", ")
+}
+
+// Values returns the list of text messages.
+func (l *textList) Values() []string {
+	return append([]string(nil), *l...)
+}
+
 // resolveList is a flag.Value implementation that accumulates DNS resolution overrides.
 // Each entry has the format "host:port:address" (e.g., "example.com:443:192.168.1.1").
 // The flag can be repeated to override multiple host:port combinations.

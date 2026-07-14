@@ -43,6 +43,7 @@ tested in isolation.
 | `/echo` | Echoes each frame back unchanged. Serves `-t`, `-c`, `-o`/`--body`/`--clip`, `--resolve`, verbosity. |
 | `/jsonrpc` | Replies with a JSON-RPC result (or `-32700` on parse error). Serves `--rpc-method`. |
 | `/stream` | Waits for an initial frame, then pumps JSON notifications. `?rate=N` msgs/sec, `?count=N` cap. Serves the `stream` subcommand, `--once`, `--summary-interval`, `-b`. |
+| `/subscriptions` | Stateful, Hyperliquid-style subscription manager with per-connection state: `subscribe` gets a `subscriptionResponse`, a duplicate `subscribe` gets `Already subscribed`, `unsubscribe` gets a `subscriptionResponse` (or `not subscribed`). Serves repeated `-t` / `--send-delay` multi-frame conversations. |
 | `/large` | Replies with a valid JSON-RPC frame whose result exceeds 32 KiB. |
 | `/slow` | Stalls 3s before replying. Serves the `-timeout` failure path. |
 | `/headers` | Replies with the value of the `X-Smoke` request header. Serves `-H`/`-header`. |

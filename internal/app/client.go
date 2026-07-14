@@ -62,7 +62,7 @@ type Client struct {
 	resolves     map[string]string // DNS resolution overrides: "host:port" → "address"
 	rpcMethod    string            // JSON-RPC method (no params)
 	rpcVersion   string            // JSON-RPC version to speak: "2.0" (default) or "1.0"
-	textMessage  string            // Text message
+	textMessages []string          // Text messages; stream sends each in order, measure allows one
 	subprotocols []string          // WebSocket subprotocols to negotiate
 
 	// Output
@@ -88,6 +88,7 @@ type Client struct {
 	once            bool // stream: exit after the first event
 	buffer          int
 	summaryInterval time.Duration
+	sendDelay       time.Duration // stream: delay between successive text message sends
 
 	// TLS configuration
 	insecure bool // skip TLS certificate verification
@@ -153,9 +154,21 @@ func WithRPCVersion(version string) Option {
 	return func(c *Client) { c.rpcVersion = version }
 }
 
-// WithTextMessage configures a text message to send.
+// WithTextMessage configures a single text message to send. An empty message means none.
 func WithTextMessage(msg string) Option {
-	return func(c *Client) { c.textMessage = msg }
+	return func(c *Client) {
+		if msg == "" {
+			c.textMessages = nil
+			return
+		}
+		c.textMessages = []string{msg}
+	}
+}
+
+// WithTextMessages configures the text messages to send. Stream mode sends each message in
+// order on the same connection, spaced by the send delay; measure mode allows at most one.
+func WithTextMessages(msgs []string) Option {
+	return func(c *Client) { c.textMessages = msgs }
 }
 
 // WithOutput sets the whole-stdout contract (text, json, or raw).
@@ -220,6 +233,11 @@ func WithBuffer(size int) Option {
 // WithSummaryInterval sets the subscription summary print interval.
 func WithSummaryInterval(interval time.Duration) Option {
 	return func(c *Client) { c.summaryInterval = interval }
+}
+
+// WithSendDelay sets the stream-mode delay between successive text message sends.
+func WithSendDelay(d time.Duration) Option {
+	return func(c *Client) { c.sendDelay = d }
 }
 
 // WithInsecure configures whether to skip TLS certificate verification.
@@ -300,6 +318,12 @@ func (c *Client) Quiet() bool { return c.quiet }
 // RPCMethod returns the configured RPC method.
 func (c *Client) RPCMethod() string { return c.rpcMethod }
 
+// TextMessages returns the configured text messages.
+func (c *Client) TextMessages() []string { return c.textMessages }
+
+// SendDelay returns the stream-mode delay between successive text message sends.
+func (c *Client) SendDelay() time.Duration { return c.sendDelay }
+
 // wsstatOptions builds wsstat options based on client configuration.
 func (c *Client) wsstatOptions() []wsstat.Option {
 	var opts []wsstat.Option
@@ -355,7 +379,7 @@ func debugLogger(w io.Writer) zerolog.Logger {
 // based on client configuration. Returns timing results and the server response.
 //
 // The measurement method is determined by client settings:
-//   - If textMessage is set: sends text messages and measures echo latency
+//   - If a text message is set: sends text messages and measures echo latency
 //   - If rpcMethod is set: sends JSON-RPC requests and measures response latency
 //   - Otherwise: sends WebSocket ping frames and measures pong latency
 //
@@ -371,7 +395,7 @@ func (c *Client) MeasureLatency(
 
 	var result *MeasurementResult
 	switch {
-	case c.textMessage != "":
+	case len(c.textMessages) > 0:
 		result, err = c.measureText(ctx, target, header)
 	case c.rpcMethod != "":
 		result, err = c.measureJSON(ctx, target, header)
@@ -403,7 +427,7 @@ func (c *Client) Validate() error {
 		return errors.New("count must be zero or greater")
 	}
 
-	if c.textMessage != "" && c.rpcMethod != "" {
+	if len(c.textMessages) > 0 && c.rpcMethod != "" {
 		return errors.New("mutually exclusive messaging flags")
 	}
 
@@ -435,11 +459,19 @@ func (c *Client) Validate() error {
 		return errors.New("summary-interval must be zero or greater")
 	}
 
+	if c.sendDelay < 0 {
+		return errors.New("send-delay must be zero or greater")
+	}
+
 	if c.mode == ModeStream {
 		if c.once && c.count > 1 {
 			return errors.New("count must be 0 or 1 when --once is set")
 		}
 		return nil
+	}
+
+	if len(c.textMessages) > 1 {
+		return errors.New("multiple text messages require stream mode")
 	}
 
 	if c.count == 0 {

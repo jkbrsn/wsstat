@@ -35,7 +35,7 @@ type commonFlags struct {
 	resolves    resolveList
 	rpcMethod   string
 	rpcVersion  string
-	text        string
+	text        textList
 	output      string
 	file        string
 	body        string
@@ -66,8 +66,8 @@ func registerCommon(fs *flag.FlagSet, c *commonFlags) {
 
 	fs.StringVar(&c.rpcMethod, "rpc-method", "", "JSON-RPC method name to send (id=1, jsonrpc=2.0)")
 	fs.StringVar(&c.rpcVersion, "rpc-version", "2.0", "JSON-RPC version for --rpc-method: 2.0 or 1.0")
-	fs.StringVar(&c.text, "t", "", "text message to send (@file or @- reads payload from a file or stdin)")
-	fs.StringVar(&c.text, "text", "", "text message to send (@file or @- reads payload from a file or stdin)")
+	fs.Var(&c.text, "t", "text message to send (repeatable in stream mode; @file or @- reads payload from a file or stdin)")
+	fs.Var(&c.text, "text", "text message to send (repeatable in stream mode; @file or @- reads payload from a file or stdin)")
 
 	fs.StringVar(&c.output, "o", "text", "output contract: text, json, or raw")
 	fs.StringVar(&c.output, "output", "text", "output contract: text, json, or raw")
@@ -154,6 +154,10 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, err
 	}
 
+	if err := validateMeasureMessaging(c, mode, output); err != nil {
+		return nil, nil, err
+	}
+
 	if c.timeout < 0 {
 		return nil, nil, errors.New("--timeout must be zero or greater")
 	}
@@ -176,11 +180,6 @@ func resolveCommon(fs *flag.FlagSet, c *commonFlags, mode app.Mode) ([]app.Optio
 		return nil, nil, err
 	}
 
-	// Raw measure has no payload to emit without a message.
-	if output == app.OutputRaw && mode == app.ModeMeasure && c.text == "" && c.rpcMethod == "" {
-		return nil, nil, errors.New("-o raw in measure mode requires --text or --rpc-method")
-	}
-
 	target, err := positionalURL(fs)
 	if err != nil {
 		return nil, nil, err
@@ -200,7 +199,7 @@ func buildCommonOptions(
 		app.WithResolves(c.resolves.Values()),
 		app.WithRPCMethod(c.rpcMethod),
 		app.WithRPCVersion(rpcVersion),
-		app.WithTextMessage(c.text),
+		app.WithTextMessages(c.text.Values()),
 		app.WithOutput(output),
 		app.WithResponseFile(c.file),
 		app.WithBodyRender(body),
@@ -220,18 +219,34 @@ func buildCommonOptions(
 	}
 }
 
-// resolveTextPayload expands an @-prefixed --text value: "@-" reads stdin, "@path" reads a
+// resolveTextPayload expands @-prefixed --text values: "@-" reads stdin, "@path" reads a
 // file. The bytes are sent verbatim (no trailing-newline stripping), matching the raw-output
 // contract. A literal leading @ is escaped as "@@". Any other value passes through unchanged.
+// Entries that resolve to an empty string are dropped, so -t "" keeps meaning "no message".
 func resolveTextPayload(c *commonFlags) error {
-	if !strings.HasPrefix(c.text, "@") {
-		return nil
+	resolved := make(textList, 0, len(c.text))
+	for _, entry := range c.text {
+		expanded, err := expandTextEntry(entry)
+		if err != nil {
+			return err
+		}
+		if expanded != "" {
+			resolved = append(resolved, expanded)
+		}
 	}
-	if strings.HasPrefix(c.text, "@@") {
-		c.text = c.text[1:]
-		return nil
+	c.text = resolved
+	return nil
+}
+
+// expandTextEntry expands a single --text value per the resolveTextPayload contract.
+func expandTextEntry(entry string) (string, error) {
+	if !strings.HasPrefix(entry, "@") {
+		return entry, nil
 	}
-	src := c.text[1:]
+	if strings.HasPrefix(entry, "@@") {
+		return entry[1:], nil
+	}
+	src := entry[1:]
 	var (
 		data []byte
 		err  error
@@ -242,16 +257,15 @@ func resolveTextPayload(c *commonFlags) error {
 		data, err = os.ReadFile(src)
 	}
 	if err != nil {
-		return fmt.Errorf("reading --text payload: %w", err)
+		return "", fmt.Errorf("reading --text payload: %w", err)
 	}
-	c.text = string(data)
-	return nil
+	return string(data), nil
 }
 
 // validateMessaging checks the messaging flags (--text / --rpc-method / --rpc-version) and
 // returns the resolved JSON-RPC version.
 func validateMessaging(c *commonFlags, set map[string]bool) (string, error) {
-	if c.text != "" && c.rpcMethod != "" {
+	if len(c.text) > 0 && c.rpcMethod != "" {
 		return "", errors.New("mutually exclusive messaging flags: use --text or --rpc-method")
 	}
 	rpcVersion := strings.TrimSpace(c.rpcVersion)
@@ -260,10 +274,26 @@ func validateMessaging(c *commonFlags, set map[string]bool) (string, error) {
 	default:
 		return "", errors.New("--rpc-version must be 1.0 or 2.0")
 	}
-	if set["rpc-version"] && c.rpcMethod == "" && c.text == "" {
+	if set["rpc-version"] && c.rpcMethod == "" && len(c.text) == 0 {
 		return "", errors.New("--rpc-version requires --rpc-method or --text")
 	}
 	return rpcVersion, nil
+}
+
+// validateMeasureMessaging rejects measure-mode invocations whose messaging flags need stream
+// mode or fall short of the output contract. Repeated -t drives a multi-frame conversation and
+// only stream mode sends on an open connection; raw measure has no payload without a message.
+func validateMeasureMessaging(c *commonFlags, mode app.Mode, output app.Output) error {
+	if mode != app.ModeMeasure {
+		return nil
+	}
+	if len(c.text) > 1 {
+		return errors.New("repeated -t requires the stream subcommand")
+	}
+	if output == app.OutputRaw && len(c.text) == 0 && c.rpcMethod == "" {
+		return errors.New("-o raw in measure mode requires --text or --rpc-method")
+	}
+	return nil
 }
 
 // splitCSV splits a comma-separated value into trimmed, non-empty parts. Returns nil for empty.

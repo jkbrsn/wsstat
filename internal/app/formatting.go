@@ -108,6 +108,13 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 	return t.C
 }
 
+func timerC(t *time.Timer) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
+}
+
 func repeat[T any](value T, count int) []T {
 	result := make([]T, count)
 	for i := range result {

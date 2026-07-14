@@ -46,6 +46,7 @@ func main() {
 	mux.HandleFunc("/echo", handle(echoBehavior))
 	mux.HandleFunc("/jsonrpc", handle(jsonrpcBehavior))
 	mux.HandleFunc("/stream", handle(streamBehavior))
+	mux.HandleFunc("/subscriptions", handle(subscriptionsBehavior))
 	mux.HandleFunc("/large", handle(largeBehavior))
 	mux.HandleFunc("/slow", handle(slowBehavior))
 	mux.HandleFunc("/headers", handle(headersBehavior))
@@ -347,6 +348,58 @@ func streamBehavior(r *http.Request, conn *websocket.Conn) {
 			if maxCount > 0 && n >= maxCount {
 				return
 			}
+		}
+	}
+}
+
+type subscriptionRequest struct {
+	Method       string          `json:"method"`
+	Subscription json.RawMessage `json:"subscription"`
+}
+
+// subscriptionsBehavior is a stateful, Hyperliquid-style subscription manager:
+// each connection tracks its own subscription set, so behaviors only reachable
+// on a *second* frame of the same connection can be exercised. subscribe replies
+// with a subscriptionResponse, a duplicate subscribe with "Already subscribed",
+// unsubscribe with a subscriptionResponse (or "not subscribed"). Serves repeated
+// -t / --send-delay multi-frame conversations.
+func subscriptionsBehavior(_ *http.Request, conn *websocket.Conn) {
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	ctx := context.Background()
+	subs := map[string]bool{}
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var req subscriptionRequest
+		var reply []byte
+		key := ""
+		if err := json.Unmarshal(data, &req); err == nil {
+			key = string(req.Subscription)
+		}
+		switch {
+		case key == "":
+			reply = []byte(`{"channel":"error","data":"bad subscription request"}`)
+		case req.Method == "subscribe" && subs[key]:
+			reply = []byte(`{"channel":"error","data":"Already subscribed"}`)
+		case req.Method == "subscribe":
+			subs[key] = true
+			reply, _ = json.Marshal(map[string]any{
+				"channel": "subscriptionResponse",
+				"data":    map[string]any{"method": "subscribe", "subscription": req.Subscription},
+			})
+		case req.Method == "unsubscribe" && subs[key]:
+			delete(subs, key)
+			reply, _ = json.Marshal(map[string]any{
+				"channel": "subscriptionResponse",
+				"data":    map[string]any{"method": "unsubscribe", "subscription": req.Subscription},
+			})
+		default:
+			reply = []byte(`{"channel":"error","data":"not subscribed"}`)
+		}
+		if err := conn.Write(ctx, websocket.MessageText, reply); err != nil {
+			return
 		}
 	}
 }

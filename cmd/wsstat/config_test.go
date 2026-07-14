@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app"
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,12 @@ func TestMeasureFlags(t *testing.T) {
 		_, _, err := buildMeasure([]string{"-t", "hi", "--rpc-method", "m", "example.com"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("repeated text rejected", func(t *testing.T) {
+		_, _, err := buildMeasure([]string{"-t", "a", "-t", "b", "example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "repeated -t requires the stream subcommand")
 	})
 
 	t.Run("rpc-version accepts 1.0 with rpc-method", func(t *testing.T) {
@@ -230,6 +237,45 @@ func TestStreamFlags(t *testing.T) {
 	t.Run("buffer", func(t *testing.T) {
 		_, _, err := buildStream([]string{"-b", "10", "example.com"})
 		require.NoError(t, err)
+	})
+
+	t.Run("repeated text accepted in order", func(t *testing.T) {
+		client, _, err := buildStream([]string{"-t", "sub", "--text", "unsub", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"sub", "unsub"}, client.TextMessages())
+	})
+
+	t.Run("send-delay defaults to one second", func(t *testing.T) {
+		client, _, err := buildStream([]string{"-t", "a", "-t", "b", "example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, time.Second, client.SendDelay())
+	})
+
+	t.Run("send-delay parsed", func(t *testing.T) {
+		client, _, err := buildStream([]string{
+			"--send-delay", "250ms", "-t", "a", "-t", "b", "example.com",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 250*time.Millisecond, client.SendDelay())
+	})
+
+	t.Run("negative send-delay rejected", func(t *testing.T) {
+		_, _, err := buildStream([]string{
+			"--send-delay", "-1s", "-t", "a", "-t", "b", "example.com",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--send-delay must be zero or greater")
+	})
+
+	t.Run("send-delay without repeated text rejected", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"--send-delay", "1s", "example.com"},
+			{"--send-delay", "1s", "-t", "a", "example.com"},
+		} {
+			_, _, err := buildStream(args)
+			require.Errorf(t, err, "args %v should be rejected", args)
+			assert.Contains(t, err.Error(), "--send-delay has no effect without repeated -t")
+		}
 	})
 }
 

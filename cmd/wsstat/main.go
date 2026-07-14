@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jkbrsn/wsstat/v3/internal/app"
 )
@@ -275,6 +276,8 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	count := fs.Int("c", 0, "number of events to receive; 0 = unlimited")
 	fs.IntVar(count, "count", 0, "number of events to receive; 0 = unlimited")
 	once := fs.Bool("once", false, "exit after the first event")
+	sendDelay := fs.Duration("send-delay", time.Second,
+		"delay between successive -t sends (with repeated -t)")
 	buffer := fs.Int("b", 0, "delivery buffer size (messages)")
 	fs.IntVar(buffer, "buffer", 0, "delivery buffer size (messages)")
 	summary := fs.Duration("summary-interval", 0,
@@ -296,11 +299,11 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	set := setFlagNames(fs)
 	if *count < 0 {
 		return nil, nil, errors.New("count must be zero or greater")
 	}
 	if *once {
-		set := setFlagNames(fs)
 		if set["c"] || set["count"] {
 			return nil, nil, errors.New("--count cannot be combined with --once")
 		}
@@ -310,11 +313,18 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 			return nil, nil, errors.New("--summary-interval has no effect with -o raw")
 		}
 	}
+	if *sendDelay < 0 {
+		return nil, nil, errors.New("--send-delay must be zero or greater")
+	}
+	if set["send-delay"] && len(cf.text) < 2 {
+		return nil, nil, errors.New("--send-delay has no effect without repeated -t")
+	}
 	opts = append(opts,
 		app.WithCount(*count),
 		app.WithStreamOnce(*once),
 		app.WithBuffer(*buffer),
 		app.WithSummaryInterval(*summary),
+		app.WithSendDelay(*sendDelay),
 	)
 
 	client := app.NewClient(opts...)

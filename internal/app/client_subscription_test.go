@@ -99,7 +99,7 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	c := &Client{
 		count:       2,
 		mode:        ModeStream,
-		textMessage: "start",
+		textMessages: []string{"start"},
 		quiet:       true,
 	}
 	require.NoError(t, c.Validate())
@@ -118,6 +118,48 @@ func TestStreamSubscriptionRespectsCount(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestStreamSubscriptionSendsMessagesInOrder(t *testing.T) {
+	t.Parallel()
+
+	server := newConversationTestServer(t)
+	defer server.cleanup()
+
+	c := &Client{
+		count:        3,
+		mode:         ModeStream,
+		textMessages: []string{"subscribe", "resubscribe", "unsubscribe"},
+		sendDelay:    10 * time.Millisecond,
+		quiet:        true,
+	}
+	require.NoError(t, c.Validate())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.StreamSubscription(ctx, server.wsURL)
+	}()
+	require.NoError(t, <-errCh, "stream should exit after receiving one ack per send")
+
+	for _, want := range []string{"subscribe", "resubscribe", "unsubscribe"} {
+		select {
+		case got := <-server.received:
+			assert.Equal(t, want, got)
+		default:
+			t.Fatalf("server did not receive %q", want)
+		}
+	}
+}
+
+func TestPendingSends(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, (&Client{}).pendingSends())
+	assert.Nil(t, (&Client{textMessages: []string{"only"}}).pendingSends())
+	assert.Equal(t, []string{"b", "c"},
+		(&Client{textMessages: []string{"a", "b", "c"}}).pendingSends())
+}
+
 func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 	t.Parallel()
 
@@ -126,7 +168,7 @@ func TestStreamSubscriptionUnlimitedRequiresCancel(t *testing.T) {
 
 	c := &Client{
 		mode:        ModeStream,
-		textMessage: "start",
+		textMessages: []string{"start"},
 		quiet:       true,
 	}
 	require.NoError(t, c.Validate())
@@ -222,7 +264,7 @@ func TestStreamSubscriptionRawIsByteClean(t *testing.T) {
 		count:       2,
 		mode:        ModeStream,
 		output:      OutputRaw,
-		textMessage: "start",
+		textMessages: []string{"start"},
 	}
 	require.NoError(t, c.Validate())
 
@@ -367,7 +409,7 @@ func TestSubscriptionPayload(t *testing.T) {
 	})
 
 	t.Run("text takes precedence over rpc", func(t *testing.T) {
-		client := &Client{textMessage: "text", rpcMethod: "method"}
+		client := &Client{textMessages: []string{"text"}, rpcMethod: "method"}
 		msgType, payload, err := client.subscriptionPayload()
 		require.NoError(t, err)
 		assert.Equal(t, wsstat.TextMessage, msgType)

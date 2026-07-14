@@ -88,7 +88,7 @@ func TestStreamSubscriptionRecordsToSink(t *testing.T) {
 	c := &Client{
 		count:       2,
 		mode:        ModeStream,
-		textMessage: "start",
+		textMessages: []string{"start"},
 		quiet:       true,
 	}
 	require.NoError(t, c.Validate())
