@@ -254,7 +254,7 @@ func (*Client) pingReplyJSONFor(
 ) pingReplyJSON {
 	rec := pingReplyJSON{Schema: JSONSchemaVersion, Type: "ping_reply", Seq: seq}
 	if outcome == pingPong {
-		rec.RTTMs = floatPtr(msFloat(rtt))
+		rec.RTTMs = new(msFloat(rtt))
 	} else {
 		rec.Lost = true
 		rec.Error = reason
@@ -273,10 +273,10 @@ func (*Client) pingSummaryJSONFor(report *PingReport) pingSummaryJSON {
 		LossPct:  report.LossPct(),
 	}
 	if report.Received > 0 {
-		rec.MinMs = floatPtr(msFloat(report.Min))
-		rec.AvgMs = floatPtr(msFloat(report.Avg))
-		rec.MaxMs = floatPtr(msFloat(report.Max))
-		rec.StddevMs = floatPtr(msFloat(report.Stddev))
+		rec.MinMs = new(msFloat(report.Min))
+		rec.AvgMs = new(msFloat(report.Avg))
+		rec.MaxMs = new(msFloat(report.Max))
+		rec.StddevMs = new(msFloat(report.Stddev))
 	}
 	return rec
 }

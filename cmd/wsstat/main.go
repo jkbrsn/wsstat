@@ -355,7 +355,7 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 
 // rejectPingIncompatible rejects payload and response-recording flags that ping mode does not
 // support, keyed on whether each was set rather than its resolved value, so an explicitly empty
-// value (-t '', --rpc-method '', --file '') is rejected too. Mirrors the app-layer validatePing
+// value (-t ”, --rpc-method ”, --file ”) is rejected too. Mirrors the app-layer validatePing
 // rejections for the direct-API path. --rpc-version-without-a-message is left to resolveCommon.
 func rejectPingIncompatible(set map[string]bool) error {
 	switch {

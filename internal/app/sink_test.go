@@ -86,10 +86,10 @@ func TestStreamSubscriptionRecordsToSink(t *testing.T) {
 
 	var buf bytes.Buffer
 	c := &Client{
-		count:       2,
-		mode:        ModeStream,
+		count:        2,
+		mode:         ModeStream,
 		textMessages: []string{"start"},
-		quiet:       true,
+		quiet:        true,
 	}
 	require.NoError(t, c.Validate())
 	c.SetResponseSink(&buf)
