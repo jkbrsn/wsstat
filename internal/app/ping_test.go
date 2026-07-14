@@ -148,7 +148,7 @@ func TestRunPingCountReached(t *testing.T) {
 	assert.Less(t, strings.Index(out, "seq=2"), strings.Index(out, "seq=3"))
 	assert.Equal(t, 3, strings.Count(out, "pong: seq="))
 	assert.Contains(t, out, "3 sent, 3 received, 0.0% loss")
-	assert.Contains(t, out, "ping statistics")
+	assert.Contains(t, out, "STATS ")
 }
 
 func TestRunPingContextCancelPrintsSummary(t *testing.T) {
@@ -171,7 +171,7 @@ func TestRunPingContextCancelPrintsSummary(t *testing.T) {
 
 	require.NotNil(t, report)
 	assert.GreaterOrEqual(t, report.Received, 1, "at least one pong before cancel")
-	assert.Contains(t, out, "ping statistics")
+	assert.Contains(t, out, "STATS ")
 }
 
 func TestRunPingConnectionDeath(t *testing.T) {
@@ -195,7 +195,7 @@ func TestRunPingConnectionDeath(t *testing.T) {
 	assert.GreaterOrEqual(t, report.Received, 1, "some pongs before the server closed")
 	assert.Equal(t, report.Received+1, report.Sent, "the failing ping counts as sent, not received")
 	assert.Contains(t, out, "lost: seq=")
-	assert.Contains(t, out, "ping statistics")
+	assert.Contains(t, out, "STATS ")
 }
 
 func TestRunPingZeroPongs(t *testing.T) {
@@ -228,7 +228,7 @@ func TestRunPingZeroPongs(t *testing.T) {
 	assert.InDelta(t, 100.0, report.LossPct(), 0.001)
 	assert.Equal(t, 3, strings.Count(out, "timeout: seq="))
 	assert.Contains(t, out, "3 sent, 0 received, 100.0% loss")
-	assert.NotContains(t, out, "min/avg/max/stddev")
+	assert.NotContains(t, out, "rtt:")
 }
 
 func TestRunPingTimeoutIsSurvivable(t *testing.T) {
@@ -403,9 +403,8 @@ func TestPingSummaryOutput(t *testing.T) {
 	t.Run("text with rtt line", func(t *testing.T) {
 		c := &Client{output: OutputText, colorMode: "never"}
 		out := captureStdoutFrom(t, func() error { return c.printPingSummary(full()) })
-		assert.Contains(t, out, "--- "+u.String()+" ping statistics ---")
-		assert.Contains(t, out, "4 sent, 3 received, 25.0% loss")
-		assert.Contains(t, out, "rtt min/avg/max/stddev = 11.8/12.1/12.3/0.2 ms")
+		assert.Contains(t, out, "STATS "+u.String()+" (4 sent, 3 received, 25.0% loss)")
+		assert.Contains(t, out, "rtt: min=11.8ms avg=12.1ms max=12.3ms stddev=0.2ms")
 	})
 
 	t.Run("text omits rtt when zero received", func(t *testing.T) {
@@ -414,7 +413,7 @@ func TestPingSummaryOutput(t *testing.T) {
 			return c.printPingSummary(&PingReport{Target: u, Sent: 2, Received: 0})
 		})
 		assert.Contains(t, out, "2 sent, 0 received, 100.0% loss")
-		assert.NotContains(t, out, "min/avg/max/stddev")
+		assert.NotContains(t, out, "rtt:")
 	})
 
 	t.Run("json record", func(t *testing.T) {

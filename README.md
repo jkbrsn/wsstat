@@ -219,7 +219,7 @@ wsstat stream -c 4 -o json \
 
 `wsstat ping <url>` dials once and sends a WebSocket ping frame every
 `-i/--interval` (default `1s`) on that connection, printing a per-ping RTT line
-as each pong arrives and a `ping(8)`-style summary at the end:
+as each pong arrives and a summary at the end:
 
 ```sh
 wsstat ping -c 5 wss://echo.example.com
@@ -232,9 +232,8 @@ pong: seq=2 rtt=11.8ms
 timeout: seq=3 (5s)
 pong: seq=4 rtt=12.1ms
 ...
---- wss://echo.example.com ping statistics ---
-5 sent, 4 received, 20.0% loss
-rtt min/avg/max/stddev = 11.8/12.1/12.3/0.2 ms
+STATS wss://echo.example.com (5 sent, 4 received, 20.0% loss)
+rtt: min=11.8ms avg=12.1ms max=12.3ms stddev=0.2ms
 ```
 
 With no `-c` the run continues until you interrupt it (`Ctrl-C`) or the optional

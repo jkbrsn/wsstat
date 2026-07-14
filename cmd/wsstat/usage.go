@@ -158,7 +158,7 @@ func printPingUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -w, --deadline <duration>      max total run time, e.g. 10s [default: 0 = none]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Dials once and sends a ping frame every interval on that connection, printing a")
-	fmt.Fprintln(w, "  per-ping RTT line and, at the end, a ping(8)-style summary (sent/received/loss,")
+	fmt.Fprintln(w, "  per-ping RTT line and, at the end, a summary (sent/received/loss and rtt")
 	fmt.Fprintln(w, "  min/avg/max/stddev). A missed pong (no reply within --timeout, default 5s) is")
 	fmt.Fprintln(w, "  reported and the run continues, like ping(8); the run ends at --count, on Ctrl-C or")
 	fmt.Fprintln(w, "  --deadline, or when the connection closes.")

@@ -355,9 +355,23 @@ func (c *Client) printPingReply(
 	return nil
 }
 
+// colorizeLossPct colors a loss percentage by severity: green at 0%, red at total loss,
+// orange in between, mirroring the pong/timeout/lost reply-line colors.
+func (c *Client) colorizeLossPct(pct float64) string {
+	s := fmt.Sprintf("%.1f%%", pct)
+	switch {
+	case pct <= 0:
+		return c.colorizeGreen(s)
+	case pct >= pctScale:
+		return c.colorizeRed(s)
+	default:
+		return c.colorizeOrange(s)
+	}
+}
+
 // printPingSummary prints the closing statistics block. JSON emits one ping_summary record;
-// text prints the "--- <url> ping statistics ---" block, omitting the rtt line when no pong
-// was received. Printed on every termination path, including under -q.
+// text prints a "STATS <url> (...)" line mirroring the PING header, omitting the rtt line
+// when no pong was received. Printed on every termination path, including under -q.
 func (c *Client) printPingSummary(report *PingReport) error {
 	if c.output == OutputJSON {
 		return c.printJSONLine(c.pingSummaryJSONFor(report))
@@ -366,13 +380,15 @@ func (c *Client) printPingSummary(report *PingReport) error {
 		return nil
 	}
 	fmt.Println()
-	fmt.Printf("--- %s ping statistics ---\n", report.Target.String())
-	fmt.Printf("%d sent, %d received, %.1f%% loss\n",
-		report.Sent, report.Received, report.LossPct())
+	fmt.Printf("%s %s (%d sent, %d received, %s loss)\n",
+		c.colorizeOrange("STATS"), report.Target.String(),
+		report.Sent, report.Received, c.colorizeLossPct(report.LossPct()))
 	if report.Received > 0 {
-		fmt.Printf("rtt min/avg/max/stddev = %s/%s/%s/%s ms\n",
-			msString(report.Min), msString(report.Avg),
-			msString(report.Max), msString(report.Stddev))
+		fmt.Printf("rtt: min=%s avg=%s max=%s stddev=%s\n",
+			c.colorizeGreen(msString(report.Min)+"ms"),
+			c.colorizeGreen(msString(report.Avg)+"ms"),
+			c.colorizeGreen(msString(report.Max)+"ms"),
+			c.colorizeGreen(msString(report.Stddev)+"ms"))
 	}
 	return nil
 }
