@@ -336,6 +336,18 @@ func (c *Client) Interval() time.Duration { return c.interval }
 
 // wsstatOptions builds wsstat options based on client configuration.
 func (c *Client) wsstatOptions() []wsstat.Option {
+	opts := c.baseWsstatOptions()
+	if len(c.subprotocols) > 0 {
+		opts = append(opts, wsstat.WithSubprotocols(c.subprotocols))
+	}
+	return opts
+}
+
+// baseWsstatOptions builds the transport options that are independent of the negotiated
+// subprotocol: TLS, DNS overrides, timeouts, read limit, UTF-8 validation, and debug logging.
+// Check mode drives subprotocol negotiation per connection, so it composes on top of this base
+// rather than wsstatOptions, which folds in the client's configured subprotocols.
+func (c *Client) baseWsstatOptions() []wsstat.Option {
 	var opts []wsstat.Option
 
 	if c.insecure {
@@ -358,10 +370,6 @@ func (c *Client) wsstatOptions() []wsstat.Option {
 
 	if c.readLimit != 0 {
 		opts = append(opts, wsstat.WithReadLimit(c.readLimit))
-	}
-
-	if len(c.subprotocols) > 0 {
-		opts = append(opts, wsstat.WithSubprotocols(c.subprotocols))
 	}
 
 	if c.validateUTF8 {
@@ -475,6 +483,10 @@ func (c *Client) Validate() error {
 
 	if c.mode == ModePing {
 		return c.validatePing()
+	}
+
+	if c.mode == ModeCheck {
+		return c.validateCheck()
 	}
 
 	if c.mode == ModeStream {

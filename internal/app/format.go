@@ -40,6 +40,9 @@ const (
 	// ModePing sends periodic WebSocket ping frames on one connection and reports
 	// per-ping RTT plus a ping(8)-style summary.
 	ModePing
+	// ModeCheck runs the Tier 1 observational RFC 6455 conformance catalog over a handful
+	// of connections and reports pass/warn/fail/skip verdicts.
+	ModeCheck
 )
 
 // ParseOutput normalizes and validates an output contract string. An empty
