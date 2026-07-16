@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // RFC 6455 mandates SHA-1 for the handshake accept key
 	"encoding/base64"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jkbrsn/wsstat/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -99,6 +101,17 @@ func newCheckClient() *Client {
 	}
 }
 
+// newCheckClientFast builds a check-mode client with short per-check and close-grace budgets so
+// the tests that deliberately drive timeout paths (no pong, dropped connection) finish quickly.
+func newCheckClientFast() *Client {
+	return &Client{
+		mode:       ModeCheck,
+		timeout:    400 * time.Millisecond,
+		closeGrace: 200 * time.Millisecond,
+		colorMode:  "never",
+	}
+}
+
 // entryByID returns the report entry with the given ID, failing the test if absent.
 func entryByID(t *testing.T, r *CheckReport, id string) CheckEntry {
 	t.Helper()
@@ -115,8 +128,8 @@ func TestRunCheck(t *testing.T) {
 	tests := []struct {
 		name    string
 		handler http.HandlerFunc
-		id      string           // check to assert (empty means assert whole report)
-		want    CheckStatus      // expected status for id
+		id      string      // check to assert (empty means assert whole report)
+		want    CheckStatus // expected status for id
 		assert  func(*testing.T, *CheckReport)
 	}{
 		{
@@ -249,6 +262,298 @@ func TestRunCheckUnreachable(t *testing.T) {
 	assert.Equal(t, len(checkOrder)-1, report.Skipped())
 }
 
+// silentHandler completes the handshake by hand but never answers pings, echoes, or the closing
+// handshake: it discards every client frame until a deadline fires. It drives the no-pong fail
+// path (behavior.ping-pong) and, on the fragmentation connection, the dropped-after-fragments
+// fail path.
+func silentHandler(w http.ResponseWriter, r *http.Request) {
+	conn, ok := rawUpgrade(w, r, nil)
+	if !ok {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _ = io.Copy(io.Discard, conn)
+	_ = conn.Close()
+}
+
+// TestRunCheckNoPong drives the two MUST-level behavior fail paths that a healthy suite never
+// exercises: a server that never pongs fails behavior.ping-pong, and one that swallows a
+// fragmented message fails behavior.fragmentation.
+func TestRunCheckNoPong(t *testing.T) {
+	target := newCheckServer(t, silentHandler)
+	report, err := newCheckClientFast().RunCheck(context.Background(), target)
+	require.NoError(t, err)
+
+	assert.Equal(t, CheckFail, entryByID(t, report, checkPingPong).Status)
+	assert.Equal(t, CheckFail, entryByID(t, report, checkFragmentation).Status)
+}
+
+// noDeflateHandler is a well-behaved echo server with compression disabled, so the deflate
+// connection sees permessage-deflate simply not negotiated (the ext=="" pass branch).
+func noDeflateHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols:       []string{checkSubprotocolName},
+		CompressionMode:    websocket.CompressionDisabled,
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+	conn.SetReadLimit(-1)
+	for {
+		typ, data, err := conn.Read(context.Background())
+		if err != nil {
+			return
+		}
+		if err := conn.Write(context.Background(), typ, data); err != nil {
+			return
+		}
+	}
+}
+
+// rejectDeflateHandler rejects the handshake only when permessage-deflate is offered, driving the
+// negotiation-failed warn branch; every other connection is a well-behaved echo.
+func rejectDeflateHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate") {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	coderEcho(w, r)
+}
+
+// TestRunCheckDeflateBranches covers the deflate outcomes the malformed-params test misses: the
+// not-negotiated pass and the negotiation-failed warn.
+func TestRunCheckDeflateBranches(t *testing.T) {
+	t.Run("not negotiated passes", func(t *testing.T) {
+		target := newCheckServer(t, noDeflateHandler)
+		report, err := newCheckClient().RunCheck(context.Background(), target)
+		require.NoError(t, err)
+		e := entryByID(t, report, checkDeflate)
+		assert.Equal(t, CheckPass, e.Status)
+		assert.Contains(t, e.Detail, "not negotiated")
+	})
+
+	t.Run("rejected negotiation warns", func(t *testing.T) {
+		target := newCheckServer(t, rejectDeflateHandler)
+		report, err := newCheckClient().RunCheck(context.Background(), target)
+		require.NoError(t, err)
+		assert.Equal(t, CheckWarn, entryByID(t, report, checkDeflate).Status)
+	})
+}
+
+// versionNoHeaderHandler rejects the version-99 probe with 426 but omits the advertised
+// Sec-WebSocket-Version header, driving the version-reject warn branch.
+func versionNoHeaderHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Sec-WebSocket-Version") == "99" {
+		w.WriteHeader(http.StatusUpgradeRequired)
+		return
+	}
+	coderEcho(w, r)
+}
+
+// versionProbeErrorHandler abruptly closes the version-99 probe's TCP connection with no
+// response, driving the version-reject "probe failed" warn branch.
+func versionProbeErrorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Sec-WebSocket-Version") == "99" {
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+		return
+	}
+	coderEcho(w, r)
+}
+
+// TestRunCheckVersionBranches covers the two version-reject warn branches the accept-101 fail
+// test misses: a rejection missing the advertised-version header, and a probe transport error.
+func TestRunCheckVersionBranches(t *testing.T) {
+	t.Run("rejected without version header warns", func(t *testing.T) {
+		target := newCheckServer(t, versionNoHeaderHandler)
+		report, err := newCheckClient().RunCheck(context.Background(), target)
+		require.NoError(t, err)
+		assert.Equal(t, CheckWarn, entryByID(t, report, checkVersionReject).Status)
+	})
+
+	t.Run("probe transport error warns", func(t *testing.T) {
+		target := newCheckServer(t, versionProbeErrorHandler)
+		report, err := newCheckClient().RunCheck(context.Background(), target)
+		require.NoError(t, err)
+		e := entryByID(t, report, checkVersionReject)
+		assert.Equal(t, CheckWarn, e.Status)
+		assert.Contains(t, e.Detail, "probe failed")
+	})
+}
+
+// readWSFrame reads and discards one WebSocket frame from a hijacked connection, returning its
+// opcode. It handles the masked, small frames the check client sends.
+func readWSFrame(conn net.Conn) (byte, error) {
+	hdr := make([]byte, 2)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return 0, err
+	}
+	opcode := hdr[0] & 0x0f
+	length := int(hdr[1] & 0x7f)
+	switch length {
+	case 126:
+		ext := make([]byte, 2)
+		if _, err := io.ReadFull(conn, ext); err != nil {
+			return 0, err
+		}
+		length = int(binary.BigEndian.Uint16(ext))
+	case 127:
+		ext := make([]byte, 8)
+		if _, err := io.ReadFull(conn, ext); err != nil {
+			return 0, err
+		}
+		length = int(binary.BigEndian.Uint64(ext))
+	default:
+		// 7-bit length already read from hdr[1].
+	}
+	if hdr[1]&0x80 != 0 {
+		var mask [4]byte
+		if _, err := io.ReadFull(conn, mask[:]); err != nil {
+			return 0, err
+		}
+	}
+	if length > 0 {
+		if _, err := io.CopyN(io.Discard, conn, int64(length)); err != nil {
+			return 0, err
+		}
+	}
+	return opcode, nil
+}
+
+// closeWrongCodeHandler completes the closing handshake but echoes status 1001 (going away)
+// instead of mirroring the client's 1000, driving the "valid registered code != 1000" warn
+// branch that a mirroring echo server can never reach.
+func closeWrongCodeHandler(w http.ResponseWriter, r *http.Request) {
+	conn, ok := rawUpgrade(w, r, nil)
+	if !ok {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	for {
+		op, err := readWSFrame(conn)
+		if err != nil {
+			return
+		}
+		if op == 0x8 { // client close frame
+			break
+		}
+	}
+	// Close frame (FIN|opcode 0x8), 2-byte payload carrying status 1001 (0x03E9), unmasked.
+	_, _ = conn.Write([]byte{0x88, 0x02, 0x03, 0xe9})
+}
+
+// TestRunCheckCloseBranches covers the close-echo outcomes the mirroring echo server cannot
+// reach: a non-1000 registered echo warns, and a fresh-connection dial failure skips.
+func TestRunCheckCloseBranches(t *testing.T) {
+	t.Run("non-1000 registered code warns", func(t *testing.T) {
+		target := newCheckServer(t, closeWrongCodeHandler)
+		report, err := newCheckClientFast().RunCheck(context.Background(), target)
+		require.NoError(t, err)
+		e := entryByID(t, report, checkCloseEcho)
+		assert.Equal(t, CheckWarn, e.Status)
+		assert.Contains(t, e.Detail, "1001")
+	})
+
+	t.Run("dial failure skips", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(coderEcho))
+		u, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+		require.NoError(t, err)
+		server.Close() // nothing listens now
+		b := newCheckBuilder(u)
+		newCheckClient().checkCloseHandshake(context.Background(), u, nil, b)
+		assert.Equal(t, CheckSkip, b.entries[checkCloseEcho].Status)
+	})
+}
+
+// TestRecordHeaderTokens exercises recordHeaderTokens directly: coder's client always yields
+// well-formed handshake response headers, so both warn branches and the nil-headers guard are
+// unreachable through a real dial.
+func TestRecordHeaderTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		header http.Header
+		want   CheckStatus
+	}{
+		{"both tokens present", http.Header{
+			"Upgrade": {"websocket"}, "Connection": {"Upgrade"}}, CheckPass},
+		{"upgrade missing token", http.Header{
+			"Upgrade": {"h2c"}, "Connection": {"Upgrade"}}, CheckWarn},
+		{"connection missing token", http.Header{
+			"Upgrade": {"websocket"}, "Connection": {"keep-alive"}}, CheckWarn},
+		{"nil headers", nil, CheckWarn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newCheckBuilder(nil)
+			recordHeaderTokens(&wsstat.Result{ResponseHeaders: tc.header}, b)
+			assert.Equal(t, tc.want, b.entries[checkHeaders].Status)
+		})
+	}
+}
+
+// TestRecordSubprotocolNone exercises recordSubprotocolNone directly: coder rejects an
+// unoffered subprotocol during the dial, so its fail branch is unreachable end-to-end.
+func TestRecordSubprotocolNone(t *testing.T) {
+	t.Run("none selected passes", func(t *testing.T) {
+		b := newCheckBuilder(nil)
+		recordSubprotocolNone(&wsstat.Result{Subprotocol: ""}, b)
+		assert.Equal(t, CheckPass, b.entries[checkSubprotoNone].Status)
+	})
+	t.Run("unsolicited selection fails", func(t *testing.T) {
+		b := newCheckBuilder(nil)
+		recordSubprotocolNone(&wsstat.Result{Subprotocol: "chat"}, b)
+		assert.Equal(t, CheckFail, b.entries[checkSubprotoNone].Status)
+	})
+}
+
+// TestRunCheckCanceled asserts a run whose context is already canceled fabricates no failing
+// verdicts (which would trip the exit-3 CI gate) and records every check as skipped instead.
+func TestRunCheckCanceled(t *testing.T) {
+	target := newCheckServer(t, coderEcho)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report, err := newCheckClient().RunCheck(ctx, target)
+	require.NoError(t, err)
+	require.Len(t, report.Entries, len(checkOrder))
+	assert.Equal(t, 0, report.Failed(), "a canceled run must fabricate no failures")
+	assert.GreaterOrEqual(t, report.Skipped(), len(checkOrder)-4)
+}
+
+// TestCheckCancellationSkips asserts each post-handshake check records skip (not a fabricated
+// fail/warn verdict) when the run context is canceled before it runs.
+func TestCheckCancellationSkips(t *testing.T) {
+	target := newCheckServer(t, coderEcho)
+	header, err := parseHeaders(nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := newCheckClient()
+	cases := []struct {
+		id  string
+		run func(context.Context, *url.URL, http.Header, *checkBuilder)
+	}{
+		{checkSubprotoEcho, c.checkSubprotocolEcho},
+		{checkDeflate, c.checkDeflateExtension},
+		{checkVersionReject, c.checkVersionRejection},
+		{checkFragmentation, c.checkFragmentationTolerance},
+		{checkCloseEcho, c.checkCloseHandshake},
+	}
+	for _, tc := range cases {
+		b := newCheckBuilder(target)
+		tc.run(ctx, target, header, b)
+		assert.Equalf(t, CheckSkip, b.entries[tc.id].Status,
+			"check %s must skip on cancel, got %s", tc.id, b.entries[tc.id].Detail)
+	}
+}
+
 func TestValidateDeflate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -303,6 +608,8 @@ func TestValidateCheck(t *testing.T) {
 		{"summary interval", Client{mode: ModeCheck, summaryInterval: time.Second}},
 		{"send delay", Client{mode: ModeCheck, sendDelay: time.Second}},
 		{"interval", Client{mode: ModeCheck, interval: time.Second}},
+		{"body compact", Client{mode: ModeCheck, body: BodyCompact}},
+		{"clip", Client{mode: ModeCheck, clip: true}},
 	}
 	for _, tc := range rejections {
 		t.Run("rejects "+tc.name, func(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -109,9 +110,14 @@ var checkOrder = []string{
 const (
 	// checkDefaultTimeout mirrors the core's read/dial default when --timeout is unset.
 	checkDefaultTimeout = 5 * time.Second
-	// checkRunBudgetFactor caps the whole run at this multiple of the per-check timeout so a
-	// hung server cannot stall the process indefinitely.
-	checkRunBudgetFactor = 4
+	// checkRunBudgetFactor caps the whole run at this multiple of the per-check timeout as a
+	// backstop against a wedged run. The per-connection timeouts do the real bounding: the
+	// catalog performs up to nine sequential operations (five dials, two pings, a fragmented
+	// write, and an HTTP probe), each individually bounded by the timeout, so a slow-but-
+	// conformant endpoint responding just under the timeout can legitimately need ~9x it. The
+	// budget is set above that worst case so it never fails a healthy endpoint; if it does
+	// fire, the remaining checks are recorded as skip, never as spurious fail.
+	checkRunBudgetFactor = 10
 	// RFC 6455 §7.4.1 registered close-code bounds, used to distinguish a clean 1000 echo from
 	// any other valid registered code.
 	minCloseCode = 1000
@@ -167,6 +173,19 @@ func (b *checkBuilder) skip(ids ...string) {
 	for _, id := range ids {
 		b.record(id, CheckSkip, "", 0)
 	}
+}
+
+// canceled records id as skipped when the run context has ended (a Ctrl-C interrupt or the
+// aggregate run budget) and reports whether it did. A dial, write, or ping that fails because
+// the run was canceled reveals nothing about the endpoint's conformance, so it must not be
+// scored as a warn or a MUST-level fail: doing so would let a mid-run interrupt fabricate a
+// failing verdict and, via the exit-3 gate, misreport a healthy endpoint as non-conformant.
+func (b *checkBuilder) canceled(ctx context.Context, id string, took time.Duration) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	b.record(id, CheckSkip, "run canceled", took)
+	return true
 }
 
 // finalize assembles the report in canonical catalog order.
@@ -227,6 +246,10 @@ func (c *Client) checkHandshake(
 	ws := wsstat.New(c.checkOptions()...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
+		if ctx.Err() != nil {
+			b.skip(checkUpgrade, checkAccept, checkHeaders, checkSubprotoNone, checkPingPong)
+			return false
+		}
 		b.record(checkUpgrade, CheckFail, dialDetail(err), time.Since(start))
 		b.skip(checkAccept, checkHeaders, checkSubprotoNone, checkPingPong)
 		return false
@@ -275,6 +298,9 @@ func recordPingPong(ctx context.Context, ws *wsstat.WSStat, b *checkBuilder) {
 	err := ws.PingPongContext(ctx)
 	took := time.Since(start)
 	if err != nil {
+		if b.canceled(ctx, checkPingPong, took) {
+			return
+		}
 		b.record(checkPingPong, CheckFail, "no pong: "+err.Error(), took)
 		return
 	}
@@ -287,11 +313,17 @@ func recordPingPong(ctx context.Context, ws *wsstat.WSStat, b *checkBuilder) {
 func (c *Client) checkSubprotocolEcho(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
+	if b.canceled(ctx, checkSubprotoEcho, 0) {
+		return
+	}
 	offered := append([]string{checkSubprotocolName}, c.subprotocols...)
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions(wsstat.WithSubprotocols(offered))...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
+		if b.canceled(ctx, checkSubprotoEcho, time.Since(start)) {
+			return
+		}
 		b.record(checkSubprotoEcho, CheckFail,
 			"handshake rejected: "+err.Error(), time.Since(start))
 		return
@@ -316,10 +348,16 @@ func (c *Client) checkSubprotocolEcho(
 func (c *Client) checkDeflateExtension(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
+	if b.canceled(ctx, checkDeflate, 0) {
+		return
+	}
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions(wsstat.WithCompression(true))...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
+		if b.canceled(ctx, checkDeflate, time.Since(start)) {
+			return
+		}
 		b.record(checkDeflate, CheckWarn,
 			"permessage-deflate negotiation failed: "+err.Error(), time.Since(start))
 		return
@@ -345,10 +383,16 @@ func (c *Client) checkDeflateExtension(
 func (c *Client) checkVersionRejection(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
+	if b.canceled(ctx, checkVersionReject, 0) {
+		return
+	}
 	start := time.Now()
 	status, respHeader, err := c.probeVersion(ctx, target, header)
 	took := time.Since(start)
 	if err != nil {
+		if b.canceled(ctx, checkVersionReject, took) {
+			return
+		}
 		b.record(checkVersionReject, CheckWarn, "version probe failed: "+err.Error(), took)
 		return
 	}
@@ -395,7 +439,7 @@ func (c *Client) probeVersion(
 
 	client := &http.Client{
 		Timeout:   c.checkTimeout(),
-		Transport: &http.Transport{TLSClientConfig: c.checkTLSConfig()},
+		Transport: c.probeTransport(),
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -408,28 +452,65 @@ func (c *Client) probeVersion(
 	return resp.StatusCode, resp.Header, nil
 }
 
+// probeTransport builds the HTTP transport for the version-reject probe. It honors --insecure
+// via the TLS config and, crucially, the same --resolve host->IP overrides the WebSocket check
+// connections apply through wsstat.WithResolves: without this the probe would resolve the host
+// through the system resolver and target a different endpoint than every other check.
+func (c *Client) probeTransport() *http.Transport {
+	tr := &http.Transport{TLSClientConfig: c.checkTLSConfig()}
+	if len(c.resolves) == 0 {
+		return tr
+	}
+	resolves := c.resolves
+	dialer := &net.Dialer{Timeout: c.checkTimeout()}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if host, port, err := net.SplitHostPort(addr); err == nil {
+			if ip, ok := resolves[net.JoinHostPort(strings.ToLower(host), port)]; ok {
+				addr = net.JoinHostPort(ip, port)
+			}
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	return tr
+}
+
 // checkFragmentationTolerance sends one text message across three frames on a connection dialed
 // without compression (permessage-deflate does not preserve fragment boundaries), then pings to
 // prove the connection survived (RFC 6455 §5.4). Echo content is server-dependent and unasserted.
 func (c *Client) checkFragmentationTolerance(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
+	if b.canceled(ctx, checkFragmentation, 0) {
+		return
+	}
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions()...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
-		b.record(checkFragmentation, CheckFail, "handshake failed: "+err.Error(), time.Since(start))
+		if b.canceled(ctx, checkFragmentation, time.Since(start)) {
+			return
+		}
+		// The dial is a prerequisite, not the behavior under test: a handshake that never
+		// completed reveals nothing about fragmentation tolerance, so it is a skip (as in the
+		// close-echo check), reserving fail for a server that drops the fragmented message.
+		b.record(checkFragmentation, CheckSkip, "handshake failed: "+err.Error(), time.Since(start))
 		return
 	}
 	defer ws.Close()
 
 	fragments := [][]byte{[]byte("wsstat "), []byte("fragmentation "), []byte("check")}
 	if err := ws.WriteMessageFragmented(wsstat.TextMessage, fragments); err != nil {
+		if b.canceled(ctx, checkFragmentation, time.Since(start)) {
+			return
+		}
 		b.record(checkFragmentation, CheckFail, "fragmented write failed: "+err.Error(),
 			time.Since(start))
 		return
 	}
 	if err := ws.PingPongContext(ctx); err != nil {
+		if b.canceled(ctx, checkFragmentation, time.Since(start)) {
+			return
+		}
 		b.record(checkFragmentation, CheckFail,
 			"connection dropped after fragments: "+err.Error(), time.Since(start))
 		return
@@ -443,15 +524,24 @@ func (c *Client) checkFragmentationTolerance(
 func (c *Client) checkCloseHandshake(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
+	if b.canceled(ctx, checkCloseEcho, 0) {
+		return
+	}
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions()...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
+		if b.canceled(ctx, checkCloseEcho, time.Since(start)) {
+			return
+		}
 		b.record(checkCloseEcho, CheckSkip, "handshake failed: "+err.Error(), time.Since(start))
 		return
 	}
 	// CloseWith blocks until teardown, so the peer's echoed status is recorded before it returns.
 	if err := ws.CloseWith(minCloseCode, ""); err != nil {
+		if b.canceled(ctx, checkCloseEcho, time.Since(start)) {
+			return
+		}
 		b.record(checkCloseEcho, CheckWarn, "close failed: "+err.Error(), time.Since(start))
 		return
 	}
@@ -535,6 +625,10 @@ func (c *Client) validateCheck() error {
 		return errors.New("-o raw has no meaning in check mode (no response payloads)")
 	case c.responseFilePath != "":
 		return errors.New("--file has no meaning in check mode (no response payloads)")
+	case c.body == BodyCompact:
+		return errors.New("--body has no meaning in check mode (no response payloads)")
+	case c.clip:
+		return errors.New("--clip has no meaning in check mode (no response payloads)")
 	case len(c.textMessages) > 0:
 		return errors.New("-t/--text is not supported in check mode")
 	case c.rpcMethod != "":
