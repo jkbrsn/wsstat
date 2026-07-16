@@ -143,6 +143,11 @@ type WSStat struct {
 	// Close-handshake frame, settable via CloseWith before teardown.
 	closeStatus atomic.Int64           // handshake close code (default StatusNormalClosure)
 	closeReason atomic.Pointer[string] // handshake close reason (nil means empty)
+
+	// recvCloseStatus records the peer's close status observed on a read error in the read
+	// pump, so the code survives even when the buffered error read loses the delivery race
+	// with teardown. -1 until a close frame arrives (see ReceivedCloseStatus).
+	recvCloseStatus atomic.Int64
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -192,6 +197,7 @@ func New(opts ...Option) *WSStat {
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
 	ws.closeStatus.Store(int64(websocket.StatusNormalClosure))
+	ws.recvCloseStatus.Store(-1)
 	// Built after ws so the transport can hand the raw conn back via captureNetConn.
 	ws.httpClient = newHTTPClient(
 		result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves, ws.captureNetConn,
@@ -334,6 +340,9 @@ func (ws *WSStat) readPump() {
 
 		read, deadlineHit := ws.readFrame(conn)
 		if read.err != nil {
+			// Capture the peer's close status here, before the buffered error read can lose
+			// its delivery race with teardown, so ReceivedCloseStatus stays reliable.
+			ws.recordCloseStatus(read.err)
 			// If a subscription became active while a bounded read was in flight, the
 			// stream now owns the connection: drop the timeout and keep reading rather
 			// than finalizing the subscription on a spurious read deadline.
@@ -381,6 +390,14 @@ func (ws *WSStat) deliverRead(read *wsRead) bool {
 	case <-ws.ctx.Done():
 		ws.log.Debug().Msg("Context done, dropping read message")
 		return false
+	}
+}
+
+// recordCloseStatus stores the peer's close status from a read error, if the error carries
+// one, so ReceivedCloseStatus can report it after teardown.
+func (ws *WSStat) recordCloseStatus(err error) {
+	if s := websocket.CloseStatus(err); s != -1 {
+		ws.recvCloseStatus.Store(int64(s))
 	}
 }
 
@@ -614,6 +631,41 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	ws.timings.mu.Unlock()
 }
 
+// WriteMessageFragmented sends data as a single text or binary message split across
+// len(fragments) WebSocket frames, with the FIN bit set only on the final frame. Each
+// fragment is written synchronously, bypassing the write pump. It uses coder's streaming
+// Writer, which emits one frame per Write call for uncompressed messages; run it on a
+// connection dialed without compression, since permessage-deflate does not preserve
+// fragment boundaries. Returns ErrClosed or ErrConnectionNotEstablished when the
+// connection is unusable, and any transport error otherwise. Records no message timing.
+func (ws *WSStat) WriteMessageFragmented(messageType int, fragments [][]byte) error {
+	if ws.closed.Load() {
+		return ErrClosed
+	}
+	conn := ws.conn.Load()
+	if conn == nil {
+		return ErrConnectionNotEstablished
+	}
+
+	writeCtx, cancel := context.WithTimeout(ws.ctx, ws.timeout)
+	defer cancel()
+
+	w, err := conn.Writer(writeCtx, toCoderType(messageType))
+	if err != nil {
+		return fmt.Errorf("open fragmented writer: %w", err)
+	}
+	for _, fragment := range fragments {
+		if _, err := w.Write(fragment); err != nil {
+			_ = w.Close()
+			return fmt.Errorf("write fragment: %w", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close fragmented writer: %w", err)
+	}
+	return nil
+}
+
 // PingPong sends a ping through the WebSocket connection and blocks until the matching pong
 // is received. coder's Ping is a synchronous round-trip, so both the write and read timings
 // are recorded around the single call.
@@ -663,6 +715,24 @@ func classifyReadErr(err error) error {
 		return fmt.Errorf("unexpected close error: %w", err)
 	}
 	return err
+}
+
+// CloseStatus returns the RFC 6455 close status code carried by an error returned from
+// ReadMessage or ReadMessageJSON, or -1 if err is nil or carries no close status. It wraps
+// coder/websocket's CloseStatus so callers need not import the transport package; because
+// classifyReadErr preserves the error chain, a wrapped "unexpected close error" still yields
+// its code.
+func CloseStatus(err error) int {
+	return int(websocket.CloseStatus(err))
+}
+
+// ReceivedCloseStatus returns the RFC 6455 close status the peer sent in its close frame,
+// as observed by the read pump, or -1 if no close frame has been read. It is the reliable
+// companion to CloseStatus for the closing handshake: when the connection is closed with
+// CloseWith, the peer's echoed status is captured here even though the buffered read error
+// carrying it can lose the delivery race with teardown.
+func (ws *WSStat) ReceivedCloseStatus() int {
+	return int(ws.recvCloseStatus.Load())
 }
 
 // handleRead processes a value received from readChan, recording read timing on success.
