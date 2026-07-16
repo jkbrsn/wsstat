@@ -159,6 +159,23 @@ Document on `WithTimeout` (and `DialContext`) that the timeout bounds dial and e
 - Nil-check `r.URL` in `printURLAndIPSection` (result.go:128-142); print `<no url>` or skip the section.
 - Replace integer-ms truncation (result.go:95, 193-204) with the CLI's precision approach (up to 3 decimals; internal/app/formatting.go already does this) so `%+v` on a Result matches the tool's own standard.
 
+### 7) Expose per-pair message RTTs
+
+**Goal:** Consumers can read individual send→receive round trips, not just the mean.
+
+The core already records paired `messageWrites`/`messageReads` ledgers (wsstat.go:230-231) and aggregates them to a single `Result.MessageRTT` mean (wsstat.go:264-269). Expose the per-pair detail:
+
+```go
+// MessageRTTs returns one duration per FIFO-paired write/read; unpaired
+// tail writes are omitted. Result.MessageRTT remains the mean.
+func (r *Result) MessageRTTs() []time.Duration
+```
+
+- Populate from the ledgers in `ExtractResult`, alongside the existing mean.
+- FIFO pairing is the transport-level contract (same as today's mean); semantic matching (e.g. JSON-RPC id pairing) stays in consumers — the library is protocol-agnostic.
+- Do this after component 1's pump stamping so the pairs reflect wire time, not enqueue time.
+- Primary consumer: the planned `connect` subcommand (docs/plans/connect-mode-plan.md) ships on v3 with app-layer timing; on v4 its unmatched-traffic heuristic path can drop to this ledger instead.
+
 ## Affected Files
 
 - `wsstat.go` — write signatures, sentinels, classifyReadErr, ReadMessage ctx branch, readPump idle tick, writePump stamping
@@ -180,7 +197,7 @@ Each phase leaves the tree green; 1–2 are mechanical, 3–4 carry the behavior
 
 1. **Component 6** on v3 (patch release) — no API change.
 2. **Module bump** to `/v4` + component 3 (error surface) — small diff, touches the most tests.
-3. **Component 1** (write errors + pump stamping) — update all call sites in one commit.
+3. **Component 1** (write errors + pump stamping) — update all call sites in one commit; component 7 (per-pair RTTs) rides along, since it depends on the stamping semantics.
 4. **Components 2 and 4** (demux export, idle tick) — independent; either order.
 5. **Component 5** (internal/app rework) — largest diff, zero external surface.
 6. **Docs pass** — CHANGELOG migration table (v3 → v4: signature changes, new sentinels, idle-behavior change), README library section, ADR if the error-surface decision warrants one.
