@@ -7,6 +7,9 @@ import (
 
 // revive:disable:line-length-limit aligned help text
 
+// usageHeading is the "USAGE:" section header shared across subcommand help text.
+const usageHeading = "USAGE:"
+
 // printHelpFor prints command-specific usage when a known subcommand name follows
 // `help`/`-h`/`--help` (e.g. `wsstat help stream`), falling back to the top-level usage.
 func printHelpFor(rest []string, w io.Writer) {
@@ -20,6 +23,9 @@ func printHelpFor(rest []string, w io.Writer) {
 			return
 		case "ping":
 			printPingUsage(w)
+			return
+		case "check":
+			printCheckUsage(w)
 			return
 		}
 	}
@@ -36,11 +42,13 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat measure [options] <url>  measure connection latency")
 	fmt.Fprintln(w, "  wsstat stream  [options] <url>  stream subscription events")
 	fmt.Fprintln(w, "  wsstat ping    [options] <url>  ping/pong latency over time")
+	fmt.Fprintln(w, "  wsstat check   [options] <url>  RFC 6455 conformance checks")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "COMMANDS:")
 	fmt.Fprintln(w, "  measure   send ping/text/JSON-RPC and report timing (DNS, TCP, TLS, WS, RTT)")
 	fmt.Fprintln(w, "  stream    keep the connection open and forward incoming frames")
 	fmt.Fprintln(w, "  ping      send a ping frame every interval and report per-ping RTT + a summary")
+	fmt.Fprintln(w, "  check     run observational RFC 6455 conformance checks and report pass/warn/fail")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  --version                       print program version and exit")
 	fmt.Fprintln(w, "  -h, --help                      show this help")
@@ -49,11 +57,12 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  0   success (also --help and --version)")
 	fmt.Fprintln(w, "  1   runtime failure (dial, measurement, stream, or output write)")
 	fmt.Fprintln(w, "  2   usage error (bad flag or argument)")
+	fmt.Fprintln(w, "  3   one or more checks failed (check mode)")
 	fmt.Fprintln(w, "  130 interrupted (second Ctrl-C forces teardown)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Under -o json a runtime failure (exit 1) prints a {\"type\":\"error\"} envelope to stdout.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run 'wsstat measure -h', 'wsstat stream -h', or 'wsstat ping -h' for command-specific flags.")
+	fmt.Fprintln(w, "Run 'wsstat measure -h', 'wsstat stream -h', 'wsstat ping -h', or 'wsstat check -h' for command-specific flags.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  wsstat wss://echo.example.com")
@@ -62,6 +71,7 @@ func printTopUsage(w io.Writer) {
 	fmt.Fprintln(w, "  wsstat stream --summary-interval 5s wss://stream.example.com/feed")
 	fmt.Fprintln(w, "  wsstat stream --once -o json wss://api.example.com/ws")
 	fmt.Fprintln(w, "  wsstat ping -c 5 wss://echo.example.com")
+	fmt.Fprintln(w, "  wsstat check wss://echo.example.com")
 }
 
 // The -t usage line differs per mode: stream sends each -t in order on the open
@@ -80,27 +90,31 @@ func printInputFlags(w io.Writer, textDesc string) {
 	fmt.Fprintln(w)
 }
 
-// printOutputFlags prints the output section for mode ("measure", "stream", "ping").
-// Ping has no response payloads, so --file/--body/--clip and their notes are omitted;
-// the stream-frame and rpc-decode raw notes appear only where they apply.
+// printOutputFlags prints the output section for mode ("measure", "stream", "ping", "check").
+// Ping and check have no response payloads, so --file/--body/--clip and their notes are omitted
+// and raw is hidden (rejected by validation); the stream-frame and rpc-decode raw notes appear
+// only where they apply.
 func printOutputFlags(w io.Writer, mode string) {
-	ping := mode == "ping"
+	noPayload := mode == "ping" || mode == "check"
 
 	fmt.Fprintln(w, "Output:")
-	if ping {
-		// Ping has no response payloads, so raw is rejected by validation and hidden here.
+	if noPayload {
+		// No response payloads, so raw is rejected by validation and hidden here.
 		fmt.Fprintln(w, "  -o, --output <string>          output contract: text or json [default: text]")
 	} else {
 		fmt.Fprintln(w, "  -o, --output <string>          output contract: text, json, raw [default: text]")
 	}
-	if !ping {
+	if !noPayload {
 		fmt.Fprintln(w, "  -f, --file <path>              also record response payloads to PATH as NDJSON (fails if PATH exists)")
 		fmt.Fprintln(w, "      --body <string>            text body rendering: auto, compact [default: auto]")
 		fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
 	}
-	if ping {
+	switch mode {
+	case "ping":
 		fmt.Fprintln(w, "  -q, --quiet                    suppress per-ping lines; print only the summary")
-	} else {
+	case "check":
+		fmt.Fprintln(w, "  -q, --quiet                    suppress per-check lines; print only the summary")
+	default:
 		fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
 	}
 	fmt.Fprintln(w, "  -v, --verbose                  increase verbosity (level 1)")
@@ -108,19 +122,19 @@ func printOutputFlags(w io.Writer, mode string) {
 	fmt.Fprintln(w, "      --show-secrets             show sensitive header values in -vv (masked by default)")
 	fmt.Fprintln(w, "      --color <string>           color output: auto, always, never [default: auto]")
 	fmt.Fprintln(w)
-	if ping {
+	if noPayload {
 		fmt.Fprintln(w, "  Note: --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
 	} else {
 		fmt.Fprintln(w, "  Note: --body, --clip, --show-secrets, -q, -v, -vv apply only to -o text; -o json is schema-stable.")
 	}
 	fmt.Fprintln(w, "        NO_COLOR (any value) in the environment forces color off under --color auto.")
-	if !ping {
+	if !noPayload {
 		fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
 	}
 	if mode == "stream" {
 		fmt.Fprintln(w, "        -o raw concatenates stream frames undelimited (binary-safe); use -o json for delimited streaming.")
 	}
-	if !ping {
+	if !noPayload {
 		fmt.Fprintln(w, "        --file is additive and orthogonal to -o: it records response bodies only; summaries and chrome still go to stdout.")
 	}
 	fmt.Fprintln(w)
@@ -218,6 +232,33 @@ func printPingUsage(w io.Writer) {
 	fmt.Fprintln(w, "  loss or dial failure, so `wsstat ping -c 3 <url>` works as a liveness gate.")
 	fmt.Fprintln(w)
 	printOutputFlags(w, "ping")
+	printConnectionFlags(w)
+	printDiagnosticFlags(w)
+}
+
+// printCheckUsage prints usage for the check subcommand.
+func printCheckUsage(w io.Writer) {
+	fmt.Fprintln(w, "wsstat check - observational RFC 6455 conformance checks")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, usageHeading)
+	fmt.Fprintln(w, "  wsstat check [options] <url>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Runs a small set of observational RFC 6455 checks (handshake correctness,")
+	fmt.Fprintln(w, "  subprotocol/extension/version negotiation, ping/pong, fragmentation tolerance,")
+	fmt.Fprintln(w, "  and close semantics) in a few seconds over at most 5 connections plus one plain")
+	fmt.Fprintln(w, "  HTTP request, reporting pass/warn/fail/skip per check in the text or JSON output")
+	fmt.Fprintln(w, "  contract. Every exchange is well-formed: no malformed frames, no connection storm.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Exit 0 when no check fails (warnings included); exit 3 when any check fails, so")
+	fmt.Fprintln(w, "  `wsstat check <url>` works as a CI conformance gate. A dial or output failure is")
+	fmt.Fprintln(w, "  a runtime error (exit 1).")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Skipped by design (blocked by the client always emitting valid, masked frames):")
+	fmt.Fprintln(w, "  unsolicited-pong tolerance, client masking enforcement, and the Tier 2 adversarial")
+	fmt.Fprintln(w, "  probes (invalid UTF-8, RSV bits, reserved/invalid opcodes and close codes,")
+	fmt.Fprintln(w, "  oversized/fragmented control frames), plus limits and performance checks.")
+	fmt.Fprintln(w)
+	printOutputFlags(w, "check")
 	printConnectionFlags(w)
 	printDiagnosticFlags(w)
 }

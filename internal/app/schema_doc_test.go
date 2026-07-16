@@ -40,7 +40,7 @@ func TestSchemaDocDrift(t *testing.T) {
 	got := recordTypeConsts(defs)
 	slices.Sort(got)
 	want := []string{
-		"error", "ping_reply", "ping_summary", "response",
+		"check_report", "error", "ping_reply", "ping_summary", "response",
 		"subscription_message", "subscription_summary", "timing",
 	}
 	assert.Equal(t, want, got, "schema doc record types out of sync with emitted records")

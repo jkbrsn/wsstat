@@ -737,6 +737,156 @@ func rawResponseBytes(v any) []byte {
 	}
 }
 
+// checkLabels maps each check ID to a short human label shown at default verbosity. The dynamic
+// per-run detail (a passing/failing reason) is appended only under -v.
+var checkLabels = map[string]string{
+	checkUpgrade:       "101 upgrade",
+	checkAccept:        "Sec-WebSocket-Accept valid",
+	checkHeaders:       "Upgrade/Connection headers",
+	checkSubprotoNone:  "subprotocol (none offered)",
+	checkSubprotoEcho:  "subprotocol echo",
+	checkDeflate:       "permessage-deflate",
+	checkVersionReject: "unsupported version rejected",
+	checkPingPong:      "ping/pong",
+	checkFragmentation: "fragmented text",
+	checkCloseEcho:     "close handshake",
+}
+
+// PrintCheckResults renders a check report to stdout. JSON emits exactly one check_report
+// record; text prints the grouped pass/warn/fail layout (or, under -q, only the summary line).
+func (c *Client) PrintCheckResults(report *CheckReport) error {
+	if report == nil {
+		return errors.New("no check report available")
+	}
+	if c.output == OutputJSON {
+		return c.printJSONLine(buildCheckReportJSON(report))
+	}
+	c.printCheckText(report)
+	return nil
+}
+
+// printCheckText prints the grouped text report. Group headers are emitted as entries cross a
+// group boundary (entries arrive in canonical catalog order, grouped by prefix).
+func (c *Client) printCheckText(report *CheckReport) {
+	if c.quiet {
+		fmt.Println(checkSummaryLine(report))
+		return
+	}
+	group := ""
+	for _, e := range report.Entries {
+		if e.Group != group {
+			group = e.Group
+			fmt.Println(c.colorizeOrange(groupHeading(group)))
+		}
+		fmt.Println(c.checkLine(e))
+	}
+	fmt.Println()
+	fmt.Println(checkSummaryLine(report))
+}
+
+// checkLine renders one check entry. Default verbosity shows the marker and static label; -v
+// appends the dynamic detail and the wall time spent on the check.
+func (c *Client) checkLine(e CheckEntry) string {
+	label := checkLabels[e.ID]
+	if label == "" {
+		label = e.ID
+	}
+	line := fmt.Sprintf("  %s %s", c.checkMarker(e.Status), label)
+	if c.verbosityLevel < 1 {
+		return line
+	}
+	if e.Detail != "" {
+		line += "  " + e.Detail
+	}
+	if e.Took > 0 {
+		line += fmt.Sprintf(" (%s)", formatDuration(e.Took))
+	}
+	return line
+}
+
+// checkMarker returns the status marker: colored glyphs when color is enabled, ASCII tokens
+// (padded to a common width for alignment) otherwise.
+func (c *Client) checkMarker(s CheckStatus) string {
+	if !c.colorEnabled() {
+		switch s {
+		case CheckPass:
+			return "ok  "
+		case CheckWarn:
+			return "warn"
+		case CheckFail:
+			return "FAIL"
+		default:
+			return "skip"
+		}
+	}
+	switch s {
+	case CheckPass:
+		return c.colorizeGreen("✓") // check mark
+	case CheckWarn:
+		return c.colorizeOrange("⚠") // warning sign
+	case CheckFail:
+		return c.colorizeRed("✗") // ballot X
+	default:
+		return "-" // skip
+	}
+}
+
+// groupHeading capitalizes a check group name for its section header.
+func groupHeading(group string) string {
+	if group == "" {
+		return group
+	}
+	return strings.ToUpper(group[:1]) + group[1:]
+}
+
+// checkSummaryLine renders the closing "N passed, M warning(s), K failed" tally, appending a
+// skipped count only when any check was skipped.
+func checkSummaryLine(report *CheckReport) string {
+	parts := []string{
+		fmt.Sprintf("%d passed", report.Passed()),
+		fmt.Sprintf("%d %s", report.Warned(), pluralize("warning", report.Warned())),
+		fmt.Sprintf("%d failed", report.Failed()),
+	}
+	if report.Skipped() > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", report.Skipped()))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// pluralize appends an "s" to word unless n is exactly one.
+func pluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// buildCheckReportJSON assembles the check_report JSON record from a report.
+func buildCheckReportJSON(report *CheckReport) checkReportJSON {
+	out := checkReportJSON{
+		Schema:  JSONSchemaVersion,
+		Type:    "check_report",
+		Passed:  report.Passed(),
+		Warned:  report.Warned(),
+		Failed:  report.Failed(),
+		Skipped: report.Skipped(),
+	}
+	if report.Target != nil {
+		out.URL = report.Target.String()
+	}
+	out.Checks = make([]checkEntryJSON, 0, len(report.Entries))
+	for _, e := range report.Entries {
+		out.Checks = append(out.Checks, checkEntryJSON{
+			ID:     e.ID,
+			Group:  e.Group,
+			Status: e.Status.String(),
+			Detail: e.Detail,
+			TookMs: msFloat(e.Took),
+		})
+	}
+	return out
+}
+
 // PrintTimingResults prints connection timing statistics to stdout.
 // Output format depends on client configuration:
 //   - JSON mode: outputs structured timing JSON with schema_version
