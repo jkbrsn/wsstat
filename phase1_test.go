@@ -46,6 +46,57 @@ func TestReceivedCloseStatus(t *testing.T) {
 		"peer's echoed close status should be captured by the read pump")
 }
 
+// TestReceivedCloseStatusSwallowedEcho pins close-echo delivery when coder's internal close
+// handshake, not the read pump, consumes the peer's echo (in the wild the two race for
+// coder's read mutex right after dial, flapping the check-mode close-echo verdict). The race
+// is forced deterministically: the server floods unread messages so the pump blocks sending
+// to its full read channel, off the read mutex; coder's waitCloseHandshake then reads the
+// close echo internally. Close must still recover the status from coder's stored close error
+// (captureCloseStatus); before that fix this reported -1 ("no close echo" warn).
+func TestReceivedCloseStatusSwallowedEcho(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		br := bufio.NewReader(conn)
+		if err := rawHandshake(br, conn); err != nil {
+			return
+		}
+		for range defaultChanBufferSize + 4 { // overfill the client's read channel
+			if _, err := conn.Write([]byte{0x81, 0x02, 'h', 'i'}); err != nil {
+				return
+			}
+		}
+		for {
+			f, err := readRawFrame(br)
+			if err != nil {
+				return
+			}
+			if f.opcode == 0x8 { // client close: delay, then echo 1000 unmasked
+				time.Sleep(100 * time.Millisecond)
+				_, _ = conn.Write([]byte{0x88, 0x02, 0x03, 0xE8})
+				return
+			}
+		}
+	}()
+
+	target := &url.URL{Scheme: "ws", Host: ln.Addr().String()}
+	ws := New(WithTimeout(2 * time.Second))
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+	// Let the pump drain the flood into the channel until it blocks on the full buffer,
+	// releasing coder's read mutex to the close handshake.
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, ws.CloseWith(1000, ""))
+	assert.Equal(t, 1000, ws.ReceivedCloseStatus(),
+		"echo consumed by coder's close handshake must still surface")
+}
+
 // TestWriteMessageFragmented sends a 3-fragment text message to the shared echo server and
 // reads back a single reassembled echo.
 func TestWriteMessageFragmented(t *testing.T) {

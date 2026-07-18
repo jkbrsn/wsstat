@@ -401,6 +401,23 @@ func (ws *WSStat) recordCloseStatus(err error) {
 	}
 }
 
+// recordCloseEcho records the peer's close-handshake echo when coder's internal close
+// handshake consumed it instead of the read pump: the two race for coder's read mutex,
+// and the loser never sees the close frame. coder's Close returns nil when the peer
+// echoed the status we sent and a close error carrying the status when it echoed a
+// different one, so on the non-timeout path a nil error implies an observed echo.
+// First write wins: a status the read pump already recorded is kept.
+func (ws *WSStat) recordCloseEcho(sent websocket.StatusCode, err error) {
+	if ws.recvCloseStatus.Load() != -1 {
+		return
+	}
+	if err == nil {
+		ws.recvCloseStatus.Store(int64(sent))
+		return
+	}
+	ws.recordCloseStatus(err)
+}
+
 // readFrame reads one frame, bounding the read with the dial/read timeout only when no
 // subscription is active and WithUnboundedReads was not set. Subscriptions (and unbounded-read
 // sessions such as a ping/pong monitor) are long-lived and idle by nature, so a per-read
@@ -839,10 +856,12 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 		reason = *p
 	}
 	closed := make(chan struct{})
+	var closeErr error
 	go func() {
 		defer close(closed)
-		if err := conn.Close(status, reason); err != nil {
-			ws.log.Debug().Err(err).Msg("close handshake")
+		closeErr = conn.Close(status, reason)
+		if closeErr != nil {
+			ws.log.Debug().Err(closeErr).Msg("close handshake")
 		}
 	}()
 
@@ -850,6 +869,9 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 	select {
 	case <-closed:
 		timer.Stop()
+		// The handshake completed within grace: surface the peer's echo in case coder's
+		// internal close handshake consumed it before the read pump could observe it.
+		ws.recordCloseEcho(status, closeErr)
 	case <-timer.C:
 		ws.log.Debug().Dur("grace", ws.closeGrace).
 			Msg("close handshake timed out, forcing teardown")
