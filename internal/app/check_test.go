@@ -239,13 +239,26 @@ func noCloseEchoHandler(w http.ResponseWriter, r *http.Request) {
 	_ = conn.Close()
 }
 
-// TestRunCheckUnreachable asserts a dial failure fails the handshake, skips every dependent
-// check, and still returns a full report.
+// TestRunCheckUnreachable asserts a transport-level dial failure (nothing listening) is a
+// runtime error, not an RFC 6455 verdict: an outage or a typo must not trip the exit-3 gate.
 func TestRunCheckUnreachable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(coderEcho))
 	target, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
 	require.NoError(t, err)
 	server.Close() // nothing listens on this port anymore
+
+	report, err := newCheckClient().RunCheck(context.Background(), target)
+	require.Error(t, err)
+	assert.Nil(t, report)
+	assert.Contains(t, err.Error(), "dialing")
+}
+
+// TestRunCheckUpgradeRefused asserts a server that answered but refused the upgrade is an RFC
+// verdict: the handshake fails, every dependent check skips, and a full report is returned.
+func TestRunCheckUpgradeRefused(t *testing.T) {
+	target := newCheckServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no websockets here", http.StatusForbidden)
+	})
 
 	report, err := newCheckClient().RunCheck(context.Background(), target)
 	require.NoError(t, err)
@@ -471,6 +484,53 @@ func TestRunCheckCloseBranches(t *testing.T) {
 	})
 }
 
+// TestSubprotocolEchoDialBranches covers the subprotocol-echo dial-failure classification: a
+// transport failure on the fresh connection is a prerequisite miss (skip, as in the
+// fragmentation and close-echo checks), and a server that answers but refuses the upgrade when
+// a subprotocol is offered is a warn — RFC 6455 §4.2.2 only constrains the value a server may
+// select when it completes the handshake.
+func TestSubprotocolEchoDialBranches(t *testing.T) {
+	t.Run("transport failure skips", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(coderEcho))
+		u, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+		require.NoError(t, err)
+		server.Close() // nothing listens now
+		b := newCheckBuilder(u)
+		newCheckClient().checkSubprotocolEcho(context.Background(), u, nil, b)
+		assert.Equal(t, CheckSkip, b.entries[checkSubprotoEcho].Status)
+	})
+
+	t.Run("refused upgrade warns", func(t *testing.T) {
+		target := newCheckServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Sec-WebSocket-Protocol") != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			coderEcho(w, r)
+		})
+		b := newCheckBuilder(target)
+		newCheckClient().checkSubprotocolEcho(context.Background(), target, nil, b)
+		e := b.entries[checkSubprotoEcho]
+		assert.Equal(t, CheckWarn, e.Status)
+		assert.Contains(t, e.Detail, "handshake rejected")
+	})
+}
+
+// TestFragmentationDialFailureSkips exercises checkFragmentationTolerance's own dial-failure
+// branch directly: through RunCheck a failed primary handshake short-circuits before this
+// check ever dials, so the branch is unreachable end-to-end.
+func TestFragmentationDialFailureSkips(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(coderEcho))
+	u, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+	server.Close() // nothing listens now
+	b := newCheckBuilder(u)
+	newCheckClient().checkFragmentationTolerance(context.Background(), u, nil, b)
+	e := b.entries[checkFragmentation]
+	assert.Equal(t, CheckSkip, e.Status)
+	assert.Contains(t, e.Detail, "handshake failed")
+}
+
 // TestRecordHeaderTokens exercises recordHeaderTokens directly: coder's client always yields
 // well-formed handshake response headers, so both warn branches and the nil-headers guard are
 // unreachable through a real dial.
@@ -523,7 +583,14 @@ func TestRunCheckCanceled(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, report.Entries, len(checkOrder))
 	assert.Equal(t, 0, report.Failed(), "a canceled run must fabricate no failures")
-	assert.GreaterOrEqual(t, report.Skipped(), len(checkOrder)-4)
+	assert.Equal(t, len(checkOrder), report.Skipped(), "every check must be skipped")
+}
+
+// TestCheckTimeout pins the per-check timeout resolution: an unset --timeout uses the check
+// default, a set one is used as-is.
+func TestCheckTimeout(t *testing.T) {
+	assert.Equal(t, checkDefaultTimeout, (&Client{}).checkTimeout())
+	assert.Equal(t, 2*time.Second, (&Client{timeout: 2 * time.Second}).checkTimeout())
 }
 
 // TestCheckCancellationSkips asserts each post-handshake check records skip (not a fabricated
@@ -563,6 +630,8 @@ func TestValidateDeflate(t *testing.T) {
 		{"plain", "permessage-deflate", true},
 		{"valid params", "permessage-deflate; client_no_context_takeover", true},
 		{"valid window bits", "permessage-deflate; server_max_window_bits=15", true},
+		{"quoted window bits", `permessage-deflate; server_max_window_bits="10"`, true},
+		{"missing window bits value", "permessage-deflate; client_max_window_bits", false},
 		{"low window bits", "permessage-deflate; server_max_window_bits=7", false},
 		{"high window bits", "permessage-deflate; server_max_window_bits=99", false},
 		{"non-numeric window bits", "permessage-deflate; server_max_window_bits=x", false},

@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -110,13 +112,20 @@ var checkOrder = []string{
 const (
 	// checkDefaultTimeout mirrors the core's read/dial default when --timeout is unset.
 	checkDefaultTimeout = 5 * time.Second
-	// checkRunBudgetFactor caps the whole run at this multiple of the per-check timeout as a
-	// backstop against a wedged run. The per-connection timeouts do the real bounding: the
-	// catalog performs up to nine sequential operations (five dials, two pings, a fragmented
-	// write, and an HTTP probe), each individually bounded by the timeout, so a slow-but-
-	// conformant endpoint responding just under the timeout can legitimately need ~9x it. The
-	// budget is set above that worst case so it never fails a healthy endpoint; if it does
-	// fire, the remaining checks are recorded as skip, never as spurious fail.
+	// checkDefaultCloseGrace mirrors the core's close-grace default when --close-timeout is
+	// unset, for the run-budget arithmetic below.
+	checkDefaultCloseGrace = 3 * time.Second
+	// checkConnCount is the number of WebSocket connections the catalog dials; each one's
+	// teardown can synchronously consume the full close grace against a non-echoing peer.
+	checkConnCount = 5
+	// checkRunBudgetFactor caps the whole run at this multiple of the per-check timeout
+	// (plus one close grace per connection — see RunCheck) as a backstop against a wedged
+	// run. The per-connection timeouts do the real bounding: the catalog performs up to nine
+	// sequential operations (five dials, two pings, a fragmented write, and an HTTP probe),
+	// each individually bounded by the timeout, so a slow-but-conformant endpoint responding
+	// just under the timeout can legitimately need ~9x it. The budget is set above that worst
+	// case so it never fails a healthy endpoint; if it does fire, the remaining checks are
+	// recorded as skip, never as spurious fail.
 	checkRunBudgetFactor = 10
 	// RFC 6455 §7.4.1 registered close-code bounds, used to distinguish a clean 1000 echo from
 	// any other valid registered code.
@@ -127,9 +136,18 @@ const (
 	maxWindowBits = 15
 	// maxProbeBody bounds the version-reject probe's response read.
 	maxProbeBody = 4096
-	// rfcSampleKey is the RFC 6455 §1.3 example Sec-WebSocket-Key (base64 of a 16-byte nonce).
-	rfcSampleKey = "dGhlIHNhbXBsZSBub25jZQ=="
 )
+
+// probeKey generates a fresh Sec-WebSocket-Key (base64 of a 16-byte random nonce, RFC 6455
+// §4.1) for the version-reject probe, matching what a real dial sends so the probe is not
+// trivially fingerprintable by its key.
+func probeKey() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("generating Sec-WebSocket-Key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(nonce[:]), nil
+}
 
 // checkTimeout returns the per-check timeout: the configured --timeout, or the default.
 func (c *Client) checkTimeout() time.Duration {
@@ -184,7 +202,11 @@ func (b *checkBuilder) canceled(ctx context.Context, id string, took time.Durati
 	if ctx.Err() == nil {
 		return false
 	}
-	b.record(id, CheckSkip, "run canceled", took)
+	detail := "run canceled"
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		detail = "run budget exceeded"
+	}
+	b.record(id, CheckSkip, detail, took)
 	return true
 }
 
@@ -218,12 +240,24 @@ func (c *Client) RunCheck(ctx context.Context, target *url.URL) (*CheckReport, e
 		return nil, err
 	}
 
+	// The budget covers the bounded operations plus one close grace per connection: each
+	// teardown synchronously waits up to the grace for the peer's close echo, which is
+	// independent of the per-check timeout and would otherwise eat the budget of the
+	// remaining checks against a non-echoing peer.
 	to := c.checkTimeout()
-	runCtx, cancel := context.WithTimeout(ctx, checkRunBudgetFactor*to)
+	grace := c.closeGrace
+	if grace <= 0 {
+		grace = checkDefaultCloseGrace
+	}
+	runCtx, cancel := context.WithTimeout(ctx, checkRunBudgetFactor*to+checkConnCount*grace)
 	defer cancel()
 
 	b := newCheckBuilder(target)
-	if !c.checkHandshake(runCtx, target, header, b) {
+	ok, err := c.checkHandshake(runCtx, target, header, b)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		b.skip(checkSubprotoEcho, checkDeflate, checkVersionReject,
 			checkFragmentation, checkCloseEcho)
 		return b.finalize(), nil
@@ -239,20 +273,26 @@ func (c *Client) RunCheck(ctx context.Context, target *url.URL) (*CheckReport, e
 // checkHandshake dials the first connection and runs every check that reuses it: the handshake
 // trio, the no-subprotocol-offered negotiation check, and the ping/pong behavior check. It
 // reports whether the handshake succeeded; on failure the caller skips the rest of the run.
+// A transport-level dial failure (DNS, connect, TLS, timeout) is returned as an error: the
+// endpoint never answered, so there is nothing to score, and reporting unreachability as an
+// RFC 6455 fail would let an outage or a typo trip the exit-3 CI gate.
 func (c *Client) checkHandshake(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
-) bool {
+) (bool, error) {
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions()...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
 		if ctx.Err() != nil {
 			b.skip(checkUpgrade, checkAccept, checkHeaders, checkSubprotoNone, checkPingPong)
-			return false
+			return false, nil
+		}
+		if dialTransportErr(err) {
+			return false, fmt.Errorf("dialing %s: %w", target.Host, err)
 		}
 		b.record(checkUpgrade, CheckFail, dialDetail(err), time.Since(start))
 		b.skip(checkAccept, checkHeaders, checkSubprotoNone, checkPingPong)
-		return false
+		return false, nil
 	}
 	defer ws.Close()
 
@@ -263,7 +303,17 @@ func (c *Client) checkHandshake(
 	recordHeaderTokens(res, b)
 	recordSubprotocolNone(res, b)
 	recordPingPong(ctx, ws, b)
-	return true
+	return true, nil
+}
+
+// dialTransportErr reports whether a dial failure occurred before any HTTP response was
+// received: DNS, TCP connect, TLS, and timeout errors all surface from net/http as a
+// *url.Error, which implements net.Error, while a server that answered but refused or botched
+// the upgrade yields coder's plain verification errors with no net error in the chain. The
+// former is unreachability, not an RFC 6455 verdict.
+func dialTransportErr(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // recordHeaderTokens verifies the response carries the Upgrade/Connection tokens RFC 6455
@@ -308,8 +358,11 @@ func recordPingPong(ctx context.Context, ws *wsstat.WSStat, b *checkBuilder) {
 }
 
 // checkSubprotocolEcho offers a subprotocol and requires the server to echo one that was
-// offered, or none (RFC 6455 §4.2.2). coder rejects an invented selection during the dial, so a
-// dial failure here is the fail verdict.
+// offered, or none (RFC 6455 §4.2.2). coder rejects an invented selection during the dial, and
+// only that violation is the fail verdict: §4.2.2's MUST constrains the value a server may
+// select when it completes the handshake, not whether it completes it. A transport failure on
+// this fresh connection is a prerequisite miss (skip, as in the fragmentation and close-echo
+// checks), and a refused upgrade is a warn.
 func (c *Client) checkSubprotocolEcho(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
@@ -321,11 +374,17 @@ func (c *Client) checkSubprotocolEcho(
 	ws := wsstat.New(c.checkOptions(wsstat.WithSubprotocols(offered))...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
-		if b.canceled(ctx, checkSubprotoEcho, time.Since(start)) {
-			return
+		took := time.Since(start)
+		switch {
+		case b.canceled(ctx, checkSubprotoEcho, took):
+		case strings.Contains(err.Error(), "unexpected Sec-WebSocket-Protocol"):
+			b.record(checkSubprotoEcho, CheckFail, dialDetail(err), took)
+		case dialTransportErr(err):
+			b.record(checkSubprotoEcho, CheckSkip, "handshake failed: "+err.Error(), took)
+		default:
+			b.record(checkSubprotoEcho, CheckWarn,
+				"handshake rejected with subprotocol offered: "+err.Error(), took)
 		}
-		b.record(checkSubprotoEcho, CheckFail,
-			"handshake rejected: "+err.Error(), time.Since(start))
 		return
 	}
 	defer ws.Close()
@@ -396,7 +455,9 @@ func (c *Client) checkVersionRejection(
 		b.record(checkVersionReject, CheckWarn, "version probe failed: "+err.Error(), took)
 		return
 	}
-	advertised := respHeader.Get("Sec-WebSocket-Version")
+	// Join all header values: RFC 6455 §4.4 allows the supported versions to be advertised
+	// across multiple Sec-WebSocket-Version headers.
+	advertised := strings.Join(respHeader.Values("Sec-WebSocket-Version"), ", ")
 	switch {
 	case status == http.StatusSwitchingProtocols:
 		b.record(checkVersionReject, CheckFail, "server accepted version 99 (101)", took)
@@ -432,14 +493,25 @@ func (c *Client) probeVersion(
 			req.Header.Add(name, v)
 		}
 	}
+	key, err := probeKey()
+	if err != nil {
+		return 0, nil, err
+	}
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Sec-WebSocket-Version", "99")
-	req.Header.Set("Sec-WebSocket-Key", rfcSampleKey)
+	req.Header.Set("Sec-WebSocket-Key", key)
 
+	tr := c.probeTransport()
+	defer tr.CloseIdleConnections()
 	client := &http.Client{
 		Timeout:   c.checkTimeout(),
-		Transport: c.probeTransport(),
+		Transport: tr,
+		// Do not follow redirects: the verdict must be rendered against the probed URL's own
+		// response, not wherever a proxy or load balancer bounces a non-upgrade request.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -453,11 +525,16 @@ func (c *Client) probeVersion(
 }
 
 // probeTransport builds the HTTP transport for the version-reject probe. It honors --insecure
-// via the TLS config and, crucially, the same --resolve host->IP overrides the WebSocket check
-// connections apply through wsstat.WithResolves: without this the probe would resolve the host
-// through the system resolver and target a different endpoint than every other check.
+// via the TLS config, proxy environment variables (as the core dial transport does — without
+// this the probe would bypass a configured proxy and reach a different endpoint or none), and,
+// crucially, the same --resolve host->IP overrides the WebSocket check connections apply
+// through wsstat.WithResolves: without those the probe would resolve the host through the
+// system resolver and target a different endpoint than every other check.
 func (c *Client) probeTransport() *http.Transport {
-	tr := &http.Transport{TLSClientConfig: c.checkTLSConfig()}
+	tr := &http.Transport{
+		Proxy:           http.ProxyFromEnvironment,
+		TLSClientConfig: c.checkTLSConfig(),
+	}
 	if len(c.resolves) == 0 {
 		return tr
 	}
@@ -579,8 +656,14 @@ func validateDeflate(ext string) (string, bool) {
 		switch name {
 		case "client_no_context_takeover", "server_no_context_takeover":
 		case "server_max_window_bits", "client_max_window_bits":
-			if !validWindowBits(val) {
-				return name + " out of range: " + strings.TrimSpace(val), false
+			v := strings.TrimSpace(val)
+			if v == "" {
+				// Value-less window-bits is a client-request hint (RFC 7692 §7.1.2.2); in a
+				// server response the parameter must carry the agreed value.
+				return name + " missing value", false
+			}
+			if !validWindowBits(v) {
+				return name + " out of range: " + v, false
 			}
 		default:
 			return "unknown parameter " + name, false
@@ -590,8 +673,14 @@ func validateDeflate(ext string) (string, bool) {
 }
 
 // validWindowBits reports whether s is a permessage-deflate window-bits value in [8, 15].
+// Extension parameter values may be quoted (RFC 6455 §9.1), so surrounding double quotes
+// are stripped before parsing.
 func validWindowBits(s string) bool {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
+	v := strings.TrimSpace(s)
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		v = v[1 : len(v)-1]
+	}
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return false
 	}

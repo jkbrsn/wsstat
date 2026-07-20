@@ -151,7 +151,7 @@ func main() {
 	case args[0] == "check":
 		err = runCheck(args[1:])
 	case args[0] == "--version" || args[0] == "-version":
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return
 	case isHelpArg(args[0]):
 		printHelpFor(args[1:], os.Stdout)
@@ -274,7 +274,7 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, parseErr(err, printMeasureUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -319,7 +319,7 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, parseErr(err, printStreamUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -366,11 +366,15 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 }
 
 // buildCheck parses check-mode args and returns a validated client and target. Check mode adds
-// no subcommand-specific flags in v1; it dials its own fixed catalog of connections.
+// no subcommand-specific flags in v1; it dials its own fixed catalog of connections, so the
+// messaging and response flag groups are registered only as rejection stubs.
 func buildCheck(args []string) (*app.Client, *url.URL, error) {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	cf := newCommonFlags()
-	registerCommon(fs, &cf)
+	registerOutputFlags(fs, &cf)
+	registerConnectionFlags(fs, &cf)
+	registerDiagnosticFlags(fs, &cf)
+	registerUnsupported(fs, checkUnsupported)
 	registerRemoved(fs)
 	fs.Usage = func() {} // parseErr owns usage printing (stdout for -h, stderr otherwise)
 
@@ -382,6 +386,9 @@ func buildCheck(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
+	}
+	if err := unsupportedFlagError(fs, "check", checkUnsupported); err != nil {
 		return nil, nil, err
 	}
 
@@ -417,6 +424,20 @@ var pingUnsupported = map[string]unsupportedFlag{
 	"file":        {"ping has no response payloads to record", true},
 	"body":        {"ping renders no response bodies", true},
 	"clip":        {"ping renders no response bodies", false},
+}
+
+// checkUnsupported maps the flags the check subcommand rejects (internal flag name,
+// without dashes) to their rejection details. Rejecting at the flag layer keeps -t @-
+// from reading stdin before validation and mirrors ping's handling.
+var checkUnsupported = map[string]unsupportedFlag{
+	"t":           {"check dials its own probe catalog, not user messages", true},
+	"text":        {"check dials its own probe catalog, not user messages", true},
+	"rpc-method":  {"check dials its own probe catalog, not user messages", true},
+	"rpc-version": {"check dials its own probe catalog, not user messages", true},
+	"f":           {"check has no response payloads to record", true},
+	"file":        {"check has no response payloads to record", true},
+	"body":        {"check renders no response bodies", true},
+	"clip":        {"check renders no response bodies", false},
 }
 
 // registerUnsupported registers a subcommand's unsupported flags as inert stubs on fs,
@@ -483,7 +504,7 @@ func buildPing(args []string) (pingConfig, error) {
 		return pingConfig{}, parseErr(err, printPingUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return pingConfig{}, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -660,8 +681,10 @@ func runPing(args []string) error {
 
 // runCheck runs check mode. It prints the report on every non-runtime path and derives the exit
 // code from the verdicts: any `fail` yields exitCheckFailed (via errCheckFailed), making
-// `wsstat check <url>` a CI gate; warnings alone exit 0. Only dial and output-write failures
-// flow through runtimeErr (exit 1); under -o json those emit a structured error envelope.
+// `wsstat check <url>` a CI gate; warnings alone exit 0. Transport-level dial failures (an
+// unreachable endpoint), malformed headers, and output-write failures flow through runtimeErr
+// (exit 1); under -o json those emit a structured error envelope. A server that answered but
+// refused or botched the upgrade is an RFC verdict in the report, not a runtime error.
 func runCheck(args []string) error {
 	client, target, err := buildCheck(args)
 	if err != nil {
@@ -679,8 +702,19 @@ func runCheck(args []string) error {
 	if err := client.PrintCheckResults(report); err != nil {
 		return runtimeErr(out, fmt.Errorf("printing check results: %w", err))
 	}
+	return checkRunOutcome(ctx, out, report)
+}
+
+// checkRunOutcome maps a completed check run to its exit sentinel. A fail verdict wins: it was
+// observed before any interrupt, so the exit-3 gate stands. An interrupted run without a fail
+// is a runtime error (exit 1), never exit 0: the skipped checks left the conformance question
+// unanswered, and a CI gate must not read an evicted or timed-out run as a passing one.
+func checkRunOutcome(ctx context.Context, out app.Output, report *app.CheckReport) error {
 	if report.Failed() > 0 {
 		return errCheckFailed
+	}
+	if ctx.Err() != nil {
+		return runtimeErr(out, fmt.Errorf("run interrupted; %d checks skipped", report.Skipped()))
 	}
 	return nil
 }

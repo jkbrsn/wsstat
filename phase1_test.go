@@ -9,18 +9,83 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestCloseStatus checks the standalone CloseStatus helper on non-close errors.
+// TestCloseStatus checks the standalone CloseStatus helper on non-close errors and on a real
+// close error wrapped by classifyReadErr, pinning the documented claim that the wrapping
+// preserves the error chain and the code stays extractable.
 func TestCloseStatus(t *testing.T) {
 	assert.Equal(t, -1, CloseStatus(nil))
 	assert.Equal(t, -1, CloseStatus(context.Canceled))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusInternalError, "boom")
+	}))
+	defer server.Close()
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New(WithTimeout(2 * time.Second))
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), wsURL, http.Header{}))
+
+	_, _, readErr := ws.ReadMessage()
+	require.Error(t, readErr)
+	require.Contains(t, readErr.Error(), "unexpected close error")
+	assert.Equal(t, int(websocket.StatusInternalError), CloseStatus(readErr))
+}
+
+// TestCloseEchoNotFabricatedOnReadTimeout pins the close-echo contract against a server that
+// never answers the closing handshake when the read timeout is shorter than the close grace.
+// The read pump's bounded read must not tear the connection down under the in-flight close
+// handshake: coder's Close masks that teardown (net.ErrClosed) as nil, which used to be read
+// as "peer echoed the status we sent", fabricating a 1000 echo that never arrived.
+func TestCloseEchoNotFabricatedOnReadTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		br := bufio.NewReader(conn)
+		if err := rawHandshake(br, conn); err != nil {
+			return
+		}
+		// Hold the connection open, discarding frames, and never echo a close.
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	target := &url.URL{Scheme: "ws", Host: ln.Addr().String()}
+	ws := New(
+		WithTimeout(200*time.Millisecond),
+		WithCloseGrace(800*time.Millisecond),
+		WithDiscardReads(),
+	)
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+	// Let the read pump enter its bounded read before the close begins, so the read bound is
+	// in flight during the closing handshake — the window where it used to kill the conn.
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, ws.CloseWith(1000, ""))
+	assert.Equal(t, -1, ws.ReceivedCloseStatus(),
+		"no close echo arrived; a fabricated echo would turn a non-conforming server into a pass")
 }
 
 // TestReceivedCloseStatus dials the shared echo server, initiates a client close with code
@@ -111,6 +176,25 @@ func TestWriteMessageFragmented(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, TextMessage, mt)
 	assert.Equal(t, "frag-one|frag-two|frag-three", string(data))
+}
+
+// TestWriteMessageFragmentedEmpty asserts zero fragments are rejected instead of emitting a
+// degenerate empty message (a lone FIN continuation frame).
+func TestWriteMessageFragmentedEmpty(t *testing.T) {
+	ws := New()
+	err := ws.WriteMessageFragmented(TextMessage, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no fragments")
+}
+
+// TestCloseWithInvalidReason asserts CloseWith rejects a close reason that is not valid UTF-8
+// (RFC 6455 §5.5.1 requires the reason to be UTF-8) without initiating the close.
+func TestCloseWithInvalidReason(t *testing.T) {
+	ws := New()
+	err := ws.CloseWith(1000, string([]byte{0xff, 0xfe}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "UTF-8")
+	assert.False(t, ws.closed.Load(), "a rejected CloseWith must not close the instance")
 }
 
 // rawFrame is a decoded RFC 6455 frame captured off the wire.

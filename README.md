@@ -290,9 +290,12 @@ wsstat check -o json wss://echo.example.com
 ```
 
 The exit code is 0 when no check fails (warnings included) and 3 when any check
-fails, so `wsstat check <url>` works as a CI conformance gate. A dial that fails
-the handshake fails the dependent checks and skips the rest; a dial or output
-failure is a runtime error (exit 1).
+fails, so `wsstat check <url>` works as a CI conformance gate. A server that
+answers but refuses or botches the upgrade fails the handshake check and skips
+the dependents; an unreachable endpoint (DNS, connect, TLS, or timeout — the
+endpoint never answered, so nothing was scored), an interrupted run (first
+`Ctrl-C`; the skipped checks left the verdict unanswered), or an output failure
+is a runtime error (exit 1).
 
 Skipped by design (blocked by the client always emitting valid, masked frames):
 unsolicited-pong tolerance, client masking enforcement, and the Tier 2
@@ -348,7 +351,9 @@ loss with at least one pong still exits 0, so `wsstat ping -c N <url>` works as 
 liveness gate.
 
 In `check` mode exit 3 signals that at least one check produced a `fail` verdict;
-warnings still exit 0, so `wsstat check <url>` works as a CI conformance gate.
+warnings still exit 0, so `wsstat check <url>` works as a CI conformance gate. An
+unreachable endpoint or an interrupted run exits 1, never 0: an unanswered
+conformance question must not read as a pass.
 
 Usage errors (exit 2) always print plain text to stderr. Under `-o json`, a
 runtime failure (exit 1) prints a `{"type":"error"}` envelope to stdout so a

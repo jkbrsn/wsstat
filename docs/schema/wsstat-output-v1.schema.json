@@ -180,7 +180,7 @@
       "required": ["id", "group", "status", "took_ms"],
       "properties": {
         "id": { "type": "string" },
-        "group": { "enum": ["handshake", "negotiation", "behavior"] },
+        "group": { "enum": ["handshake", "negotiation", "behavior", "probe"] },
         "status": { "enum": ["pass", "warn", "fail", "skip"] },
         "detail": { "type": "string" },
         "took_ms": { "$ref": "#/$defs/ms" }
