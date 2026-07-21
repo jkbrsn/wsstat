@@ -88,6 +88,43 @@ func TestCloseEchoNotFabricatedOnReadTimeout(t *testing.T) {
 		"no close echo arrived; a fabricated echo would turn a non-conforming server into a pass")
 }
 
+// TestCloseEchoNotFabricatedAfterReadTimeout pins the opposite ordering: the bounded read
+// times out with no close in progress, coder tears the connection down, and the read pump's
+// deferred Close runs the closing handshake on the dead conn. coder masks the resulting
+// net.ErrClosed as nil, which must not be read as a peer echo.
+func TestCloseEchoNotFabricatedAfterReadTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		br := bufio.NewReader(conn)
+		if err := rawHandshake(br, conn); err != nil {
+			return
+		}
+		// Hold the connection open, discarding frames, and never echo a close.
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	target := &url.URL{Scheme: "ws", Host: ln.Addr().String()}
+	ws := New(
+		WithTimeout(100*time.Millisecond),
+		WithCloseGrace(500*time.Millisecond),
+		WithDiscardReads(),
+	)
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+	// Do not close; the bounded read times out and the pump tears down on its own.
+	time.Sleep(900 * time.Millisecond)
+	assert.Equal(t, -1, ws.ReceivedCloseStatus(), "no close frame was ever read")
+	ws.Close()
+}
+
 // TestReceivedCloseStatus dials the shared echo server, initiates a client close with code
 // 1000 while a reader drains, and asserts the peer's echoed close status is captured. The
 // drained read error carrying the status loses its delivery race with teardown (settling the

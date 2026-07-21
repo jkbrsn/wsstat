@@ -150,10 +150,10 @@ type WSStat struct {
 	// pump, so the code survives even when the buffered error read loses the delivery race
 	// with teardown. -1 until a close frame arrives (see ReceivedCloseStatus).
 	recvCloseStatus atomic.Int64
-	// closeEchoLost marks that the read pump's bounded read was torn down while the closing
-	// handshake was in flight. coder's Close masks the resulting net.ErrClosed as nil, so a
-	// nil close error no longer implies the peer echoed; recordCloseEcho must not fabricate
-	// an echo from it.
+	// closeEchoLost marks that the bounded read's timeout tore the connection down: coder
+	// kills the conn when the read context ends, and its Close masks the resulting
+	// net.ErrClosed as nil, so a nil close error no longer implies the peer echoed;
+	// recordCloseEcho must not fabricate an echo from it.
 	closeEchoLost atomic.Bool
 }
 
@@ -376,10 +376,12 @@ func (ws *WSStat) handleReadError(read *wsRead, deadlineHit bool) bool {
 	// Capture the peer's close status here, before the buffered error read can lose
 	// its delivery race with teardown, so ReceivedCloseStatus stays reliable.
 	ws.recordCloseStatus(read.err)
-	if deadlineHit && ws.closed.Load() {
-		// The bound fired in the narrow window where close had just begun: the conn
-		// was killed under the closing handshake, so a nil error from coder's Close
-		// no longer implies an echo. Flag it before the close goroutine can record.
+	if deadlineHit {
+		// The bound's cancel killed the connection (coder tears the conn down when the
+		// read context ends), whether or not a close was in flight. Any later Close runs
+		// its handshake on the dead conn and gets net.ErrClosed masked as nil, so a nil
+		// close error no longer implies an echo. Flag it before the close goroutine
+		// can record.
 		ws.closeEchoLost.Store(true)
 	}
 	if deadlineHit && ws.hasActiveSubscriptions() {

@@ -394,7 +394,9 @@ func (c *Client) checkSubprotocolEcho(
 	switch {
 	case sel == "":
 		b.record(checkSubprotoEcho, CheckPass, "no subprotocol selected", took)
-	case slices.Contains(offered, sel):
+	// Case-insensitive to match coder's own handshake acceptance (verifySubprotocol uses
+	// EqualFold): a case-differing echo completed the dial, so it must not fail here.
+	case slices.ContainsFunc(offered, func(s string) bool { return strings.EqualFold(s, sel) }):
 		b.record(checkSubprotoEcho, CheckPass, "selected "+sel, took)
 	default:
 		b.record(checkSubprotoEcho, CheckFail, "server selected unoffered "+sel, took)
@@ -402,8 +404,9 @@ func (c *Client) checkSubprotocolEcho(
 }
 
 // checkDeflateExtension negotiates permessage-deflate and validates the response parameters
-// (RFC 7692 §7). A negotiation the transport rejects, or odd parameters, are warnings: the
-// plain connection still works.
+// (RFC 7692 §7). A rejected upgrade or odd parameters are warnings: the plain connection
+// still works. A transport failure on this fresh connection is a prerequisite miss (skip,
+// as in the sibling checks), not a deflate verdict.
 func (c *Client) checkDeflateExtension(
 	ctx context.Context, target *url.URL, header http.Header, b *checkBuilder,
 ) {
@@ -414,11 +417,15 @@ func (c *Client) checkDeflateExtension(
 	ws := wsstat.New(c.checkOptions(wsstat.WithCompression(true))...)
 	if err := ws.DialContext(ctx, target, header); err != nil {
 		ws.Close()
-		if b.canceled(ctx, checkDeflate, time.Since(start)) {
-			return
+		took := time.Since(start)
+		switch {
+		case b.canceled(ctx, checkDeflate, took):
+		case dialTransportErr(err):
+			b.record(checkDeflate, CheckSkip, "handshake failed: "+err.Error(), took)
+		default:
+			b.record(checkDeflate, CheckWarn,
+				"permessage-deflate negotiation failed: "+err.Error(), took)
 		}
-		b.record(checkDeflate, CheckWarn,
-			"permessage-deflate negotiation failed: "+err.Error(), time.Since(start))
 		return
 	}
 	defer ws.Close()
