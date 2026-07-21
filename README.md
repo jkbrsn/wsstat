@@ -404,6 +404,14 @@ make test V=1 RACE=1  # test with optional flags
 make lint
 ```
 
+### Git hooks
+
+Optional but recommended. Points git at `.githooks/`, which enforces Conventional Commit subjects (`commit-msg`), gofmt + lint on new code (`pre-commit`), and a cached test run (`pre-push`). Bypass any hook with `--no-verify`.
+
+```sh
+make hooks
+```
+
 ## Contributing
 
 For contributions, please open a GitHub issue with questions or suggestions. Before submitting an issue, have a look at the existing [TODO list](./docs/TODO.md) to see if what you've got in mind is already in the works.

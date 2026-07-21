@@ -5,7 +5,7 @@ VERSION := $(shell cat VERSION)
 VERSION_LABEL ?= $(VERSION)
 LDFLAGS=-ldflags "-X main.version=${VERSION_LABEL}"
 
-.PHONY: build build-all build-multi build-os-arch clean fmt lint test smoke soak explain
+.PHONY: build build-all build-multi build-os-arch clean fmt lint test test-quick smoke soak hooks explain
 
 .DEFAULT_GOAL := explain
 
@@ -25,8 +25,10 @@ explain:
 	@echo "  fmt             - Format code with gofmt."
 	@echo "  lint            - Run linter (golangci-lint)."
 	@echo "  test            - Run tests."
+	@echo "  test-quick      - Run tests with caching (used by the pre-push hook)."
 	@echo "  smoke           - Run the dev-stack smoke test (Docker mock + host binary)."
 	@echo "  soak            - Run the dev-stack soak test: full CLI flag-combination matrix."
+	@echo "  hooks           - Point git at the repo's .githooks directory."
 	@echo "  explain         - Display this help message."
 
 # Number of times to run burst tests, default 1
@@ -72,6 +74,15 @@ lint:
 test:
 	@echo "==> Running tests"
 	@go test -shuffle=on -count=$(N) $(TEST_FLAGS) ./...
+
+# Cache-friendly test run (no -shuffle/-count) for the pre-push hook.
+test-quick:
+	@echo "==> Running tests (cached)"
+	@go test ./...
+
+hooks:
+	@git config core.hooksPath .githooks
+	@echo "==> core.hooksPath set to .githooks"
 
 smoke:
 	@./dev/run.sh

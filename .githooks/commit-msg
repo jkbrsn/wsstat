@@ -1,0 +1,21 @@
+#!/bin/sh
+
+subject="$(head -n1 "$1")"
+
+# Let git-generated messages through (merges, reverts, autosquash).
+case "$subject" in
+	"Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+
+# Conventional Commits, subject capped at 50 chars after the colon.
+if ! echo "$subject" | grep -qE "^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert|wip)(\(.+\))?: .{1,50}$"; then
+	echo "Error: Commit message does not follow Conventional Commits format."
+	echo " "
+	echo "Please use one of the following types, with the correct format:"
+	echo "feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert, wip"
+	echo " "
+	echo "Example: feat(parser): add ability to parse arrays"
+	echo " "
+	echo "The subject after the colon must be 1-50 characters."
+	exit 1
+fi
