@@ -655,6 +655,10 @@ func validateDeflate(ext string) (string, bool) {
 		seen[name] = true
 		switch name {
 		case "client_no_context_takeover", "server_no_context_takeover":
+			// Both are value-less parameters (RFC 7692 §7.1.1); a value is malformed.
+			if strings.TrimSpace(val) != "" {
+				return name + " takes no value", false
+			}
 		case "server_max_window_bits", "client_max_window_bits":
 			v := strings.TrimSpace(val)
 			if v == "" {
@@ -718,6 +722,11 @@ func (c *Client) validateCheck() error {
 		return errors.New("--body has no meaning in check mode (no response payloads)")
 	case c.clip:
 		return errors.New("--clip has no meaning in check mode (no response payloads)")
+	case c.readLimit != 0:
+		// A client-side read cap can kill a probe connection mid-check (e.g. the echoed
+		// fragmented message tripping a small limit with close code 1009) and fabricate a
+		// fail verdict against a conforming endpoint.
+		return errors.New("--max-message-size is not supported in check mode")
 	case len(c.textMessages) > 0:
 		return errors.New("-t/--text is not supported in check mode")
 	case c.rpcMethod != "":

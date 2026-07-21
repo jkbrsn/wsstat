@@ -10,21 +10,29 @@ import (
 // usageHeading is the "USAGE:" section header shared across subcommand help text.
 const usageHeading = "USAGE:"
 
+// Subcommand names, used to vary the shared help sections per mode.
+const (
+	modeMeasure = "measure"
+	modeStream  = "stream"
+	modePing    = "ping"
+	modeCheck   = "check"
+)
+
 // printHelpFor prints command-specific usage when a known subcommand name follows
 // `help`/`-h`/`--help` (e.g. `wsstat help stream`), falling back to the top-level usage.
 func printHelpFor(rest []string, w io.Writer) {
 	if len(rest) > 0 {
 		switch rest[0] {
-		case "measure":
+		case modeMeasure:
 			printMeasureUsage(w)
 			return
-		case "stream":
+		case modeStream:
 			printStreamUsage(w)
 			return
-		case "ping":
+		case modePing:
 			printPingUsage(w)
 			return
-		case "check":
+		case modeCheck:
 			printCheckUsage(w)
 			return
 		}
@@ -95,7 +103,7 @@ func printInputFlags(w io.Writer, textDesc string) {
 // and raw is hidden (rejected by validation); the stream-frame and rpc-decode raw notes appear
 // only where they apply.
 func printOutputFlags(w io.Writer, mode string) {
-	noPayload := mode == "ping" || mode == "check"
+	noPayload := mode == modePing || mode == modeCheck
 
 	fmt.Fprintln(w, "Output:")
 	if noPayload {
@@ -110,9 +118,9 @@ func printOutputFlags(w io.Writer, mode string) {
 		fmt.Fprintln(w, "      --clip                     clip each rendered line to terminal width (TTY only)")
 	}
 	switch mode {
-	case "ping":
+	case modePing:
 		fmt.Fprintln(w, "  -q, --quiet                    suppress per-ping lines; print only the summary")
-	case "check":
+	case modeCheck:
 		fmt.Fprintln(w, "  -q, --quiet                    suppress per-check lines; print only the summary")
 	default:
 		fmt.Fprintln(w, "  -q, --quiet                    suppress all output except the response")
@@ -131,7 +139,7 @@ func printOutputFlags(w io.Writer, mode string) {
 	if !noPayload {
 		fmt.Fprintln(w, "        -o raw with --rpc-method emits compact JSON (the frame is decoded before output).")
 	}
-	if mode == "stream" {
+	if mode == modeStream {
 		fmt.Fprintln(w, "        -o raw concatenates stream frames undelimited (binary-safe); use -o json for delimited streaming.")
 	}
 	if !noPayload {
@@ -140,15 +148,18 @@ func printOutputFlags(w io.Writer, mode string) {
 	fmt.Fprintln(w)
 }
 
-// printConnectionFlags prints the dial- and transport-level section (identical everywhere).
-func printConnectionFlags(w io.Writer) {
+// printConnectionFlags prints the dial- and transport-level section. mode drops the flags a
+// subcommand rejects (check: --max-message-size).
+func printConnectionFlags(w io.Writer, mode string) {
 	fmt.Fprintln(w, "Connection:")
 	fmt.Fprintln(w, "  -H, --header <string>          HTTP header to include (repeatable; \"Key: Value\")")
 	fmt.Fprintln(w, "      --resolve <string>         resolve host:port to address (repeatable; \"HOST:PORT:ADDRESS\")")
 	fmt.Fprintln(w, "  -k, --insecure                 skip TLS certificate verification (use with caution)")
 	fmt.Fprintln(w, "      --timeout <duration>       read/dial timeout (e.g., 30s, 1m) [default: 5s]")
 	fmt.Fprintln(w, "      --close-timeout <duration> max wait for the peer's close echo [default: 3s; capped at 5s]")
-	fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
+	if mode != modeCheck {
+		fmt.Fprintln(w, "      --max-message-size <size>  max inbound message, e.g. 512K or 16M [default: 16M]; -1 disables")
+	}
 	fmt.Fprintln(w, "      --subprotocol <name>       WebSocket subprotocol(s) to negotiate (comma-separated)")
 	fmt.Fprintln(w, "      --validate-utf8            validate UTF-8 on inbound text frames; warn on violations")
 	fmt.Fprintln(w)
@@ -176,8 +187,8 @@ func printMeasureUsage(w io.Writer) {
 	fmt.Fprintln(w, "        Repeated -t requires the stream subcommand; measure sends a single message.")
 	fmt.Fprintln(w)
 	printInputFlags(w, textDescSingle)
-	printOutputFlags(w, "measure")
-	printConnectionFlags(w)
+	printOutputFlags(w, modeMeasure)
+	printConnectionFlags(w, modeMeasure)
 	printDiagnosticFlags(w)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Verbosity Levels (text output):")
@@ -205,8 +216,8 @@ func printStreamUsage(w io.Writer) {
 	fmt.Fprintln(w, "        If the receive limit (-c, --once) is reached first, remaining sends are skipped.")
 	fmt.Fprintln(w)
 	printInputFlags(w, textDescRepeatable)
-	printOutputFlags(w, "stream")
-	printConnectionFlags(w)
+	printOutputFlags(w, modeStream)
+	printConnectionFlags(w, modeStream)
 	printDiagnosticFlags(w)
 }
 
@@ -231,8 +242,8 @@ func printPingUsage(w io.Writer) {
 	fmt.Fprintln(w, "  Exit 0 if at least one pong was received (partial loss included); exit 1 on total")
 	fmt.Fprintln(w, "  loss or dial failure, so `wsstat ping -c 3 <url>` works as a liveness gate.")
 	fmt.Fprintln(w)
-	printOutputFlags(w, "ping")
-	printConnectionFlags(w)
+	printOutputFlags(w, modePing)
+	printConnectionFlags(w, modePing)
 	printDiagnosticFlags(w)
 }
 
@@ -261,7 +272,7 @@ func printCheckUsage(w io.Writer) {
 	fmt.Fprintln(w, "  probes (invalid UTF-8, RSV bits, reserved/invalid opcodes and close codes,")
 	fmt.Fprintln(w, "  oversized/fragmented control frames), plus limits and performance checks.")
 	fmt.Fprintln(w)
-	printOutputFlags(w, "check")
-	printConnectionFlags(w)
+	printOutputFlags(w, modeCheck)
+	printConnectionFlags(w, modeCheck)
 	printDiagnosticFlags(w)
 }

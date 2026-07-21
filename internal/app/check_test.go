@@ -631,6 +631,8 @@ func TestValidateDeflate(t *testing.T) {
 		{"valid params", "permessage-deflate; client_no_context_takeover", true},
 		{"valid window bits", "permessage-deflate; server_max_window_bits=15", true},
 		{"quoted window bits", `permessage-deflate; server_max_window_bits="10"`, true},
+		{"no-context-takeover with value",
+			"permessage-deflate; server_no_context_takeover=1", false},
 		{"missing window bits value", "permessage-deflate; client_max_window_bits", false},
 		{"low window bits", "permessage-deflate; server_max_window_bits=7", false},
 		{"high window bits", "permessage-deflate; server_max_window_bits=99", false},
@@ -679,6 +681,7 @@ func TestValidateCheck(t *testing.T) {
 		{"interval", Client{mode: ModeCheck, interval: time.Second}},
 		{"body compact", Client{mode: ModeCheck, body: BodyCompact}},
 		{"clip", Client{mode: ModeCheck, clip: true}},
+		{"max message size", Client{mode: ModeCheck, readLimit: 1024}},
 	}
 	for _, tc := range rejections {
 		t.Run("rejects "+tc.name, func(t *testing.T) {

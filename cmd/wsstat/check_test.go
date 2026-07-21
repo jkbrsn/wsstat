@@ -172,6 +172,13 @@ func TestBuildCheckRejectsUnsupportedFlags(t *testing.T) {
 		assert.Contains(t, err.Error(), "not supported in check mode")
 	})
 
+	t.Run("max message size rejected", func(t *testing.T) {
+		// A client-side read cap could kill a probe mid-check and fabricate a fail verdict.
+		_, _, err := buildCheck([]string{"--max-message-size", "16", "wss://example.com"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not supported in check mode")
+	})
+
 	t.Run("stdin payload rejected without reading stdin", func(t *testing.T) {
 		// -t @- must be rejected at the flag layer; reaching resolveCommon would block on
 		// io.ReadAll(os.Stdin).
