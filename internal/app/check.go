@@ -180,8 +180,8 @@ func newCheckBuilder(target *url.URL) *checkBuilder {
 // record stores a check outcome, deriving the group from the ID prefix.
 func (b *checkBuilder) record(id string, status CheckStatus, detail string, took time.Duration) {
 	group := id
-	if i := strings.IndexByte(id, '.'); i >= 0 {
-		group = id[:i]
+	if before, _, ok := strings.Cut(id, "."); ok {
+		group = before
 	}
 	b.entries[id] = CheckEntry{ID: id, Group: group, Status: status, Detail: detail, Took: took}
 }
@@ -700,7 +700,7 @@ func validWindowBits(s string) bool {
 
 // hasToken reports whether a comma-separated header value contains token, case-insensitively.
 func hasToken(value, token string) bool {
-	for _, part := range strings.Split(value, ",") {
+	for part := range strings.SplitSeq(value, ",") {
 		if strings.EqualFold(strings.TrimSpace(part), token) {
 			return true
 		}

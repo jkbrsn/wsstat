@@ -6,7 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/mattn/go-isatty v0.0.22
+	github.com/mattn/go-isatty v0.0.23
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/term v0.45.0
