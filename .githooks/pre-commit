@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+echo "> Running pre-commit hook (fmt, lint)"
+
+staged=$(git diff --cached --name-only --diff-filter=d -- '*.go')
+if [ -n "$staged" ]; then
+	unformatted=$(echo "$staged" | xargs -d '\n' gofmt -s -l)
+	if [ -n "$unformatted" ]; then
+		echo "> Not gofmt'd (run 'make fmt' and re-stage):"
+		echo "$unformatted"
+		exit 1
+	fi
+fi
+
+# Lint only changes relative to main; CI runs the full lint. Bypass with --no-verify.
+golangci-lint run --new-from-rev=origin/main
+
+echo "> pre-commit hook done"

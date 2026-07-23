@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+echo "> Running pre-push hook (test)"
+
+# Bypass with --no-verify.
+make test-quick
+
+echo "> pre-push hook done"

@@ -17,6 +17,7 @@ discriminated by `type`.
 | `response`             | `measure` with a payload            | decoded response body |
 | `subscription_summary` | `stream` (periodic + final)         | per-subscription counts and timing |
 | `subscription_message` | `stream`, one per inbound frame     | streamed live |
+| `check_report`         | `check`, one per run                | ordered check catalog + per-status counts |
 | `error`                | any mode, runtime failure           | written to stdout so the stream stays parseable |
 
 ## Versioning

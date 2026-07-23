@@ -140,9 +140,21 @@ type WSStat struct {
 	discardReads   bool              // drop unclaimed inbound data frames instead of queueing them
 	invalidUTF8    atomic.Int64      // count of text frames that failed UTF-8 validation
 
-	// Close-handshake frame, settable via CloseWith before teardown.
-	closeStatus atomic.Int64           // handshake close code (default StatusNormalClosure)
-	closeReason atomic.Pointer[string] // handshake close reason (nil means empty)
+	// Close-handshake frame, settable via CloseWith before teardown. A single pointer so
+	// code and reason are read and written together: nil means the default
+	// StatusNormalClosure with an empty reason, and the first CloseWith to swap it in wins
+	// both fields atomically.
+	closeFrame atomic.Pointer[closeFrame]
+
+	// recvCloseStatus records the peer's close status observed on a read error in the read
+	// pump, so the code survives even when the buffered error read loses the delivery race
+	// with teardown. -1 until a close frame arrives (see ReceivedCloseStatus).
+	recvCloseStatus atomic.Int64
+	// closeEchoLost marks that the bounded read's timeout tore the connection down: coder
+	// kills the conn when the read context ends, and its Close masks the resulting
+	// net.ErrClosed as nil, so a nil close error no longer implies the peer echoed;
+	// recordCloseEcho must not fabricate an echo from it.
+	closeEchoLost atomic.Bool
 }
 
 // New creates and returns a new WSStat instance. To adjust channel buffer size or timeouts,
@@ -191,7 +203,7 @@ func New(opts ...Option) *WSStat {
 		subscriptionArchive:       make(map[string]SubscriptionStats),
 		defaultSubscriptionBuffer: defaultSubscriptionBufferSize,
 	}
-	ws.closeStatus.Store(int64(websocket.StatusNormalClosure))
+	ws.recvCloseStatus.Store(-1)
 	// Built after ws so the transport can hand the raw conn back via captureNetConn.
 	ws.httpClient = newHTTPClient(
 		result, timings, cfg.tlsConfig, cfg.timeout, cfg.resolves, ws.captureNetConn,
@@ -334,17 +346,8 @@ func (ws *WSStat) readPump() {
 
 		read, deadlineHit := ws.readFrame(conn)
 		if read.err != nil {
-			// If a subscription became active while a bounded read was in flight, the
-			// stream now owns the connection: drop the timeout and keep reading rather
-			// than finalizing the subscription on a spurious read deadline.
-			if deadlineHit && ws.hasActiveSubscriptions() {
+			if ws.handleReadError(read, deadlineHit) {
 				continue
-			}
-			ws.dispatchIncoming(read)
-			select {
-			case ws.readChan <- read:
-			case <-ws.ctx.Done():
-				ws.log.Debug().Msg("Context done, dropping error read")
 			}
 			return
 		}
@@ -361,6 +364,36 @@ func (ws *WSStat) readPump() {
 			return
 		}
 	}
+}
+
+// handleReadError records what a failed read reveals and delivers the error read. Reports
+// whether the pump should keep reading (a bounded read timed out under an active
+// subscription, which now owns the connection — finalizing it on a spurious read deadline
+// would tear down a healthy stream).
+//
+//revive:disable-next-line:flag-parameter deadlineHit is read-outcome data, not a caller toggle
+func (ws *WSStat) handleReadError(read *wsRead, deadlineHit bool) bool {
+	// Capture the peer's close status here, before the buffered error read can lose
+	// its delivery race with teardown, so ReceivedCloseStatus stays reliable.
+	ws.recordCloseStatus(read.err)
+	if deadlineHit {
+		// The bound's cancel killed the connection (coder tears the conn down when the
+		// read context ends), whether or not a close was in flight. Any later Close runs
+		// its handshake on the dead conn and gets net.ErrClosed masked as nil, so a nil
+		// close error no longer implies an echo. Flag it before the close goroutine
+		// can record.
+		ws.closeEchoLost.Store(true)
+	}
+	if deadlineHit && ws.hasActiveSubscriptions() {
+		return true
+	}
+	ws.dispatchIncoming(read)
+	select {
+	case ws.readChan <- read:
+	case <-ws.ctx.Done():
+		ws.log.Debug().Msg("Context done, dropping error read")
+	}
+	return false
 }
 
 // deliverRead routes a successfully-read frame: subscription dispatch first; in discard mode
@@ -384,23 +417,69 @@ func (ws *WSStat) deliverRead(read *wsRead) bool {
 	}
 }
 
+// recordCloseStatus stores the peer's close status from a read error, if the error carries
+// one, so ReceivedCloseStatus can report it after teardown. First write wins, atomically:
+// the read pump and the close goroutine (via recordCloseEcho) race to record, and only one
+// close frame ever arrives, so the first observation is the truth.
+func (ws *WSStat) recordCloseStatus(err error) {
+	if s := websocket.CloseStatus(err); s != -1 {
+		ws.recvCloseStatus.CompareAndSwap(-1, int64(s))
+	}
+}
+
+// recordCloseEcho records the peer's close-handshake echo when coder's internal close
+// handshake consumed it instead of the read pump: the two race for coder's read mutex,
+// and the loser never sees the close frame. coder's Close returns nil when the peer
+// echoed the status we sent and a close error carrying the status when it echoed a
+// different one, so a nil error implies an observed echo — unless the connection was
+// torn down under the handshake (closeEchoLost), where coder masks net.ErrClosed as nil
+// and no echo was ever read. First write wins: a status the read pump already recorded
+// is kept.
+func (ws *WSStat) recordCloseEcho(sent websocket.StatusCode, err error) {
+	if err != nil {
+		ws.recordCloseStatus(err)
+		return
+	}
+	if ws.closeEchoLost.Load() {
+		return
+	}
+	ws.recvCloseStatus.CompareAndSwap(-1, int64(sent))
+}
+
 // readFrame reads one frame, bounding the read with the dial/read timeout only when no
-// subscription is active and WithUnboundedReads was not set. Subscriptions (and unbounded-read
-// sessions such as a ping/pong monitor) are long-lived and idle by nature, so a per-read
-// deadline would tear them down after a quiet interval; in those modes the read blocks until
-// ws.ctx is canceled (Close). deadlineHit reports that the bound fired (a one-shot timeout)
-// rather than a real transport error or context cancel.
+// subscription is active, WithUnboundedReads was not set, and no close is in progress.
+// Subscriptions (and unbounded-read sessions such as a ping/pong monitor) are long-lived and
+// idle by nature, so a per-read deadline would tear them down after a quiet interval; in those
+// modes the read blocks until ws.ctx is canceled (Close). deadlineHit reports that the bound
+// fired (a one-shot timeout) rather than a real transport error or context cancel.
+//
+// The bound is a manual timer rather than a context deadline: coder kills the whole connection
+// when the read context ends, and once Close has begun, the closing handshake owns the
+// connection — a bound firing then would tear the conn down mid-handshake and coder's Close
+// would mask the resulting net.ErrClosed as nil, fabricating a close echo that never arrived.
+// The timer stands down once ws.closed is set, leaving closeGrace as the close-phase bound.
 func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
 	readCtx := ws.ctx
-	var cancel context.CancelFunc
-	if !ws.unboundedReads && !ws.hasActiveSubscriptions() {
-		readCtx, cancel = context.WithTimeout(ws.ctx, ws.timeout)
+	var timedOut atomic.Bool
+	if !ws.unboundedReads && !ws.hasActiveSubscriptions() && !ws.closed.Load() {
+		var cancel context.CancelFunc
+		readCtx, cancel = context.WithCancel(ws.ctx)
+		defer cancel()
+		timer := time.AfterFunc(ws.timeout, func() {
+			if ws.closed.Load() {
+				return
+			}
+			timedOut.Store(true)
+			cancel()
+		})
+		defer timer.Stop()
 	}
 	coderType, p, err := conn.Read(readCtx)
-	deadlineHit := false
-	if cancel != nil {
-		deadlineHit = readCtx.Err() == context.DeadlineExceeded && ws.ctx.Err() == nil
-		cancel()
+	deadlineHit := timedOut.Load() && ws.ctx.Err() == nil
+	if deadlineHit && errors.Is(err, context.Canceled) {
+		// Restore the deadline identity the manual timer's cancel replaced (coder surfaces
+		// the read context's Err), so timeout errors keep their pre-timer shape for callers.
+		err = context.DeadlineExceeded
 	}
 	return &wsRead{
 		data: p, err: err, messageType: fromCoderType(coderType), at: time.Now(),
@@ -614,6 +693,45 @@ func (ws *WSStat) WriteMessageJSON(v any) {
 	ws.timings.mu.Unlock()
 }
 
+// WriteMessageFragmented sends data as a single text or binary message split across
+// len(fragments)+1 WebSocket frames: coder's streaming Writer emits one non-final frame per
+// Write call for uncompressed messages, then a trailing empty continuation frame carrying the
+// FIN bit from its Close. Each fragment is written synchronously, bypassing the write pump;
+// run it on a connection dialed without compression, since permessage-deflate does not
+// preserve fragment boundaries. fragments must be non-empty. Returns ErrClosed or
+// ErrConnectionNotEstablished when the connection is unusable, and any transport error
+// otherwise. Records no message timing.
+func (ws *WSStat) WriteMessageFragmented(messageType int, fragments [][]byte) error {
+	if len(fragments) == 0 {
+		return errors.New("wsstat: no fragments to write")
+	}
+	if ws.closed.Load() {
+		return ErrClosed
+	}
+	conn := ws.conn.Load()
+	if conn == nil {
+		return ErrConnectionNotEstablished
+	}
+
+	writeCtx, cancel := context.WithTimeout(ws.ctx, ws.timeout)
+	defer cancel()
+
+	w, err := conn.Writer(writeCtx, toCoderType(messageType))
+	if err != nil {
+		return fmt.Errorf("open fragmented writer: %w", err)
+	}
+	for _, fragment := range fragments {
+		if _, err := w.Write(fragment); err != nil {
+			_ = w.Close()
+			return fmt.Errorf("write fragment: %w", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close fragmented writer: %w", err)
+	}
+	return nil
+}
+
 // PingPong sends a ping through the WebSocket connection and blocks until the matching pong
 // is received. coder's Ping is a synchronous round-trip, so both the write and read timings
 // are recorded around the single call.
@@ -663,6 +781,24 @@ func classifyReadErr(err error) error {
 		return fmt.Errorf("unexpected close error: %w", err)
 	}
 	return err
+}
+
+// CloseStatus returns the RFC 6455 close status code carried by an error returned from
+// ReadMessage or ReadMessageJSON, or -1 if err is nil or carries no close status. It wraps
+// coder/websocket's CloseStatus so callers need not import the transport package; because
+// classifyReadErr preserves the error chain, a wrapped "unexpected close error" still yields
+// its code.
+func CloseStatus(err error) int {
+	return int(websocket.CloseStatus(err))
+}
+
+// ReceivedCloseStatus returns the RFC 6455 close status the peer sent in its close frame,
+// as observed by the read pump, or -1 if no close frame has been read. It is the reliable
+// companion to CloseStatus for the closing handshake: when the connection is closed with
+// CloseWith, the peer's echoed status is captured here even though the buffered read error
+// carrying it can lose the delivery race with teardown.
+func (ws *WSStat) ReceivedCloseStatus() int {
+	return int(ws.recvCloseStatus.Load())
 }
 
 // handleRead processes a value received from readChan, recording read timing on success.
@@ -763,16 +899,17 @@ func (ws *WSStat) ExtractResult() *Result {
 // so on timeout the raw socket is forced shut, which unblocks coder's read and lets the
 // close goroutine return instead of stalling the full 5s.
 func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
-	status := websocket.StatusCode(ws.closeStatus.Load())
-	reason := ""
-	if p := ws.closeReason.Load(); p != nil {
-		reason = *p
+	status, reason := websocket.StatusNormalClosure, ""
+	if f := ws.closeFrame.Load(); f != nil {
+		status, reason = f.code, f.reason
 	}
 	closed := make(chan struct{})
+	var closeErr error
 	go func() {
 		defer close(closed)
-		if err := conn.Close(status, reason); err != nil {
-			ws.log.Debug().Err(err).Msg("close handshake")
+		closeErr = conn.Close(status, reason)
+		if closeErr != nil {
+			ws.log.Debug().Err(closeErr).Msg("close handshake")
 		}
 	}()
 
@@ -780,6 +917,9 @@ func (ws *WSStat) gracefulClose(conn *websocket.Conn) {
 	select {
 	case <-closed:
 		timer.Stop()
+		// The handshake completed within grace: surface the peer's echo in case coder's
+		// internal close handshake consumed it before the read pump could observe it.
+		ws.recordCloseEcho(status, closeErr)
 	case <-timer.C:
 		ws.log.Debug().Dur("grace", ws.closeGrace).
 			Msg("close handshake timed out, forcing teardown")
@@ -816,14 +956,20 @@ func validCloseCode(code int) bool {
 	return c >= closeCodeAppMin && c <= closeCodeAppMax
 }
 
+// closeFrame is the close-handshake code/reason pair CloseWith installs before teardown.
+type closeFrame struct {
+	code   websocket.StatusCode
+	reason string
+}
+
 // CloseWith closes the connection sending a chosen close code and reason in the RFC 6455
 // closing handshake, instead of Close's default StatusNormalClosure (1000) with an empty
 // reason. code must be a sendable close status (1000-1003, 1007-1011, or 3000-4999) and
-// reason at most 123 bytes (the control-frame payload limit minus the 2-byte code); an invalid
-// code or over-long reason returns an error without closing. Returns ErrClosed if the
-// connection is already closing. Otherwise teardown proceeds exactly as Close, which it calls;
-// like Close it is idempotent, but the code/reason only take effect when CloseWith wins the
-// race to initiate the close.
+// reason valid UTF-8 (RFC 6455 §5.5.1) of at most 123 bytes (the control-frame payload limit
+// minus the 2-byte code); an invalid code or reason returns an error without closing. Returns
+// ErrClosed if the connection is already closing. Otherwise teardown proceeds exactly as
+// Close, which it calls; like Close it is idempotent, but the code/reason only take effect
+// for the first CloseWith to install them before a close is initiated.
 func (ws *WSStat) CloseWith(code int, reason string) error {
 	if ws.closed.Load() {
 		return ErrClosed
@@ -834,8 +980,10 @@ func (ws *WSStat) CloseWith(code int, reason string) error {
 	if len(reason) > maxCloseReasonBytes {
 		return fmt.Errorf("wsstat: close reason exceeds %d bytes", maxCloseReasonBytes)
 	}
-	ws.closeStatus.Store(int64(code))
-	ws.closeReason.Store(&reason)
+	if !utf8.ValidString(reason) {
+		return errors.New("wsstat: close reason is not valid UTF-8")
+	}
+	ws.closeFrame.CompareAndSwap(nil, &closeFrame{code: websocket.StatusCode(code), reason: reason})
 	ws.Close()
 	return nil
 }

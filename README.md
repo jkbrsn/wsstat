@@ -160,14 +160,16 @@ wsstat --resolve example.com:443:127.0.0.1 --timeout 30s wss://example.com/ws
 wsstat --insecure -vv wss://self-signed.example.com
 ```
 
-For a full list of the available options, run `wsstat -h`, `wsstat measure -h`, or `wsstat stream -h`.
+For a full list of the available options, run `wsstat -h`, `wsstat measure -h`, `wsstat stream -h`, `wsstat ping -h`, or `wsstat check -h`.
 
 ### Modes
 
 `wsstat <url>` (or `wsstat measure <url>`) measures connection latency. `wsstat
 stream <url>` keeps the socket open for long-lived feeds. `wsstat ping <url>`
-watches ping/pong latency over time. A host literally named
-`measure`/`stream`/`ping` must be spelled with a scheme (`wsstat wss://ping`).
+watches ping/pong latency over time. `wsstat check <url>` runs observational RFC
+6455 conformance checks. A host literally named
+`measure`/`stream`/`ping`/`check` must be spelled with a scheme
+(`wsstat wss://ping`).
 
 In measure mode, `-c N` aggregates timing across all interactions; the response
 printed is the first one (measure does not concatenate responses).
@@ -248,6 +250,58 @@ drop shows up as loss in the summary without ending the run. The run ends only a
 exit code is 0 when at least one pong was received and 1 on total loss or a dial
 failure, so `wsstat ping -c 3 <url>` doubles as a liveness gate.
 
+### Check Mode
+
+`wsstat check <url>` runs a small set of observational RFC 6455 conformance
+checks (handshake correctness, subprotocol/extension/version negotiation,
+ping/pong, fragmentation tolerance, and close semantics) in a few seconds over at
+most 5 connections plus one plain HTTP request, and reports pass/warn/fail/skip
+per check in the text or JSON output contract. Every exchange is well-formed: no
+malformed frames, no connection storm:
+
+```sh
+wsstat check wss://echo.example.com
+```
+
+```text
+Handshake
+  ok   101 upgrade
+  ok   Sec-WebSocket-Accept valid
+  ok   Upgrade/Connection headers
+Negotiation
+  ok   subprotocol (none offered)
+  ok   subprotocol echo
+  ok   permessage-deflate
+  ok   unsupported version rejected
+Behavior
+  ok   ping/pong
+  ok   fragmented text
+  ok   close handshake
+
+10 passed, 0 warnings, 0 failed
+```
+
+`-v` appends the per-check detail and timing; `-q` prints only the summary line.
+`-o json` emits exactly one `check_report` record:
+
+```sh
+wsstat check -o json wss://echo.example.com
+# {"schema_version":"1.0","type":"check_report","url":"wss://echo.example.com","checks":[{"id":"handshake.upgrade","group":"handshake","status":"pass","detail":"101 Switching Protocols","took_ms":0.495},{"id":"handshake.accept","group":"handshake","status":"pass","detail":"validated during handshake","took_ms":0},{"id":"handshake.headers","group":"handshake","status":"pass","detail":"Upgrade/Connection tokens present","took_ms":0},{"id":"negotiation.subprotocol-none","group":"negotiation","status":"pass","detail":"none offered, none selected","took_ms":0},{"id":"negotiation.subprotocol-echo","group":"negotiation","status":"pass","detail":"selected wsstat-check","took_ms":0.477},{"id":"negotiation.deflate","group":"negotiation","status":"pass","detail":"permessage-deflate: permessage-deflate","took_ms":0.239},{"id":"negotiation.version-reject","group":"negotiation","status":"pass","detail":"rejected (400, advertises 13)","took_ms":0.235},{"id":"behavior.ping-pong","group":"behavior","status":"pass","detail":"ping -> pong","took_ms":0.084},{"id":"behavior.fragmentation","group":"behavior","status":"pass","detail":"fragmented text accepted","took_ms":0.348},{"id":"behavior.close-echo","group":"behavior","status":"pass","detail":"close 1000 echoed, clean shutdown","took_ms":0.349}],"passed":10,"warned":0,"failed":0,"skipped":0}
+```
+
+The exit code is 0 when no check fails (warnings included) and 3 when any check
+fails, so `wsstat check <url>` works as a CI conformance gate. A server that
+answers but refuses or botches the upgrade fails the handshake check and skips
+the dependents; an unreachable endpoint (DNS, connect, TLS, or timeout — the
+endpoint never answered, so nothing was scored), an interrupted run (first
+`Ctrl-C`; the skipped checks left the verdict unanswered), or an output failure
+is a runtime error (exit 1).
+
+Skipped by design (blocked by the client always emitting valid, masked frames):
+unsolicited-pong tolerance, client masking enforcement, and the Tier 2
+adversarial probes (invalid UTF-8, RSV bits, reserved/invalid opcodes and close
+codes, oversized/fragmented control frames), plus limits and performance checks.
+
 ### Output
 
 Output is split across three orthogonal axes:
@@ -289,11 +343,17 @@ rejected under `-o json|raw`.
 | 0    | Success (also `--help` and `--version`) |
 | 1    | Runtime failure (dial, measurement, stream, or output write) |
 | 2    | Usage error (bad flag or argument) |
+| 3    | One or more checks failed (`check` mode) |
 | 130  | Interrupted; a second `Ctrl-C` forces teardown |
 
 In `ping` mode exit 1 also covers total loss (zero pongs received), while partial
 loss with at least one pong still exits 0, so `wsstat ping -c N <url>` works as a
 liveness gate.
+
+In `check` mode exit 3 signals that at least one check produced a `fail` verdict;
+warnings still exit 0, so `wsstat check <url>` works as a CI conformance gate. An
+unreachable endpoint or an interrupted run exits 1, never 0: an unanswered
+conformance question must not read as a pass.
 
 Usage errors (exit 2) always print plain text to stderr. Under `-o json`, a
 runtime failure (exit 1) prints a `{"type":"error"}` envelope to stdout so a
@@ -342,6 +402,14 @@ make test V=1 RACE=1  # test with optional flags
 
 # lint
 make lint
+```
+
+### Git hooks
+
+Optional but recommended. Points git at `.githooks/`, which enforces Conventional Commit subjects (`commit-msg`), gofmt + lint on new code (`pre-commit`), and a cached test run (`pre-push`). Bypass any hook with `--no-verify`.
+
+```sh
+make hooks
 ```
 
 ## Contributing

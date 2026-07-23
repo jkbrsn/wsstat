@@ -153,6 +153,28 @@ func EmitJSONError(w io.Writer, err error) error {
 	return nil
 }
 
+// checkEntryJSON is one conformance check's outcome inside a check_report record.
+type checkEntryJSON struct {
+	ID     string  `json:"id"`
+	Group  string  `json:"group"`
+	Status string  `json:"status"` // "pass" | "warn" | "fail" | "skip"
+	Detail string  `json:"detail,omitempty"`
+	TookMs float64 `json:"took_ms"`
+}
+
+// checkReportJSON is the single record emitted in check mode: the ordered check catalog plus
+// per-status counts, so a `wsstat check -o json` consumer sees one self-describing object.
+type checkReportJSON struct {
+	Schema  string           `json:"schema_version"`
+	Type    string           `json:"type"` // "check_report"
+	URL     string           `json:"url"`
+	Checks  []checkEntryJSON `json:"checks"`
+	Passed  int              `json:"passed"`
+	Warned  int              `json:"warned"`
+	Failed  int              `json:"failed"`
+	Skipped int              `json:"skipped"`
+}
+
 type subscriptionMessageJSON struct {
 	Schema      string `json:"schema_version"`
 	Type        string `json:"type"`

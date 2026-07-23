@@ -59,8 +59,9 @@ var version = "unknown"
 // Process exit codes. Usage covers both flag-parse failures and post-parse argument
 // validation; runtime is reserved for genuine connection/measurement/output failures.
 const (
-	exitRuntime = 1 // runtime/network failure (dial, measure, stream, output write)
-	exitUsage   = 2 // bad invocation: flag parse error or argument validation
+	exitRuntime     = 1 // runtime/network failure (dial, measure, stream, output write)
+	exitUsage       = 2 // bad invocation: flag parse error or argument validation
+	exitCheckFailed = 3 // check mode: one or more conformance checks failed
 )
 
 // errUsageShown signals that a FlagSet already printed its own error and usage,
@@ -77,8 +78,17 @@ var errVersionShown = errors.New("version shown")
 // A dial failure (nothing printed yet) still flows through runtimeErr instead.
 var errPingTotalLoss = errors.New("no pongs received")
 
+// errCheckFailed signals check-mode conformance failure (one or more checks are `fail`).
+// RunCheck/PrintCheckResults have already emitted the report, so main exits with
+// exitCheckFailed without printing an additional error line or JSON envelope. A failed check
+// is not a runtime error: dial and output-write failures still flow through runtimeErr.
+var errCheckFailed = errors.New("one or more checks failed")
+
 // responseFilePerm is the mode for the --file response sink (owner read/write, group/other read).
 const responseFilePerm = 0o644
+
+// versionFmt is the format string for the "wsstat <version>" line printed on --version.
+const versionFmt = "wsstat %s\n"
 
 // cliError classifies a failure for the top-level handler: the process exit code and
 // the resolved output contract, so a JSON run can emit a structured error envelope.
@@ -138,8 +148,10 @@ func main() {
 		err = runMeasure(args[1:])
 	case args[0] == "ping":
 		err = runPing(args[1:])
+	case args[0] == "check":
+		err = runCheck(args[1:])
 	case args[0] == "--version" || args[0] == "-version":
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return
 	case isHelpArg(args[0]):
 		printHelpFor(args[1:], os.Stdout)
@@ -156,6 +168,9 @@ func main() {
 	case errors.Is(err, errPingTotalLoss):
 		// The summary already reported the loss; exit non-zero without extra output.
 		os.Exit(exitRuntime)
+	case errors.Is(err, errCheckFailed):
+		// The report already showed the failing checks; exit 3 without extra output.
+		os.Exit(exitCheckFailed)
 	default:
 		fail(err)
 	}
@@ -259,7 +274,7 @@ func buildMeasure(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, parseErr(err, printMeasureUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -304,7 +319,7 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 		return nil, nil, parseErr(err, printStreamUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return nil, nil, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -350,6 +365,45 @@ func buildStream(args []string) (*app.Client, *url.URL, error) {
 	return client, target, nil
 }
 
+// buildCheck parses check-mode args and returns a validated client and target. Check mode adds
+// no subcommand-specific flags in v1; it dials its own fixed catalog of connections, so the
+// messaging and response flag groups are registered only as rejection stubs.
+func buildCheck(args []string) (*app.Client, *url.URL, error) {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	cf := newCommonFlags()
+	registerOutputFlags(fs, &cf)
+	registerConnectionFlags(fs, &cf)
+	registerDiagnosticFlags(fs, &cf)
+	registerUnsupported(fs, checkUnsupported)
+	registerRemoved(fs)
+	fs.Usage = func() {} // parseErr owns usage printing (stdout for -h, stderr otherwise)
+
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, parseErr(err, printCheckUsage)
+	}
+	if cf.version {
+		fmt.Printf(versionFmt, version)
+		return nil, nil, errVersionShown
+	}
+	if err := removedFlagError(fs); err != nil {
+		return nil, nil, err
+	}
+	if err := unsupportedFlagError(fs, "check", checkUnsupported); err != nil {
+		return nil, nil, err
+	}
+
+	opts, target, err := resolveCommon(fs, &cf, app.ModeCheck)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	client := app.NewClient(opts...)
+	if err := client.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	return client, target, nil
+}
+
 // unsupportedFlag describes a flag a subcommand rejects: the reason shown in the error,
 // and whether the flag takes a value (its arity), so the stub registration consumes any
 // value token: -t @- must not read stdin, and a following value must not be misread as
@@ -370,6 +424,20 @@ var pingUnsupported = map[string]unsupportedFlag{
 	"file":        {"ping has no response payloads to record", true},
 	"body":        {"ping renders no response bodies", true},
 	"clip":        {"ping renders no response bodies", false},
+}
+
+// checkUnsupported maps the flags the check subcommand rejects (internal flag name,
+// without dashes) to their rejection details. Rejecting at the flag layer keeps -t @-
+// from reading stdin before validation and mirrors ping's handling.
+var checkUnsupported = map[string]unsupportedFlag{
+	"t":           {"check dials its own probe catalog, not user messages", true},
+	"text":        {"check dials its own probe catalog, not user messages", true},
+	"rpc-method":  {"check dials its own probe catalog, not user messages", true},
+	"rpc-version": {"check dials its own probe catalog, not user messages", true},
+	"f":           {"check has no response payloads to record", true},
+	"file":        {"check has no response payloads to record", true},
+	"body":        {"check renders no response bodies", true},
+	"clip":        {"check renders no response bodies", false},
 }
 
 // registerUnsupported registers a subcommand's unsupported flags as inert stubs on fs,
@@ -436,7 +504,7 @@ func buildPing(args []string) (pingConfig, error) {
 		return pingConfig{}, parseErr(err, printPingUsage)
 	}
 	if cf.version {
-		fmt.Printf("wsstat %s\n", version)
+		fmt.Printf(versionFmt, version)
 		return pingConfig{}, errVersionShown
 	}
 	if err := removedFlagError(fs); err != nil {
@@ -607,6 +675,46 @@ func runPing(args []string) error {
 	}
 	if report.Received == 0 {
 		return errPingTotalLoss
+	}
+	return nil
+}
+
+// runCheck runs check mode. It prints the report on every non-runtime path and derives the exit
+// code from the verdicts: any `fail` yields exitCheckFailed (via errCheckFailed), making
+// `wsstat check <url>` a CI gate; warnings alone exit 0. Transport-level dial failures (an
+// unreachable endpoint), malformed headers, and output-write failures flow through runtimeErr
+// (exit 1); under -o json those emit a structured error envelope. A server that answered but
+// refused or botched the upgrade is an RFC verdict in the report, not a runtime error.
+func runCheck(args []string) error {
+	client, target, err := buildCheck(args)
+	if err != nil {
+		return usageErr(err)
+	}
+
+	ctx, cancel := interruptContext()
+	defer cancel()
+
+	out := client.Output()
+	report, err := client.RunCheck(ctx, target)
+	if err != nil {
+		return runtimeErr(out, fmt.Errorf("running checks: %w", err))
+	}
+	if err := client.PrintCheckResults(report); err != nil {
+		return runtimeErr(out, fmt.Errorf("printing check results: %w", err))
+	}
+	return checkRunOutcome(ctx, out, report)
+}
+
+// checkRunOutcome maps a completed check run to its exit sentinel. A fail verdict wins: it was
+// observed before any interrupt, so the exit-3 gate stands. An interrupted run without a fail
+// is a runtime error (exit 1), never exit 0: the skipped checks left the conformance question
+// unanswered, and a CI gate must not read an evicted or timed-out run as a passing one.
+func checkRunOutcome(ctx context.Context, out app.Output, report *app.CheckReport) error {
+	if report.Failed() > 0 {
+		return errCheckFailed
+	}
+	if ctx.Err() != nil {
+		return runtimeErr(out, fmt.Errorf("run interrupted; %d checks skipped", report.Skipped()))
 	}
 	return nil
 }

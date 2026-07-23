@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`check` subcommand.** `wsstat check <url>` runs a small set of observational RFC 6455 conformance checks (handshake correctness, subprotocol/extension/version negotiation, ping/pong, fragmentation tolerance, and close semantics) over at most 5 connections plus one plain HTTP request, reporting pass/warn/fail/skip per check in the text or JSON output contract. Exit 3 signals a failed check (warnings exit 0), so it works as a CI conformance gate; an unreachable endpoint or an interrupted run is a runtime error (exit 1), never a failed check or a pass; `-o json` emits one `check_report` record. See the README's "Check Mode" section and `wsstat check -h`.
+- **(lib) `CloseStatus` helper.** `CloseStatus(err error) int` returns the RFC 6455 close status carried by an error from `ReadMessage`/`ReadMessageJSON`, or `-1` when the error is not a close error, so callers need not import `coder/websocket`.
+- **(lib) `WriteMessageFragmented` method.** Sends one text or binary message as `len(fragments)+1` frames (one non-final frame per fragment plus a trailing empty fin continuation from the streaming writer), synchronously, bypassing the write pump; run it on a connection dialed without compression, as permessage-deflate does not preserve fragment boundaries.
+
+### Fixed
+
+- (lib) A read timeout firing during the closing handshake no longer tears the connection down mid-handshake, which the transport masked as a clean close and could fabricate a close echo that never arrived; once a close begins, teardown is bounded by the close grace instead of the read timeout.
+
 ## [3.2.0] - 2026-07-14
 
 ### Added

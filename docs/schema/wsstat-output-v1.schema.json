@@ -11,6 +11,7 @@
     { "$ref": "#/$defs/subscription_message" },
     { "$ref": "#/$defs/ping_reply" },
     { "$ref": "#/$defs/ping_summary" },
+    { "$ref": "#/$defs/check_report" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -171,6 +172,36 @@
         "avg_ms": { "$ref": "#/$defs/ms" },
         "max_ms": { "$ref": "#/$defs/ms" },
         "stddev_ms": { "$ref": "#/$defs/ms" }
+      }
+    },
+    "checkEntry": {
+      "type": "object",
+      "description": "One observational RFC 6455 conformance check's outcome.",
+      "required": ["id", "group", "status", "took_ms"],
+      "properties": {
+        "id": { "type": "string" },
+        "group": { "enum": ["handshake", "negotiation", "behavior", "probe"] },
+        "status": { "enum": ["pass", "warn", "fail", "skip"] },
+        "detail": { "type": "string" },
+        "took_ms": { "$ref": "#/$defs/ms" }
+      }
+    },
+    "check_report": {
+      "type": "object",
+      "description": "The single record emitted in check mode: the ordered Tier 1 conformance catalog plus per-status counts. A `fail` in any entry drives exit code 3.",
+      "required": ["schema_version", "type", "url", "checks", "passed", "warned", "failed", "skipped"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "type": { "const": "check_report" },
+        "url": { "type": "string" },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/checkEntry" }
+        },
+        "passed": { "type": "integer", "minimum": 0 },
+        "warned": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
       }
     },
     "error": {
