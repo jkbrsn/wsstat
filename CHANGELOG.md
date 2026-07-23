@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A user-supplied `Host` header (CLI `-H 'Host: ...'` or lib dial headers) is now sent on the wire. Previously net/http silently dropped the `Host` key from the header map and the handshake carried the URL host; the value is now routed through the dialer's dedicated Host override, and `Result.RequestHeaders` reflects what was actually sent.
 - (lib) A read timeout firing during the closing handshake no longer tears the connection down mid-handshake, which the transport masked as a clean close and could fabricate a close echo that never arrived; once a close begins, teardown is bounded by the close grace instead of the read timeout.
 
 ## [3.2.0] - 2026-07-14

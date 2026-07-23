@@ -563,6 +563,10 @@ func (ws *WSStat) DialContext(
 	for name, values := range customHeaders {
 		headers[name] = append([]string(nil), values...)
 	}
+	// net/http drops a Host key from the header map when writing the request; the override
+	// must travel via DialOptions.Host to reach the wire.
+	hostOverride := headers.Get("Host")
+	headers.Del("Host")
 	compression := websocket.CompressionDisabled
 	if ws.compress {
 		compression = websocket.CompressionContextTakeover
@@ -571,6 +575,7 @@ func (ws *WSStat) DialContext(
 	conn, resp, err := websocket.Dial(ws.ctx, targetURL.String(), &websocket.DialOptions{
 		HTTPClient:      ws.httpClient,
 		HTTPHeader:      headers,
+		Host:            hostOverride,
 		Subprotocols:    ws.subprotocols,
 		CompressionMode: compression,
 	})
@@ -597,6 +602,9 @@ func (ws *WSStat) DialContext(
 	go ws.writePump()
 
 	// Capture request and response headers
+	if hostOverride != "" {
+		headers.Set("Host", hostOverride)
+	}
 	ws.result.RequestHeaders = applyDefaultHeaders(headers)
 	ws.result.ResponseHeaders = resp.Header
 

@@ -653,6 +653,39 @@ func TestOperationsBeforeDial(t *testing.T) {
 	require.ErrorIs(t, err, ErrConnectionNotEstablished)
 }
 
+// TestHostHeaderOverride verifies that a Host header supplied via dial headers reaches the
+// wire. net/http drops a Host key from the header map, so wsstat must route it through
+// DialOptions.Host; the recorded RequestHeaders must reflect the value actually sent.
+func TestHostHeaderOverride(t *testing.T) {
+	const override = "override.example.com"
+	gotHost := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost <- r.Host
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.CloseNow()
+	}))
+	defer server.Close()
+
+	wsURL, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	require.NoError(t, ws.DialContext(context.Background(), wsURL,
+		http.Header{"Host": {override}}))
+	defer ws.Close()
+
+	select {
+	case host := <-gotHost:
+		assert.Equal(t, override, host, "server should observe the overridden Host header")
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not observe the handshake")
+	}
+	assert.Equal(t, override, ws.ExtractResult().RequestHeaders.Get("Host"))
+}
+
 // TestCloseHandshakeStatus verifies that Close performs the RFC 6455 two-way closing
 // handshake: the server must observe a clean StatusNormalClosure (1000), not an abrupt
 // 1006. Regression test for the ungraceful-close defect fixed by the coder migration.
