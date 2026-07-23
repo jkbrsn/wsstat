@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-07-23
+
 ### Added
 
 - **`check` subcommand.** `wsstat check <url>` runs a small set of observational RFC 6455 conformance checks (handshake correctness, subprotocol/extension/version negotiation, ping/pong, fragmentation tolerance, and close semantics) over at most 5 connections plus one plain HTTP request, reporting pass/warn/fail/skip per check in the text or JSON output contract. Exit 3 signals a failed check (warnings exit 0), so it works as a CI conformance gate; an unreachable endpoint or an interrupted run is a runtime error (exit 1), never a failed check or a pass; `-o json` emits one `check_report` record. See the README's "Check Mode" section and `wsstat check -h`.
@@ -167,7 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/jkbrsn/wsstat/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/jkbrsn/wsstat/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/jkbrsn/wsstat/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/jkbrsn/wsstat/compare/v3.0.1...v3.1.0
