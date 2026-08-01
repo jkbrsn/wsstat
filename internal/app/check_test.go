@@ -399,6 +399,27 @@ func TestRunCheckVersionBranches(t *testing.T) {
 	})
 }
 
+// TestProbeVersionSendsHostOverride asserts a user-supplied Host header reaches the
+// version-reject probe's request line, not just the listener's own address. net/http excludes
+// "Host" from Request.Header when writing a request (reqWriteExcludeHeader), so probeVersion
+// must lift it onto req.Host itself; otherwise the probe silently addresses a different virtual
+// host than every WebSocket check in the run (which lift Host via DialOptions.Host during dial).
+func TestProbeVersionSendsHostOverride(t *testing.T) {
+	var gotHost string
+	target := newCheckServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusUpgradeRequired)
+	})
+
+	header := http.Header{"Host": {"vhost.example"}}
+	status, _, err := newCheckClient().probeVersion(context.Background(), target, header)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusUpgradeRequired, status)
+	assert.Equal(t, "vhost.example", gotHost)
+	assert.NotEqual(t, target.Host, gotHost)
+}
+
 // readWSFrame reads and discards one WebSocket frame from a hijacked connection, returning its
 // opcode. It handles the masked, small frames the check client sends.
 func readWSFrame(conn net.Conn) (byte, error) {

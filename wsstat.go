@@ -346,9 +346,7 @@ func (ws *WSStat) readPump() {
 
 		read, deadlineHit := ws.readFrame(conn)
 		if read.err != nil {
-			if ws.handleReadError(read, deadlineHit) {
-				continue
-			}
+			ws.handleReadError(read, deadlineHit)
 			return
 		}
 
@@ -366,13 +364,13 @@ func (ws *WSStat) readPump() {
 	}
 }
 
-// handleReadError records what a failed read reveals and delivers the error read. Reports
-// whether the pump should keep reading (a bounded read timed out under an active
-// subscription, which now owns the connection — finalizing it on a spurious read deadline
-// would tear down a healthy stream).
+// handleReadError records what a failed read reveals and delivers the error read. The pump
+// always exits afterwards: a bounded read that timed out has already lost the connection
+// (coder tears the conn down when the read context ends), so retrying would only replace the
+// timeout with the net.ErrClosed the next read is guaranteed to return.
 //
 //revive:disable-next-line:flag-parameter deadlineHit is read-outcome data, not a caller toggle
-func (ws *WSStat) handleReadError(read *wsRead, deadlineHit bool) bool {
+func (ws *WSStat) handleReadError(read *wsRead, deadlineHit bool) {
 	// Capture the peer's close status here, before the buffered error read can lose
 	// its delivery race with teardown, so ReceivedCloseStatus stays reliable.
 	ws.recordCloseStatus(read.err)
@@ -384,16 +382,12 @@ func (ws *WSStat) handleReadError(read *wsRead, deadlineHit bool) bool {
 		// can record.
 		ws.closeEchoLost.Store(true)
 	}
-	if deadlineHit && ws.hasActiveSubscriptions() {
-		return true
-	}
 	ws.dispatchIncoming(read)
 	select {
 	case ws.readChan <- read:
 	case <-ws.ctx.Done():
 		ws.log.Debug().Msg("Context done, dropping error read")
 	}
-	return false
 }
 
 // deliverRead routes a successfully-read frame: subscription dispatch first; in discard mode
@@ -457,7 +451,11 @@ func (ws *WSStat) recordCloseEcho(sent websocket.StatusCode, err error) {
 // when the read context ends, and once Close has begun, the closing handshake owns the
 // connection — a bound firing then would tear the conn down mid-handshake and coder's Close
 // would mask the resulting net.ErrClosed as nil, fabricating a close echo that never arrived.
-// The timer stands down once ws.closed is set, leaving closeGrace as the close-phase bound.
+// The timer re-checks both conditions when it fires rather than trusting the snapshot taken at
+// read entry: the read pump reaches its first read before the dialer's caller can Subscribe, so
+// a bound armed then would otherwise kill the connection out from under a subscription that
+// registered while the read was already blocked. It stands down once ws.closed is set, leaving
+// closeGrace as the close-phase bound.
 func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
 	readCtx := ws.ctx
 	var timedOut atomic.Bool
@@ -466,7 +464,7 @@ func (ws *WSStat) readFrame(conn *websocket.Conn) (*wsRead, bool) {
 		readCtx, cancel = context.WithCancel(ws.ctx)
 		defer cancel()
 		timer := time.AfterFunc(ws.timeout, func() {
-			if ws.closed.Load() {
+			if ws.closed.Load() || ws.hasActiveSubscriptions() {
 				return
 			}
 			timedOut.Store(true)
@@ -760,19 +758,23 @@ func (ws *WSStat) PingPongContext(ctx context.Context) error {
 		return ErrConnectionNotEstablished
 	}
 
-	ws.timings.mu.Lock()
-	ws.timings.messageWrites = append(ws.timings.messageWrites, time.Now())
-	ws.timings.mu.Unlock()
-
 	pingCtx, cancel := context.WithTimeout(ctx, ws.timeout)
 	defer cancel()
 	stop := context.AfterFunc(ws.ctx, cancel)
 	defer stop()
+
+	// Record both ends only once the round-trip completed. A ping whose pong never arrives
+	// records no timing at all, keeping the write/read ledgers pairable — an unbalanced
+	// ledger makes calculateResultLocked zero MessageRTT and MessageCount for the rest of
+	// the connection's life. Popping the write on error is not an option: PingPong is not
+	// serialized against WriteMessage, so it could remove another goroutine's entry.
+	start := time.Now()
 	if err := conn.Ping(pingCtx); err != nil {
 		return err
 	}
 
 	ws.timings.mu.Lock()
+	ws.timings.messageWrites = append(ws.timings.messageWrites, start)
 	ws.timings.messageReads = append(ws.timings.messageReads, time.Now())
 	ws.timings.mu.Unlock()
 	return nil
@@ -1108,8 +1110,14 @@ func newHTTPClient(
 					tlsConfig.ServerName = target.host
 				}
 
+				// Bound the handshake explicitly: net/http detaches the dial context
+				// (context.WithoutCancel) and abandons the dial goroutine when the request
+				// deadline passes, so a peer that completes the TCP connect but never speaks
+				// TLS would otherwise park this goroutine and its socket forever.
 				tlsConn := tls.Client(netConn, tlsConfig)
-				if err := tlsConn.Handshake(); err != nil {
+				hsCtx, hsCancel := context.WithTimeout(ctx, timeout)
+				defer hsCancel()
+				if err := tlsConn.HandshakeContext(hsCtx); err != nil {
 					return nil, errors.Join(err, tlsConn.Close())
 				}
 

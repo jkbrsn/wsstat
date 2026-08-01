@@ -3,10 +3,15 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jkbrsn/wsstat/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -281,6 +286,96 @@ func TestStreamSubscriptionRawIsByteClean(t *testing.T) {
 	})
 
 	assert.Equal(t, "event-1event-2", output)
+}
+
+// newBurstCloseServer starts a WebSocket server that reads the client's initial subscribe
+// payload, writes every frame in frames back-to-back with no pacing, then closes normally. It
+// drives the race between the core closing the subscription's update buffer and closing Done.
+func newBurstCloseServer(t *testing.T, frames []string) *url.URL {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		conn.SetReadLimit(-1)
+		ctx := r.Context()
+
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		for _, f := range frames {
+			if err := conn.Write(ctx, websocket.MessageText, []byte(f)); err != nil {
+				return
+			}
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	t.Cleanup(server.Close)
+
+	u, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+	return u
+}
+
+// TestStreamSubscriptionDrainsBufferOnServerClose asserts that every frame the server sent is
+// emitted, not just whichever ones the loop's select happened to pick before observing Done. The
+// core closes the subscription's update buffer before closing Done, so once the server has sent
+// its burst and closed, both channels are simultaneously ready with every frame still sitting in
+// the buffer; a select between ready cases is uniform-random (Go language spec), so a loop that
+// returns on Done without draining loses whatever the random pick skipped.
+//
+// The test forces this exact state deterministically instead of racing real scheduling: it opens
+// the subscription and waits for the server to finish and finalize (Done closed, every frame
+// already counted into the buffer) *before* ever starting the consumer loop. That guarantees
+// runSubscriptionLoop's very first select sees Done and Updates both ready with all frameCount
+// frames queued, so a buggy "return on Done" loop has roughly a 1-in-2^frameCount chance of
+// accidentally draining everything -- effectively a guaranteed failure, not a flaky one -- while
+// the fixed drain-to-exhaustion path always emits every frame regardless of which case the
+// select happens to pick.
+func TestStreamSubscriptionDrainsBufferOnServerClose(t *testing.T) {
+	// Not t.Parallel(): captureStdoutFrom swaps the package-level os.Stdout, which races
+	// against any other parallel test that also captures stdout (see the sibling
+	// non-parallel stdout-capturing tests in this file for the same convention).
+	const frameCount = 20
+	frames := make([]string, frameCount)
+	for i := range frames {
+		frames[i] = fmt.Sprintf("frame-%02d", i)
+	}
+	target := newBurstCloseServer(t, frames)
+
+	c := &Client{
+		mode:         ModeStream,
+		output:       OutputRaw,
+		textMessages: []string{"start"},
+		buffer:       64,
+	}
+	require.NoError(t, c.Validate())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsClient, subscription, err := c.openSubscription(ctx, target)
+	require.NoError(t, err)
+	defer wsClient.Close()
+
+	select {
+	case <-subscription.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription did not finalize before timeout")
+	}
+	require.EqualValues(t, frameCount, subscription.MessageCount(),
+		"every frame must have been delivered into the buffer before the consumer loop starts")
+
+	output := captureStdoutFrom(t, func() error {
+		return c.runSubscriptionLoop(ctx, wsClient, subscription, target)
+	})
+
+	// Raw output is verbatim payload bytes with no delimiters (see
+	// TestStreamSubscriptionRawIsByteClean), so an exact match against the concatenated frames
+	// catches any drop, duplication, or reordering, not just a partial loss.
+	assert.Equal(t, strings.Join(frames, ""), output)
 }
 
 func TestPrintSubscriptionMessageCompact(t *testing.T) {

@@ -500,6 +500,14 @@ func (c *Client) probeVersion(
 			req.Header.Add(name, v)
 		}
 	}
+	// net/http never writes a Host entry from Header (reqWriteExcludeHeader), so lift it onto
+	// the request the way the dial path does. Without this the probe addresses the default
+	// vhost while every WS check addresses the override, and version-reject is scored against
+	// a different server than the rest of the run.
+	if h := req.Header.Get("Host"); h != "" {
+		req.Host = h
+		req.Header.Del("Host")
+	}
 	key, err := probeKey()
 	if err != nil {
 		return 0, nil, err

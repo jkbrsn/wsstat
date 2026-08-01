@@ -428,6 +428,127 @@ func TestSubscriptionSurvivesIdleBeyondTimeout(t *testing.T) {
 	<-sub.Done()
 }
 
+func TestSubscriptionSurvivesLateFirstFrame(t *testing.T) {
+	// Regression: the read pump reaches its first bounded read before the dialer's caller can
+	// Subscribe, so the bound used to be armed from a stale "no subscription active" snapshot
+	// and fire regardless. Its cancel tears down the whole coder connection, so a subscription
+	// registered in that window died ~timeout after dial with "use of closed network
+	// connection" — on any feed that does not speak within the read timeout.
+	gate := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		// Consume the subscribe payload explicitly (CloseRead kills the connection on a data
+		// frame), then drain so the client's close frame is answered. Stay silent on the write
+		// side until the gate opens.
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+		ctx := conn.CloseRead(r.Context())
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return
+		}
+		_ = conn.Write(ctx, websocket.MessageText, []byte("late"))
+		<-ctx.Done()
+	}))
+	defer server.Close()
+
+	target, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New(WithTimeout(150 * time.Millisecond))
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+
+	// Let the read pump enter its bounded read first: this is the window the stale snapshot
+	// used to be taken in, and subscribing after it is what the fix has to survive.
+	time.Sleep(20 * time.Millisecond)
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("subscribe"),
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-sub.Done():
+		t.Fatal("subscription torn down by the read bound armed before it registered")
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	close(gate)
+	select {
+	case msg := <-sub.Updates():
+		require.NoError(t, msg.Err)
+		assert.Equal(t, "late", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the late first frame")
+	}
+
+	sub.Cancel()
+	<-sub.Done()
+}
+
+func TestSubscriptionCountsOnlyDataFrames(t *testing.T) {
+	// Regression: the atomic message/byte counters were bumped for every envelope, including
+	// the error envelope a subscription receives when the connection drops. MessageCount then
+	// over-reported by one and disagreed with MeanInterArrival, which divides by the locked
+	// (data-frames-only) count.
+	const frames = 3
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		// CloseRead kills the connection on a data frame, so take the subscribe payload first.
+		if _, _, err := conn.Read(r.Context()); err != nil {
+			return
+		}
+		ctx := conn.CloseRead(r.Context())
+		for i := range frames {
+			payload := []byte(fmt.Sprintf("f%d", i))
+			if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+				return
+			}
+		}
+		// Abrupt teardown: the subscription gets an error envelope, which must not be counted.
+		_ = conn.CloseNow()
+	}))
+	defer server.Close()
+
+	target, err := url.Parse("ws" + strings.TrimPrefix(server.URL, "http"))
+	require.NoError(t, err)
+
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), target, http.Header{}))
+
+	sub, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("subscribe"),
+	})
+	require.NoError(t, err)
+
+	var data, errs int
+	for msg := range sub.Updates() {
+		if msg.Err != nil {
+			errs++
+			continue
+		}
+		data++
+	}
+	<-sub.Done()
+
+	require.Positive(t, errs, "expected an error envelope from the abrupt close")
+	assert.EqualValues(t, data, sub.MessageCount(),
+		"MessageCount must count data frames only, not error envelopes")
+}
+
 func TestSubscriptionDecodeErrorDoesNotLeak(t *testing.T) {
 	// A decode error on a frame a subscription never matched must not be delivered to it;
 	// only the claiming subscription sees a frame (and its decode error).

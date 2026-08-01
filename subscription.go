@@ -330,11 +330,16 @@ func (ws *WSStat) deliverSubscriptionMessage(
 	}
 	state.mu.Unlock()
 
-	if state.messages != nil {
-		atomic.AddUint64(state.messages, 1)
-	}
-	if state.bytes != nil {
-		atomic.AddUint64(state.bytes, uint64(message.Size))
+	// Count data frames only, matching the locked stats above: an error envelope carries no
+	// payload, and counting it would both over-report MessageCount and make it disagree with
+	// MeanInterArrival, which divides by the locked (un-inflated) count.
+	if message.Err == nil {
+		if state.messages != nil {
+			atomic.AddUint64(state.messages, 1)
+		}
+		if state.bytes != nil {
+			atomic.AddUint64(state.bytes, uint64(message.Size))
+		}
 	}
 
 	ws.trackSubscriptionEvent(now)

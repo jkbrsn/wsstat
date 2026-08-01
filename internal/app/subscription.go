@@ -78,19 +78,31 @@ func (c *Client) runSubscriptionLoop(
 	messageIndex := 0
 	limit := c.count
 
+	// finish drains whatever is still buffered behind the subscription's close, then reports
+	// the summary. The core closes the update buffer before closing Done, so Done and Updates
+	// go ready together and this loop can observe Done with frames still queued; without the
+	// drain those frames are lost from both stdout and the --file capture.
+	finish := func() error {
+		var err error
+		messageIndex, err = c.drainSubscription(subscription, messageIndex, limit)
+		c.handleSubscriptionTick(wsClient, target)
+		return err
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			subscription.Cancel()
 			<-subscription.Done()
-			c.handleSubscriptionTick(wsClient, target)
-			return nil
+			return finish()
 		case <-subscription.Done():
-			c.handleSubscriptionTick(wsClient, target)
-			return nil
+			return finish()
 		case msg, ok := <-subscription.Updates():
 			if !ok {
-				continue
+				// Updates is closed but Done has not been observed yet: the subscription is
+				// mid-finalize. Wait it out instead of spinning on the closed channel.
+				<-subscription.Done()
+				return finish()
 			}
 			if msg.Err != nil {
 				fmt.Fprintf(os.Stderr, "subscription error: %v\n", msg.Err)
@@ -103,8 +115,7 @@ func (c *Client) runSubscriptionLoop(
 			if limit > 0 && messageIndex >= limit {
 				subscription.Cancel()
 				<-subscription.Done()
-				c.handleSubscriptionTick(wsClient, target)
-				return nil
+				return finish()
 			}
 		case <-sender.c():
 			sender.send(wsClient)
@@ -115,6 +126,30 @@ func (c *Client) runSubscriptionLoop(
 			}
 		}
 	}
+}
+
+// drainSubscription emits the frames still sitting in the update buffer after the subscription
+// finalized, and returns the running message index. Surplus frames past --count are consumed
+// but not emitted. The range terminates because the core closes the buffer before closing Done,
+// so this must only be called once Done has been observed.
+func (c *Client) drainSubscription(
+	subscription *wsstat.Subscription, from, limit int,
+) (int, error) {
+	index := from
+	for msg := range subscription.Updates() {
+		if msg.Err != nil {
+			fmt.Fprintf(os.Stderr, "subscription error: %v\n", msg.Err)
+			continue
+		}
+		if limit > 0 && index >= limit {
+			continue
+		}
+		index++
+		if err := c.emitMessage(index, msg); err != nil {
+			return index, err
+		}
+	}
+	return index, nil
 }
 
 // pendingSends returns the text messages to send after the initial subscribe payload.

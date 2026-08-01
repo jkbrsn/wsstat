@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- (lib) A subscription registered right after `DialContext` is no longer torn down by the read pump's per-read timeout. The pump reaches its first read before the caller can `Subscribe`, and the bound was armed from that stale snapshot, so `wsstat stream` against any feed that stayed quiet past `--timeout` died with "use of closed network connection". The bound now re-checks for an active subscription when it fires.
+- (lib) Frames already received when the peer closes are no longer dropped. The update buffer is closed before the done channel, so the stream loop's select could take the done case with frames still queued; they are now drained before the run ends, for both stdout and the `--file` capture.
+- (lib) The TLS handshake is now bounded by the dial timeout. A peer that completed the TCP connect but never spoke TLS parked the handshake goroutine and its socket indefinitely, leaking one of each per stalled dial for long-running library consumers.
+- (lib) `SubscriptionStats.MessageCount`/`ByteCount` and `Result.MessageCount` no longer count the error envelope delivered when a subscription ends, which over-reported by one and disagreed with `MeanInterArrival`.
+- (lib) A ping whose pong never arrives no longer unbalances the write/read ledgers. One failed `PingPong` used to zero `MessageRTT` and `MessageCount` for the rest of the connection's life; both ends are now recorded only on a completed round-trip.
+- `--file` capture failures now reach the exit code. A flush or close error (ENOSPC, quota) was discarded, so a silently truncated capture still exited 0.
+- `check` now sends a user-supplied `Host` header on the version-reject probe. net/http drops the `Host` key from the header map, so the probe addressed the default virtual host while every WebSocket check addressed the override, mis-scoring `negotiation.version-reject`.
+
 ## [3.3.0] - 2026-07-23
 
 ### Added

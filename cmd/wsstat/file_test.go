@@ -47,7 +47,7 @@ func TestOpenResponseSink(t *testing.T) {
 		closeSink, err := openResponseSink(client, app.OutputText)
 		require.NoError(t, err)
 		require.NotNil(t, closeSink)
-		closeSink()
+		require.NoError(t, closeSink())
 	})
 
 	t.Run("creates a new file", func(t *testing.T) {
@@ -55,7 +55,7 @@ func TestOpenResponseSink(t *testing.T) {
 		client := app.NewClient(app.WithResponseFile(path))
 		closeSink, err := openResponseSink(client, app.OutputText)
 		require.NoError(t, err)
-		defer closeSink()
+		defer func() { assert.NoError(t, closeSink()) }()
 		assert.FileExists(t, path)
 	})
 
@@ -92,7 +92,7 @@ func TestResponseSinkLifecycle(t *testing.T) {
 		require.NoError(t, client.RecordResponse(&app.MeasurementResult{
 			Response: map[string]any{"n": 2},
 		}))
-		closeSink()
+		require.NoError(t, closeSink())
 
 		data, readErr := os.ReadFile(path)
 		require.NoError(t, readErr)
@@ -107,7 +107,7 @@ func TestResponseSinkLifecycle(t *testing.T) {
 		client := app.NewClient(app.WithResponseFile(path))
 		closeSink, err := openResponseSink(client, app.OutputText)
 		require.NoError(t, err)
-		closeSink()
+		require.NoError(t, closeSink())
 
 		assert.NoFileExists(t, path)
 	})

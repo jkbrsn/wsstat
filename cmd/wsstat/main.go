@@ -566,12 +566,14 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // client, returning a closer to defer. The file is opened O_EXCL so an existing capture is
 // never clobbered, and writes are buffered for throughput on high-frequency streams. The
 // closer flushes and closes the file, then removes it if nothing was recorded so a failed
-// or payload-less run leaves no empty file to block the next attempt. Returns a no-op closer
-// when --file is unset.
-func openResponseSink(client *app.Client, out app.Output) (func(), error) {
+// or payload-less run leaves no empty file to block the next attempt. It reports the flush
+// and close errors so a capture truncated by ENOSPC or a quota cannot exit 0; a failed flush
+// leaves the partial file in place rather than removing evidence of the failed run. Returns a
+// no-op closer when --file is unset.
+func openResponseSink(client *app.Client, out app.Output) (func() error, error) {
 	path := client.ResponseFilePath()
 	if path == "" {
-		return func() {}, nil
+		return func() error { return nil }, nil
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, responseFilePerm)
 	if err != nil {
@@ -579,16 +581,26 @@ func openResponseSink(client *app.Client, out app.Output) (func(), error) {
 	}
 	cw := &countingWriter{w: bufio.NewWriter(f)}
 	client.SetResponseSink(cw)
-	return func() {
-		_ = cw.w.Flush()
-		_ = f.Close()
-		if cw.n == 0 {
+	return func() error {
+		flushErr := cw.w.Flush()
+		closeErr := f.Close()
+		if flushErr == nil && cw.n == 0 {
 			_ = os.Remove(path)
 		}
+		return errors.Join(flushErr, closeErr)
 	}, nil
 }
 
-func runMeasure(args []string) error {
+// deferSinkClose installs closeSink so a sink failure surfaces as the command's error when the
+// run itself succeeded. A run error wins: it is the more informative of the two.
+func deferSinkClose(err *error, closeSink func() error, out app.Output) {
+	cerr := closeSink()
+	if cerr != nil && *err == nil {
+		*err = runtimeErr(out, fmt.Errorf("closing response file: %w", cerr))
+	}
+}
+
+func runMeasure(args []string) (err error) {
 	client, target, err := buildMeasure(args)
 	if err != nil {
 		return usageErr(err)
@@ -602,7 +614,7 @@ func runMeasure(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer closeSink()
+	defer deferSinkClose(&err, closeSink, out)
 
 	result, err := client.MeasureLatency(ctx, target)
 	if err != nil {
@@ -626,7 +638,7 @@ func runMeasure(args []string) error {
 	return nil
 }
 
-func runStream(args []string) error {
+func runStream(args []string) (err error) {
 	client, target, err := buildStream(args)
 	if err != nil {
 		return usageErr(err)
@@ -640,7 +652,7 @@ func runStream(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer closeSink()
+	defer deferSinkClose(&err, closeSink, out)
 
 	if client.Once() {
 		return runtimeErr(out, client.StreamSubscriptionOnce(ctx, target))
