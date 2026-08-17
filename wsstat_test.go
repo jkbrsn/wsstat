@@ -650,7 +650,7 @@ func TestSubscriptionCountsOnlyDataFrames(t *testing.T) {
 		}
 		ctx := conn.CloseRead(r.Context())
 		for i := range frames {
-			payload := []byte(fmt.Sprintf("f%d", i))
+			payload := fmt.Appendf(nil, "f%d", i)
 			if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
 				return
 			}
