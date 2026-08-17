@@ -7,27 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-08-17
+
 ### Added
 
-- **Proxy reporting.** A run routed through `HTTP_PROXY`/`HTTPS_PROXY` now says so instead of presenting the proxy hop as the target: text output gains a `Proxy:` line and a warning, and `-o json` gains `target.proxy` plus the matching `warnings` entry. The new `Result.Proxy` field and the exported `ProxyTimingCaveat` string carry the same information to library consumers. Through an `http://` proxy the target TLS handshake happens inside net/http and is not measured (`tls_handshake` absent); through an `https://` proxy the TLS phase and certificates describe the *proxy* connection, not the target. Additive optional JSON field, so `schema_version` is unchanged per ADR 0003. See the README's "Proxies" section.
-- **Proxy disclosure in `stream`, `ping`, and `check`,** which presented a proxied run as a direct one. The proxy warning now reaches the stream summary at default verbosity (previously `-v` only) and the `PING` header, and `subscription_summary` gains `warnings`, `ping_summary` gains `proxy`, and `check_report` gains both — with check's own caveat, since a `CONNECT`-tunneling proxy leaves the verdicts intact but a terminating one answers the probes itself. Additive optional JSON fields, so `schema_version` is unchanged per ADR 0003.
+- **Proxy reporting.** A run routed through `HTTP_PROXY`/`HTTPS_PROXY` now says so instead of presenting the proxy hop as the target. Text output gains a `Proxy:` line and a warning; `-o json` gains `target.proxy` plus `warnings` on `timing_summary` and `subscription_summary`, and `proxy` on `ping_summary` and `check_report`. `Result.Proxy` and the exported `ProxyTimingCaveat` carry the same to library consumers. Additive optional JSON fields, so `schema_version` is unchanged per ADR 0003. See the README's "Proxies" section for what the timings mean through an `http://` vs `https://` proxy.
 
 ### Changed
 
-- Upgraded to Go 1.26.6. 1.26.5 carried four stdlib vulnerabilities reachable from this code (`net/url` GO-2026-6218, `crypto/tls` GO-2026-6090, `encoding/asn1` GO-2026-5972, `net/http` GO-2026-5026), all fixed in 1.26.6, so `govulncheck` was failing its CI gate.
-- (lib) `Subscribe` now returns the new `ErrSubscriptionConflict` sentinel when a subscription is already active on the connection, instead of silently breaking delivery. A subscription with no way to attribute frames claims all of them, so a second one left both silent and backed unclaimed frames up until the read pump blocked for good. Cancel the first subscription (and wait for its `Done`) before registering another, or dial a second connection. Exporting the matcher, which would make several subscriptions per connection genuinely work, is tracked for v4 in `docs/TODO.md`.
+- Upgraded to Go 1.26.6.
+- (lib) `Subscribe` now returns the new `ErrSubscriptionConflict` sentinel when a subscription is already active on the connection, instead of silently breaking delivery. A subscription with no way to attribute frames claims all of them, so a second one left both silent and backed unclaimed frames up until the read pump blocked for good. Cancel the first subscription (and wait for its `Done`) before registering another, or dial a second connection.
 
 ### Fixed
 
-- (lib) A subscription registered right after `DialContext` is no longer torn down by the read pump's per-read timeout. The pump reaches its first read before the caller can `Subscribe`, and the bound was armed from that stale snapshot, so `wsstat stream` against any feed that stayed quiet past `--timeout` died with "use of closed network connection". The bound now re-checks for an active subscription when it fires.
-- (lib) Frames already received when the peer closes are no longer dropped. The update buffer is closed before the done channel, so the stream loop's select could take the done case with frames still queued; they are now drained before the run ends, for both stdout and the `--file` capture.
-- (lib) The TLS handshake is now bounded by the dial timeout. A peer that completed the TCP connect but never spoke TLS parked the handshake goroutine and its socket indefinitely, leaking one of each per stalled dial for long-running library consumers.
-- (lib) `SubscriptionStats.MessageCount`/`ByteCount` and `Result.MessageCount` no longer count the error envelope delivered when a subscription ends, which over-reported by one and disagreed with `MeanInterArrival`.
-- (lib) A ping whose pong never arrives no longer unbalances the write/read ledgers. One failed `PingPong` used to zero `MessageRTT` and `MessageCount` for the rest of the connection's life; both ends are now recorded only on a completed round-trip.
+- (lib) A subscription registered right after `DialContext` is no longer torn down by the read pump's per-read timeout, which killed `wsstat stream` against any feed that stayed quiet past `--timeout`.
+- (lib) Frames already received when the peer closes are no longer dropped before the stream loop can print or capture them.
+- (lib) The TLS handshake is now bounded by the dial timeout; a peer that connected but never spoke TLS leaked a goroutine and a socket per stalled dial.
+- (lib) `SubscriptionStats.MessageCount`/`ByteCount` and `Result.MessageCount` no longer count the error envelope delivered when a subscription ends, which over-reported by one.
+- (lib) A ping whose pong never arrives no longer unbalances the write/read ledgers; one failed `PingPong` used to zero `MessageRTT` and `MessageCount` for the rest of the connection's life.
 - `--file` capture failures now reach the exit code. A flush or close error (ENOSPC, quota) was discarded, so a silently truncated capture still exited 0.
-- `-k/--insecure` and `WithTLSConfig` now apply when a proxy is in use. The transport left `TLSClientConfig` unset, and net/http performs the target handshake itself on the proxied path, so a custom TLS config was ignored entirely — which failed the dial outright against any certificate not chaining to the system roots.
-- (ci) The release workflow's VERSION check now enforces the bare `X.Y.Z` its own comment describes. A suffixed file (`3.4.0-rc.1`) passed validation and flowed into the tag computation as the base version, minting a prerelease string as a final tag. Alongside it: `govulncheck` is pinned to `v1.7.0` in both workflows instead of resolving `@latest` inside the job that holds `contents: write`, and `scripts/check-go-version.sh` now runs on PRs, so Go-version drift fails the PR that introduces it rather than the next release.
-- `check` now sends a user-supplied `Host` header on the version-reject probe. net/http drops the `Host` key from the header map, so the probe addressed the default virtual host while every WebSocket check addressed the override, mis-scoring `negotiation.version-reject`.
+- `-k/--insecure` and `WithTLSConfig` now apply when a proxy is in use; net/http performs the target handshake itself on that path, so a custom TLS config was ignored entirely and the dial failed against any certificate not chaining to the system roots.
+- `check` now sends a user-supplied `Host` header on the version-reject probe, which otherwise addressed the default virtual host and mis-scored `negotiation.version-reject`.
 
 ## [3.3.0] - 2026-07-23
 
@@ -191,7 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/jkbrsn/wsstat/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/jkbrsn/wsstat/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/jkbrsn/wsstat/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/jkbrsn/wsstat/compare/v3.1.0...v3.1.1
