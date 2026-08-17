@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded to Go 1.26.6. 1.26.5 carried four stdlib vulnerabilities reachable from this code (`net/url` GO-2026-6218, `crypto/tls` GO-2026-6090, `encoding/asn1` GO-2026-5972, `net/http` GO-2026-5026), all fixed in 1.26.6, so `govulncheck` was failing its CI gate.
 - (lib) `Subscribe` now returns the new `ErrSubscriptionConflict` sentinel when a subscription is already active on the connection, instead of silently breaking delivery. A subscription with no way to attribute frames claims all of them, so a second one left both silent and backed unclaimed frames up until the read pump blocked for good. Cancel the first subscription (and wait for its `Done`) before registering another, or dial a second connection. Exporting the matcher, which would make several subscriptions per connection genuinely work, is tracked for v4 in `docs/TODO.md`.
 
 ### Fixed
