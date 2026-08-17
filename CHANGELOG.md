@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- (lib) `Subscribe` now returns the new `ErrSubscriptionConflict` sentinel when a subscription is already active on the connection, instead of silently breaking delivery. A subscription with no way to attribute frames claims all of them, so a second one left both silent and backed unclaimed frames up until the read pump blocked for good. Cancel the first subscription (and wait for its `Done`) before registering another, or dial a second connection. Exporting the matcher, which would make several subscriptions per connection genuinely work, is tracked for v4 in `docs/TODO.md`.
+
 ### Fixed
 
 - (lib) A subscription registered right after `DialContext` is no longer torn down by the read pump's per-read timeout. The pump reaches its first read before the caller can `Subscribe`, and the bound was armed from that stale snapshot, so `wsstat stream` against any feed that stayed quiet past `--timeout` died with "use of closed network connection". The bound now re-checks for an active subscription when it fires.

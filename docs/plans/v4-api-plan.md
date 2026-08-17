@@ -84,9 +84,10 @@ type SubscriptionOptions struct {
 Steps:
 
 1. Rename the unexported types/fields; `Subscribe` (subscription.go:180-181) and `dispatchIncoming` need only the field renames.
-2. Guard the silent-misroute hole: in `Subscribe`, if another matcherless subscription is already active and the new one is also matcherless, return a new sentinel `ErrSubscriptionConflict` ("a second subscription requires a Matcher"). The `deliverAll := len(states) == 1` fallback (subscription.go:374) stays for the single-subscription case.
-3. Fix the doc comment advertising "internal matching heuristics (such as explicit IDs)" — describe what the code does.
+2. ~~Guard the silent-misroute hole~~ — **done in v3**: `registerSubscription` returns `ErrSubscriptionConflict` and the check runs under the same write lock as the insert. Note the landed guard is stricter than this step originally specified: it also rejects a *matcherless* new subscription alongside a *matched* existing one, because `deliverAll := len(states) == 1` would leave the new one silent too. When `Matcher` becomes settable, that arm is what has to relax — a matcherless subscription may then coexist with matched ones only if the intended semantics for unmatched frames are settled first (see step 5).
+3. ~~Fix the doc comment advertising "internal matching heuristics (such as explicit IDs)"~~ — **done in v3**.
 4. Same-package tests that set `decoder:`/`matcher:` literals update mechanically.
+5. Decide what an unmatched frame means once several subscriptions are possible: fall through to `readChan` (today's behavior, which blocks the pump after `bufferSize` unclaimed frames) or drop. Settle this before relaxing the guard in step 2.
 
 ### 3) Coherent error surface
 

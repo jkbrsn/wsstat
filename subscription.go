@@ -47,8 +47,10 @@ type SubscriptionOptions struct {
 	// to subscription consumers. If nil, frames are passed through as raw bytes.
 	decoder subscriptionDecoder
 
-	// matcher determines whether a given frame belongs to this subscription. When nil,
-	// the dispatcher falls back to internal matching heuristics (such as explicit IDs).
+	// matcher determines whether a given frame belongs to this subscription. When nil, the
+	// subscription claims every inbound frame, which the dispatcher can only honor while it
+	// is the sole subscription on the connection — see Subscribe.
+	// TODO(subscription-matcher): export this to make multi-subscription connections reachable.
 	matcher subscriptionMatcher
 
 	// Buffer controls the per-subscription delivery queue length. Zero implies the default.
@@ -154,6 +156,12 @@ func (s *Subscription) ByteCount() uint64 {
 
 // Subscribe registers a long-lived listener using the supplied options and context.
 // The returned Subscription can be used to consume streamed frames until cancellation.
+//
+// A connection carries one subscription at a time: with no way to attribute an inbound frame
+// to one of several listeners, a subscription claims every frame it sees. Subscribing again
+// while one is active returns ErrSubscriptionConflict rather than leaving both silent. Cancel
+// the first subscription (and wait for its Done channel) before registering another, or dial a
+// second connection to consume two streams at once.
 func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Subscription, error) {
 	if ws.conn.Load() == nil {
 		return nil, errors.New("websocket connection is not established")
@@ -191,6 +199,14 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 		state.id = ws.newSubscriptionID()
 	}
 
+	// Register before starting any goroutine, so a rejected registration leaves nothing
+	// running behind it.
+	sub, err := ws.registerSubscription(state)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
 	// Ensure caller-provided context cancels the subscription if terminated early.
 	if ctx != nil {
 		go func(c context.Context, cancel func()) {
@@ -202,7 +218,6 @@ func (ws *WSStat) Subscribe(ctx context.Context, opts SubscriptionOptions) (*Sub
 		}(ctx, cancel)
 	}
 
-	sub := ws.registerSubscription(state)
 	go ws.watchSubscription(state)
 
 	// Send the initial subscription request if a payload is provided. The write is
@@ -460,10 +475,27 @@ func (ws *WSStat) watchSubscription(state *subscriptionState) {
 	ws.finalizeSubscription(state, err)
 }
 
-// registerSubscription registers a subscription.
-func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
+// registerSubscription registers a subscription, or reports ErrSubscriptionConflict when the
+// combination is one the dispatcher cannot serve. A subscription with no matcher claims every
+// inbound frame, which is only well-defined while it is the sole subscription; alongside a
+// second one the dispatcher can no longer attribute frames and claims nothing for either, so
+// both go silent and unclaimed frames back up until the read pump blocks for good. Refusing the
+// registration turns that silent hang into an error at the call that caused it. The check runs
+// under the same write lock as the insert, so concurrent Subscribe calls cannot both pass it.
+func (ws *WSStat) registerSubscription(state *subscriptionState) (*Subscription, error) {
 	ws.subscriptionMu.Lock()
 	defer ws.subscriptionMu.Unlock()
+
+	if len(ws.subscriptions) > 0 {
+		if state.matcher == nil {
+			return nil, ErrSubscriptionConflict
+		}
+		for _, existing := range ws.subscriptions {
+			if existing.matcher == nil {
+				return nil, ErrSubscriptionConflict
+			}
+		}
+	}
 
 	if ws.subscriptions == nil {
 		ws.subscriptions = make(map[string]*subscriptionState)
@@ -490,7 +522,7 @@ func (ws *WSStat) registerSubscription(state *subscriptionState) *Subscription {
 		updates:  state.buffer,
 	}
 
-	return sub
+	return sub, nil
 }
 
 // finalizeSubscription finalizes a subscription upon its completion or cancellation.

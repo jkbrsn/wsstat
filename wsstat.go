@@ -72,6 +72,10 @@ var (
 	ErrConnectionNotEstablished = errors.New("wsstat: connection not established")
 	// ErrClosed is returned when an operation is attempted on a closed connection.
 	ErrClosed = errors.New("wsstat: connection closed")
+	// ErrSubscriptionConflict is returned by Subscribe when registering the subscription
+	// would leave the dispatcher unable to tell whose frame is whose. See Subscribe.
+	ErrSubscriptionConflict = errors.New(
+		"wsstat: a connection supports only one subscription")
 )
 
 // documentedDefaultHeaders lists the known headers the WebSocket library sets by default.

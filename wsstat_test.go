@@ -494,6 +494,54 @@ func TestSubscriptionSurvivesLateFirstFrame(t *testing.T) {
 	<-sub.Done()
 }
 
+func TestSubscribeRejectsSecondSubscription(t *testing.T) {
+	// A matcher-less subscription claims every frame, which only works while it is the sole
+	// subscription: a second one used to silence both (the dispatcher claims nothing for
+	// either) and back frames up until the read pump blocked for good. Registering the second
+	// must fail loudly instead, and must leave the first one working.
+	ws := New()
+	defer ws.Close()
+	require.NoError(t, ws.DialContext(context.Background(), echoServerAddrWs, http.Header{}))
+
+	first, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("first"),
+	})
+	require.NoError(t, err)
+
+	second, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("second"),
+	})
+	require.ErrorIs(t, err, ErrSubscriptionConflict)
+	assert.Nil(t, second)
+
+	// The rejection must not disturb the live subscription.
+	select {
+	case msg := <-first.Updates():
+		require.NoError(t, msg.Err)
+		assert.Equal(t, "first", string(msg.Data))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first subscription's message")
+	}
+	select {
+	case <-first.Done():
+		t.Fatal("first subscription torn down by the rejected registration")
+	default:
+	}
+
+	// Once the first is finalized the slot is free again.
+	first.Cancel()
+	<-first.Done()
+	third, err := ws.Subscribe(context.Background(), SubscriptionOptions{
+		MessageType: TextMessage,
+		Payload:     []byte("third"),
+	})
+	require.NoError(t, err)
+	third.Cancel()
+	<-third.Done()
+}
+
 func TestSubscriptionCountsOnlyDataFrames(t *testing.T) {
 	// Regression: the atomic message/byte counters were bumped for every envelope, including
 	// the error envelope a subscription receives when the connection drops. MessageCount then
