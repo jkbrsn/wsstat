@@ -260,6 +260,7 @@ func (*Client) subscriptionSummaryJSON(
 		FirstEventMs:  msPtr(result.SubscriptionFirstEvent),
 		LastEventMs:   msPtr(result.SubscriptionLastEvent),
 		TotalMessages: result.MessageCount,
+		Warnings:      resultWarnings(result),
 	}
 	if len(result.Subscriptions) > 0 {
 		ids := make([]string, 0, len(result.Subscriptions))

@@ -130,7 +130,8 @@
         "subscriptions": {
           "type": "array",
           "items": { "$ref": "#/$defs/subscriptionEntry" }
-        }
+        },
+        "warnings": { "type": "array", "items": { "type": "string" } }
       }
     },
     "subscription_message": {
@@ -169,6 +170,10 @@
         "schema_version": { "$ref": "#/$defs/schemaVersion" },
         "type": { "const": "ping_summary" },
         "url": { "type": "string" },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy the run was routed through, credentials redacted; absent when direct. When present, every RTT below includes the hop to the proxy."
+        },
         "sent": { "type": "integer", "minimum": 0 },
         "received": { "type": "integer", "minimum": 0 },
         "loss_pct": { "type": "number", "minimum": 0, "maximum": 100 },
@@ -198,6 +203,10 @@
         "schema_version": { "$ref": "#/$defs/schemaVersion" },
         "type": { "const": "check_report" },
         "url": { "type": "string" },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy the run was routed through, credentials redacted; absent when direct. Where the proxy terminates the connection instead of tunneling it, the verdicts below describe the proxy rather than the target; a corresponding warnings entry states the same caveat."
+        },
         "checks": {
           "type": "array",
           "items": { "$ref": "#/$defs/checkEntry" }

@@ -460,3 +460,154 @@ func TestProxyAnnotationInTimingOutput(t *testing.T) {
 		assert.Contains(t, warnings[1], "proxy")
 	})
 }
+
+// TestProxyAnnotationInStreamOutput asserts a proxied stream run discloses the proxy in both
+// output contracts. The subscription summary is the only report stream mode prints at default
+// verbosity, so without this the proxy is invisible unless -v is passed.
+func TestProxyAnnotationInStreamOutput(t *testing.T) {
+	target, err := url.Parse("wss://example.com/ws")
+	require.NoError(t, err)
+	result := &wsstat.Result{URL: target, Proxy: "http://proxy:8080", MessageCount: 3}
+
+	t.Run("text summary warns at default verbosity", func(t *testing.T) {
+		client := &Client{output: OutputText, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			client.printSubscriptionSummary(target, result)
+			return nil
+		})
+		assert.Contains(t, output, "warning:")
+		assert.Contains(t, output, "http://proxy:8080")
+		assert.Equal(t, 1, strings.Count(output, "warning:"))
+	})
+
+	t.Run("text summary does not repeat the warning under -v", func(t *testing.T) {
+		client := &Client{output: OutputText, colorMode: "never", verbosityLevel: 1}
+		output := captureStdoutFrom(t, func() error {
+			client.printSubscriptionSummary(target, result)
+			return nil
+		})
+		assert.Equal(t, 1, strings.Count(output, "warning:"),
+			"the timing block prints the warning itself")
+	})
+
+	t.Run("direct run is unannotated", func(t *testing.T) {
+		client := &Client{output: OutputText, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			client.printSubscriptionSummary(target, &wsstat.Result{URL: target})
+			return nil
+		})
+		assert.NotContains(t, output, "warning:")
+	})
+
+	t.Run("JSON summary carries the warning", func(t *testing.T) {
+		summary := NewClient().subscriptionSummaryJSON(target, result)
+		require.Len(t, summary.Warnings, 1)
+		assert.Contains(t, summary.Warnings[0], "http://proxy:8080")
+
+		encoded, err := json.Marshal(summary)
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Len(t, decoded["warnings"], 1)
+		decodedTarget, ok := decoded["target"].(map[string]any)
+		require.True(t, ok, "subscription summary must carry a target object")
+		assert.Equal(t, "http://proxy:8080", decodedTarget["proxy"])
+	})
+}
+
+// TestProxyAnnotationInPingOutput asserts a proxied ping run discloses the proxy. The PING
+// header is a dial breakdown of the hop to the proxy, and every RTT includes that hop.
+func TestProxyAnnotationInPingOutput(t *testing.T) {
+	target, err := url.Parse("wss://example.com/ws")
+	require.NoError(t, err)
+
+	t.Run("header warns about the proxy", func(t *testing.T) {
+		client := &Client{output: OutputText, colorMode: "never"}
+		result := &wsstat.Result{URL: target, Proxy: "http://proxy:8080"}
+		output := captureStdoutFrom(t, func() error {
+			return client.printPingHeader(target, result)
+		})
+		assert.Contains(t, output, "PING")
+		assert.Contains(t, output, "http://proxy:8080")
+		assert.Contains(t, output, wsstat.ProxyTimingCaveat)
+	})
+
+	t.Run("direct run is unannotated", func(t *testing.T) {
+		client := &Client{output: OutputText, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			return client.printPingHeader(target, &wsstat.Result{URL: target})
+		})
+		assert.NotContains(t, output, "warning:")
+	})
+
+	t.Run("JSON summary carries the proxy", func(t *testing.T) {
+		report := &PingReport{Target: target, Proxy: "http://proxy:8080", Sent: 1, Received: 1}
+		encoded, err := json.Marshal(NewClient().pingSummaryJSONFor(report))
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Equal(t, "http://proxy:8080", decoded["proxy"])
+	})
+
+	t.Run("direct JSON summary omits the proxy", func(t *testing.T) {
+		report := &PingReport{Target: target, Sent: 1, Received: 1}
+		encoded, err := json.Marshal(NewClient().pingSummaryJSONFor(report))
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.NotContains(t, decoded, "proxy")
+	})
+}
+
+// TestProxyAnnotationInCheckReport asserts a proxied check run says whose behavior it scored.
+// A terminating proxy answers the probes itself, so an unannotated pass reads as a verdict on
+// the target when it is a verdict on the proxy.
+func TestProxyAnnotationInCheckReport(t *testing.T) {
+	target, err := url.Parse("wss://example.com/ws")
+	require.NoError(t, err)
+	entries := []CheckEntry{{ID: checkUpgrade, Group: "handshake", Status: CheckPass}}
+
+	t.Run("direct run is unannotated", func(t *testing.T) {
+		report := &CheckReport{Target: target, Entries: entries}
+		assert.Empty(t, checkWarnings(report))
+
+		encoded, err := json.Marshal(buildCheckReportJSON(report))
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.NotContains(t, decoded, "proxy")
+		assert.NotContains(t, decoded, "warnings")
+	})
+
+	t.Run("proxied run carries the proxy and the caveat", func(t *testing.T) {
+		report := &CheckReport{Target: target, Proxy: "http://proxy:8080", Entries: entries}
+		warnings := checkWarnings(report)
+		require.Len(t, warnings, 1)
+		assert.Contains(t, warnings[0], "http://proxy:8080")
+		assert.Contains(t, warnings[0], checkProxyCaveat)
+
+		client := &Client{output: OutputText, colorMode: "never"}
+		output := captureStdoutFrom(t, func() error {
+			client.printCheckText(report)
+			return nil
+		})
+		assert.Contains(t, output, "http://proxy:8080")
+
+		encoded, err := json.Marshal(buildCheckReportJSON(report))
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Equal(t, "http://proxy:8080", decoded["proxy"])
+		assert.Len(t, decoded["warnings"], 1)
+	})
+
+	t.Run("quiet suppresses the caveat with the rest of the chrome", func(t *testing.T) {
+		report := &CheckReport{Target: target, Proxy: "http://proxy:8080", Entries: entries}
+		client := &Client{output: OutputText, colorMode: "never", quiet: true}
+		output := captureStdoutFrom(t, func() error {
+			client.printCheckText(report)
+			return nil
+		})
+		assert.NotContains(t, output, "warning:")
+	})
+}

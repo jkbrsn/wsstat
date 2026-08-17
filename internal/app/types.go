@@ -87,6 +87,7 @@ type subscriptionSummaryJSON struct {
 	LastEventMs   *float64                `json:"last_event_ms,omitempty"`
 	TotalMessages int                     `json:"total_messages"`
 	Subscriptions []subscriptionEntryJSON `json:"subscriptions,omitempty"`
+	Warnings      []string                `json:"warnings,omitempty"`
 }
 
 type subscriptionEntryJSON struct {
@@ -116,9 +117,12 @@ type pingReplyJSON struct {
 // The RTT fields are pointers so they stay present (and zero-valued, e.g. a single-sample
 // stddev) whenever a pong was received, and are omitted only when received == 0.
 type pingSummaryJSON struct {
-	Schema   string   `json:"schema_version"`
-	Type     string   `json:"type"` // "ping_summary"
-	URL      string   `json:"url"`
+	Schema string `json:"schema_version"`
+	Type   string `json:"type"` // "ping_summary"
+	URL    string `json:"url"`
+	// Proxy is set when the run was routed through a proxy, in which case every RTT below
+	// includes the hop to it. See wsstat.Result.Proxy.
+	Proxy    string   `json:"proxy,omitempty"`
 	Sent     int      `json:"sent"`
 	Received int      `json:"received"`
 	LossPct  float64  `json:"loss_pct"`
@@ -169,14 +173,18 @@ type checkEntryJSON struct {
 // checkReportJSON is the single record emitted in check mode: the ordered check catalog plus
 // per-status counts, so a `wsstat check -o json` consumer sees one self-describing object.
 type checkReportJSON struct {
-	Schema  string           `json:"schema_version"`
-	Type    string           `json:"type"` // "check_report"
-	URL     string           `json:"url"`
-	Checks  []checkEntryJSON `json:"checks"`
-	Passed  int              `json:"passed"`
-	Warned  int              `json:"warned"`
-	Failed  int              `json:"failed"`
-	Skipped int              `json:"skipped"`
+	Schema string `json:"schema_version"`
+	Type   string `json:"type"` // "check_report"
+	URL    string `json:"url"`
+	// Proxy is set when the run was routed through a proxy; warnings then carries the caveat
+	// about what the verdicts below actually describe. See wsstat.Result.Proxy.
+	Proxy    string           `json:"proxy,omitempty"`
+	Checks   []checkEntryJSON `json:"checks"`
+	Passed   int              `json:"passed"`
+	Warned   int              `json:"warned"`
+	Failed   int              `json:"failed"`
+	Skipped  int              `json:"skipped"`
+	Warnings []string         `json:"warnings,omitempty"`
 }
 
 type subscriptionMessageJSON struct {

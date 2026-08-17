@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Proxy reporting.** A run routed through `HTTP_PROXY`/`HTTPS_PROXY` now says so instead of presenting the proxy hop as the target: text output gains a `Proxy:` line and a warning, and `-o json` gains `target.proxy` plus the matching `warnings` entry. The new `Result.Proxy` field and the exported `ProxyTimingCaveat` string carry the same information to library consumers. Through an `http://` proxy the target TLS handshake happens inside net/http and is not measured (`tls_handshake` absent); through an `https://` proxy the TLS phase and certificates describe the *proxy* connection, not the target. Additive optional JSON field, so `schema_version` is unchanged per ADR 0003. See the README's "Proxies" section.
+- **Proxy disclosure in `stream`, `ping`, and `check`,** which presented a proxied run as a direct one. The proxy warning now reaches the stream summary at default verbosity (previously `-v` only) and the `PING` header, and `subscription_summary` gains `warnings`, `ping_summary` gains `proxy`, and `check_report` gains both — with check's own caveat, since a `CONNECT`-tunneling proxy leaves the verdicts intact but a terminating one answers the probes itself. Additive optional JSON fields, so `schema_version` is unchanged per ADR 0003.
 
 ### Changed
 

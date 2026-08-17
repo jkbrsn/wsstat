@@ -60,13 +60,37 @@ func resultWarnings(result *wsstat.Result) []string {
 		warnings = append(warnings, fmt.Sprintf(
 			"%d inbound text frame(s) failed UTF-8 validation", result.InvalidUTF8Frames))
 	}
-	// The timings are still reported, so say plainly what they measure: silently attributing a
-	// proxy hop to the target is the failure mode worth warning about.
-	if result.Proxy != "" {
-		warnings = append(warnings, fmt.Sprintf("routed through proxy %s; %s",
-			result.Proxy, wsstat.ProxyTimingCaveat))
+	if warn := proxyWarning(result.Proxy); warn != "" {
+		warnings = append(warnings, warn)
 	}
 	return warnings
+}
+
+// checkWarnings collects the non-fatal caveats attached to a check run. Returns nil when there
+// is nothing to warn about.
+func checkWarnings(report *CheckReport) []string {
+	if report == nil || report.Proxy == "" {
+		return nil
+	}
+	return []string{fmt.Sprintf("routed through proxy %s; %s", report.Proxy, checkProxyCaveat)}
+}
+
+// proxyWarning renders the caveat for a proxied run, or "" when the run was direct. The timings
+// are still reported, so say plainly what they measure: silently attributing a proxy hop to the
+// target is the failure mode worth warning about.
+func proxyWarning(proxy string) string {
+	if proxy == "" {
+		return ""
+	}
+	return fmt.Sprintf("routed through proxy %s; %s", proxy, wsstat.ProxyTimingCaveat)
+}
+
+// printWarnings prints each warning as a "warning: ..." line, the text-mode counterpart of the
+// warnings array carried by the JSON records.
+func (c *Client) printWarnings(warnings []string) {
+	for _, warn := range warnings {
+		fmt.Printf("%s %s\n", c.colorizeOrange("warning:"), warn)
+	}
 }
 
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
@@ -278,6 +302,11 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 	}
 
 	fmt.Println()
+	// -v appends the timing block, which prints the same warnings itself; without it this is
+	// the only place a stream run can disclose that it was proxied.
+	if c.verbosityLevel < 1 {
+		c.printWarnings(resultWarnings(result))
+	}
 	fmt.Println(c.colorizeOrange("Subscription summary"))
 	if result.SubscriptionFirstEvent > 0 {
 		fmt.Printf("  First event latency: %s\n", formatDuration(result.SubscriptionFirstEvent))
@@ -334,6 +363,9 @@ func (c *Client) printPingHeader(target *url.URL, result *wsstat.Result) error {
 	}
 	fmt.Printf("%s %s (%s)\n",
 		c.colorizeOrange("PING"), target.String(), dialTimingSummary(result))
+	// The header line is the dial breakdown, so it carries the same proxy caveat as measure
+	// mode's timings. The request-detail block below adds the Proxy line only under -v.
+	c.printWarnings(resultWarnings(result))
 	if c.verbosityLevel >= 1 {
 		return c.PrintRequestDetails(&MeasurementResult{Result: result})
 	}
@@ -785,6 +817,7 @@ func (c *Client) printCheckText(report *CheckReport) {
 		fmt.Println(checkSummaryLine(report))
 		return
 	}
+	c.printWarnings(checkWarnings(report))
 	group := ""
 	for _, e := range report.Entries {
 		if e.Group != group {
@@ -877,12 +910,14 @@ func pluralize(word string, n int) string {
 // buildCheckReportJSON assembles the check_report JSON record from a report.
 func buildCheckReportJSON(report *CheckReport) checkReportJSON {
 	out := checkReportJSON{
-		Schema:  JSONSchemaVersion,
-		Type:    "check_report",
-		Passed:  report.Passed(),
-		Warned:  report.Warned(),
-		Failed:  report.Failed(),
-		Skipped: report.Skipped(),
+		Schema:   JSONSchemaVersion,
+		Type:     "check_report",
+		Proxy:    report.Proxy,
+		Passed:   report.Passed(),
+		Warned:   report.Warned(),
+		Failed:   report.Failed(),
+		Skipped:  report.Skipped(),
+		Warnings: checkWarnings(report),
 	}
 	if report.Target != nil {
 		out.URL = report.Target.String()
@@ -924,9 +959,7 @@ func (c *Client) PrintTimingResults(u *url.URL, result *MeasurementResult) error
 		return nil
 	}
 
-	for _, warn := range resultWarnings(result.Result) {
-		fmt.Printf("%s %s\n", c.colorizeOrange("warning:"), warn)
-	}
+	c.printWarnings(resultWarnings(result.Result))
 
 	switch {
 	case c.verbosityLevel <= 0:

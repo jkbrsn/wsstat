@@ -99,7 +99,10 @@ func (s *pingStats) report(target *url.URL) *PingReport {
 // PingReport is the outcome of a ping run, returned so the caller can decide the exit code
 // (zero pongs received == total loss). Per-ping lines are printed live inside RunPing.
 type PingReport struct {
-	Target                *url.URL
+	Target *url.URL
+	// Proxy is the proxy the run was routed through, or "" for a direct connection. Every RTT
+	// below includes the hop to it. See wsstat.Result.Proxy.
+	Proxy                 string
 	Sent                  int
 	Received              int
 	Min, Avg, Max, Stddev time.Duration
@@ -204,7 +207,8 @@ func (c *Client) RunPing(ctx context.Context, target *url.URL) (*PingReport, err
 	}
 	defer ws.Close()
 
-	if err := c.printPingHeader(target, ws.ExtractResult()); err != nil {
+	dialResult := ws.ExtractResult()
+	if err := c.printPingHeader(target, dialResult); err != nil {
 		return nil, err
 	}
 
@@ -240,6 +244,7 @@ loop:
 	}
 
 	report := stats.report(target)
+	report.Proxy = dialResult.Proxy
 	if err := c.printPingSummary(report); err != nil {
 		return nil, err
 	}
@@ -299,6 +304,7 @@ func (*Client) pingSummaryJSONFor(report *PingReport) pingSummaryJSON {
 		Schema:   JSONSchemaVersion,
 		Type:     "ping_summary",
 		URL:      report.Target.String(),
+		Proxy:    report.Proxy,
 		Sent:     report.Sent,
 		Received: report.Received,
 		LossPct:  report.LossPct(),

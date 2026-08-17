@@ -60,9 +60,18 @@ type CheckEntry struct {
 
 // CheckReport is the outcome of a full check run. Per-status counts are derived, not stored.
 type CheckReport struct {
-	Target  *url.URL
+	Target *url.URL
+	// Proxy is the proxy the run was routed through, or "" for a direct connection. See
+	// checkProxyCaveat for what it does to the verdicts.
+	Proxy   string
 	Entries []CheckEntry
 }
+
+// checkProxyCaveat states what a proxied run's verdicts actually describe. A CONNECT-tunneling
+// proxy leaves the handshake end-to-end and the checks trustworthy; one that terminates the
+// connection answers the probes itself, and the report then scores the proxy.
+const checkProxyCaveat = "where the proxy terminates the connection instead of tunneling it, " +
+	"these checks describe the proxy's behavior, not the target's"
 
 // count returns the number of entries with the given status.
 func (r *CheckReport) count(status CheckStatus) int {
@@ -170,6 +179,7 @@ func (c *Client) checkTLSConfig() *tls.Config {
 // regardless of the connection order in which checks run.
 type checkBuilder struct {
 	target  *url.URL
+	proxy   string
 	entries map[string]CheckEntry
 }
 
@@ -212,7 +222,7 @@ func (b *checkBuilder) canceled(ctx context.Context, id string, took time.Durati
 
 // finalize assembles the report in canonical catalog order.
 func (b *checkBuilder) finalize() *CheckReport {
-	r := &CheckReport{Target: b.target}
+	r := &CheckReport{Target: b.target, Proxy: b.proxy}
 	for _, id := range checkOrder {
 		if e, ok := b.entries[id]; ok {
 			r.Entries = append(r.Entries, e)
@@ -281,7 +291,11 @@ func (c *Client) checkHandshake(
 ) (bool, error) {
 	start := time.Now()
 	ws := wsstat.New(c.checkOptions()...)
-	if err := ws.DialContext(ctx, target, header); err != nil {
+	err := ws.DialContext(ctx, target, header)
+	// Recorded before the error paths: the proxy is resolved from the environment at the top of
+	// DialContext, so a run that never reaches a verdict still discloses how it was routed.
+	b.proxy = ws.ExtractResult().Proxy
+	if err != nil {
 		ws.Close()
 		if ctx.Err() != nil {
 			b.skip(checkUpgrade, checkAccept, checkHeaders, checkSubprotoNone, checkPingPong)
