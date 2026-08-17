@@ -245,6 +245,33 @@ ping_total_loss() {
 	grep -q "1 sent, 0 received, 100.0% loss" "$OUTF"
 }
 
+# --- check-mode predicates ---------------------------------------------------
+check_fail_exit3() {
+	# The CI gate: a fail verdict is exit 3, distinct from the exit 1 of a runtime error.
+	# /close-abrupt drops the connection instead of echoing the fragmented probe.
+	local rc
+	"$B" check -q "$WS_URL/close-abrupt" >"$OUTF" 2>/dev/null; rc=$?
+	[[ $rc -eq 3 ]] && grep -q "0 warnings, 1 failed" "$OUTF"
+}
+check_warn_exit0() {
+	# A warning is not a failure: a 1ns close grace cannot complete the closing handshake,
+	# so the close-echo check warns against an otherwise conformant /echo and the run
+	# still exits 0.
+	"$B" check -q --close-timeout 1ns "$WS_URL/echo" >"$OUTF" 2>/dev/null || return 1
+	grep -q "1 warning, 0 failed" "$OUTF"
+}
+check_quiet_summary_only() {
+	# -q drops the grouped report entirely: exactly one line, the closing tally.
+	"$B" check -q "$WS_URL/echo" >"$OUTF" 2>/dev/null || return 1
+	[[ $(grep -c . "$OUTF") -eq 1 ]] &&
+		grep -Eq "^[0-9]+ passed, [0-9]+ warnings?, [0-9]+ failed$" "$OUTF"
+}
+check_json_single_report() {
+	# Check mode emits exactly one record, whatever the catalog size.
+	"$B" check -o json "$WS_URL/echo" 2>/dev/null \
+		| jq -es 'length == 1 and .[0].type == "check_report" and (.[0].checks | length) > 0' >/dev/null
+}
+
 echo "wsstat soak (structured matrix) against $WS_URL"
 echo "binary: $B"
 
@@ -255,6 +282,7 @@ ok "measure explicit subcommand"   -- "$B" measure -t hi "$WS_URL/echo"
 ok "-t text"                       -- "$B" -t hi "$WS_URL/echo"
 ok "--text text (alias)"           -- "$B" --text hi "$WS_URL/echo"
 ok "--rpc-method"                  -- "$B" --rpc-method eth_blockNumber "$WS_URL/jsonrpc"
+ok "--rpc-version 1.0"             -- "$B" --rpc-method m --rpc-version 1.0 "$WS_URL/jsonrpc"
 ok "-c burst"                      -- "$B" -t hi -c 5 "$WS_URL/echo"
 ok "--count burst (alias)"         -- "$B" -t hi --count 5 "$WS_URL/echo"
 ok "-o text"                       -- "$B" -o text -t hi "$WS_URL/echo"
@@ -278,6 +306,9 @@ ok "--resolve override"            -- "$B" -t hi --resolve "mock:17080:127.0.0.1
 ok "--timeout positive"           -- "$B" --timeout 5s -t hi "$WS_URL/echo"
 ok "--close-timeout positive"     -- "$B" --close-timeout 2s -t hi "$WS_URL/echo"
 ok "--close-timeout >5s (capped)" -- "$B" --close-timeout 9s -t hi "$WS_URL/echo"
+ok "--validate-utf8"              -- "$B" --validate-utf8 -t hi "$WS_URL/echo"
+ok "--show-secrets"               -- "$B" --show-secrets -t hi "$WS_URL/echo"
+ok "--debug"                      -- "$B" --debug -t hi "$WS_URL/echo"
 
 section "POSITIVE: representative valid combinations (measure)"
 ok "rpc + -o json"                 -- "$B" --rpc-method m -o json "$WS_URL/jsonrpc"
@@ -316,6 +347,16 @@ ok "ping -o json"              -- "$B" ping -c 2 -i 50ms -o json "$WS_URL/echo"
 ok "ping -q"                   -- "$B" ping -c 2 -i 50ms -q "$WS_URL/echo"
 ok "ping -v"                   -- "$B" ping -c 2 -i 50ms -v "$WS_URL/echo"
 ok "ping wss + -k"             -- "$B" ping -c 2 -i 50ms -k "$WSS_URL/echo"
+
+# ===========================================================================
+section "POSITIVE: check-mode flags"
+# Check takes no subcommand-specific flags: it dials its own probe catalog, so the
+# surface is the output/connection/diagnostic groups only.
+ok "check bare"                -- "$B" check "$WS_URL/echo"
+ok "check -v"                  -- "$B" check -v "$WS_URL/echo"
+ok "check -q"                  -- "$B" check -q "$WS_URL/echo"
+ok "check -o json"             -- "$B" check -o json "$WS_URL/echo"
+ok "check wss + -k"            -- "$B" check -k "$WSS_URL/echo"
 
 # ===========================================================================
 section "REJECT: mutually exclusive / invalid-value rules"
@@ -371,6 +412,29 @@ reject "ping + --once"             "not defined" -- "$B" ping --once "$WS_URL/ec
 reject "ping + --buffer"           "not defined" -- "$B" ping --buffer 8 "$WS_URL/echo"
 reject "ping + --summary-interval" "not defined" -- "$B" ping --summary-interval 1s "$WS_URL/echo"
 reject "ping + --send-delay"       "not defined" -- "$B" ping --send-delay 1s "$WS_URL/echo"
+
+section "REJECT: check-mode rules"
+# Check dials its own fixed probe catalog, so every payload, count, cadence and raw-output
+# knob is refused: one row per rule in validateCheck. Some are caught a layer earlier as
+# rejection stubs on the check flag set, which is why the matched substring is the wording
+# both layers share.
+reject "check + -o raw"             "no meaning in check mode"    -- "$B" check -o raw "$WS_URL/echo"
+reject "check + --file"             "not supported in check mode" -- "$B" check --file rec.ndjson "$WS_URL/echo"
+reject "check + -f"                 "not supported in check mode" -- "$B" check -f rec.ndjson "$WS_URL/echo"
+reject "check + --body"             "not supported in check mode" -- "$B" check --body compact "$WS_URL/echo"
+reject "check + --clip"             "not supported in check mode" -- "$B" check --clip "$WS_URL/echo"
+reject "check + --max-message-size" "not supported in check mode" -- "$B" check --max-message-size 16 "$WS_URL/echo"
+reject "check + -t"                 "not supported in check mode" -- "$B" check -t hi "$WS_URL/echo"
+reject "check + --text"             "not supported in check mode" -- "$B" check --text hi "$WS_URL/echo"
+reject "check + --rpc-method"       "not supported in check mode" -- "$B" check --rpc-method m "$WS_URL/echo"
+reject "check + --rpc-version"      "not supported in check mode" -- "$B" check --rpc-version 1.0 "$WS_URL/echo"
+# Stream/ping-only flags under check: the flag package must reject them outright.
+reject "check + --once"             "not defined" -- "$B" check --once "$WS_URL/echo"
+reject "check + -b"                 "not defined" -- "$B" check -b 8 "$WS_URL/echo"
+reject "check + --buffer"           "not defined" -- "$B" check --buffer 8 "$WS_URL/echo"
+reject "check + --summary-interval" "not defined" -- "$B" check --summary-interval 1s "$WS_URL/echo"
+reject "check + --send-delay"       "not defined" -- "$B" check --send-delay 1s "$WS_URL/echo"
+reject "check + --interval"         "not defined" -- "$B" check --interval 1s "$WS_URL/echo"
 
 section "REJECT: v2 flags removed in v3"
 reject "-subscribe"      "removed in v3" -- "$B" -subscribe -t hi "$WS_URL/stream"
@@ -441,6 +505,18 @@ else
 fi
 
 # ===========================================================================
+section "EFFECT: check report and exit codes"
+outhas "check prints the grouped report" "^Handshake$" -- "$B" check "$WS_URL/echo"
+pred "check fail verdict exits 3"     check_fail_exit3
+pred "check warnings alone exit 0"    check_warn_exit0
+pred "check -q prints only the tally" check_quiet_summary_only
+if [[ $HAVE_JQ -eq 1 ]]; then
+	pred "check -o json is one check_report record" check_json_single_report
+else
+	S "check -o json record shape" "jq not installed"
+fi
+
+# ===========================================================================
 section "EFFECT: --file records response payloads as NDJSON"
 # --file is additive and orthogonal to -o; it has no validation rules beyond
 # O_EXCL, so coverage is behavioral: what lands in the sink, and what does not.
@@ -466,6 +542,22 @@ fi
 section "EFFECT: -H header reaches the server, --resolve dials the override"
 outhas "-H value is transmitted"  "smoke-value" -- "$B" -q -t hi -H "X-Smoke: smoke-value" "$WS_URL/headers"
 outhas "--resolve reaches mock"   "Response"    -- "$B" -t hi --resolve "mock:17080:127.0.0.1" "ws://mock:17080/echo"
+
+# ===========================================================================
+section "EFFECT: proxy environment handling"
+# Loopback is exempt from proxying by host string, so $WS_URL can never reach the proxy
+# path; the --resolve trick supplies a non-loopback host name ("mock") that still lands on
+# the local mock server. Nothing listens on port 1, so a run that dials the proxy fails
+# loudly and one that bypasses it succeeds -- that contrast is the whole assertion. The
+# rendered Proxy:/warning lines need a live proxy; client_output_test.go covers those.
+reject "HTTP_PROXY is dialed for a proxied host" "proxyconnect" \
+	-- env HTTP_PROXY=http://127.0.0.1:1 \
+	"$B" -t hi --resolve "mock:17080:127.0.0.1" "ws://mock:17080/echo"
+ok "NO_PROXY exempts the host" \
+	-- env HTTP_PROXY=http://127.0.0.1:1 NO_PROXY=mock \
+	"$B" -t hi --resolve "mock:17080:127.0.0.1" "ws://mock:17080/echo"
+ok "loopback is exempt from HTTP_PROXY" \
+	-- env HTTP_PROXY=http://127.0.0.1:1 "$B" -t hi "$WS_URL/echo"
 
 # ===========================================================================
 section "EFFECT: TLS verification posture"

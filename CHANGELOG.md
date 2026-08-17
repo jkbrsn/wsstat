@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Proxy reporting.** A run routed through `HTTP_PROXY`/`HTTPS_PROXY` now says so instead of presenting the proxy hop as the target. Text output gains a `Proxy:` line and a warning; `-o json` gains `target.proxy` plus `warnings` on `timing_summary` and `subscription_summary`, and `proxy` on `ping_summary` and `check_report`. `Result.Proxy` and the exported `ProxyTimingCaveat` carry the same to library consumers. Additive optional JSON fields, so `schema_version` is unchanged per ADR 0003. See the README's "Proxies" section for what the timings mean through an `http://` vs `https://` proxy.
+- (dev) `dev/soak-test.sh` gains check-mode coverage (positive flags, one REJECT row per `validateCheck` rule, and the exit 3 / exit 0-with-warnings, `-q` and `-o json` output contracts), three proxy-environment rows exercising `HTTP_PROXY`/`NO_PROXY` via the `--resolve` trick for a non-loopback host, and positive rows for `--validate-utf8`, `--show-secrets`, `--debug` and `--rpc-version 1.0`.
 
 ### Changed
 
