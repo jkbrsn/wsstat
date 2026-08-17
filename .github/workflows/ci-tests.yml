@@ -27,6 +27,11 @@ jobs:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: -v
 
+      # Also runs in release.yml, but only at release time: without this a PR that bumps
+      # GO_VERSION in one place merges green and fails weeks later when a release is cut.
+      - name: Go version alignment
+        run: bash scripts/check-go-version.sh
+
   unit-tests:
     name: Unit tests (race)
     runs-on: ubuntu-24.04
@@ -57,7 +62,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - run: govulncheck ./...
 
   summary:
