@@ -37,6 +37,10 @@
             "cipher_suite": { "type": "string" },
             "peer_certificates": { "type": "integer", "minimum": 0 }
           }
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy the handshake was routed through, credentials redacted; absent when direct. When present, durations_ms.dns_lookup and .tcp_connection measure the hop to the proxy rather than to the target, durations_ms.tls_handshake is absent for an http:// proxy, and target.tls describes the proxy's own connection for an https:// proxy. A corresponding warnings entry states the same caveat."
         }
       }
     },

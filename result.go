@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// ProxyTimingCaveat states what the per-phase timings actually measure when Result.Proxy is
+// set. Exported so a consumer rendering its own output states the same caveat the CLI does
+// rather than reinventing (or omitting) it.
+const ProxyTimingCaveat = "DNS/TCP measure the hop to the proxy; " +
+	"TLS timings do not describe the target"
+
 // CertificateDetails holds details regarding a certificate.
 type CertificateDetails struct {
 	CommonName         string
@@ -29,8 +35,15 @@ type CertificateDetails struct {
 // Result holds durations of each phase of a WebSocket connection, cumulative durations over
 // the connection timeline, and other relevant connection details.
 type Result struct {
-	IPs             []string             // IP addresses of the WebSocket connection
-	URL             *url.URL             // URL of the WebSocket connection
+	IPs []string // IP addresses of the WebSocket connection
+	URL *url.URL // URL of the WebSocket connection
+
+	// Proxy is the proxy the handshake was routed through, credentials redacted, or "" when
+	// direct. When set, DNSLookup and TCPConnection measure the hop to the proxy, and the TLS
+	// phase describes the proxy connection (https:// proxy) or is absent entirely (http://
+	// proxy, where net/http runs the target handshake uninstrumented). See ProxyTimingCaveat.
+	Proxy string
+
 	Subprotocol     string               // Negotiated WebSocket subprotocol ("" if none)
 	Compression     string               // Negotiated Sec-WebSocket-Extensions value ("" if none)
 	RequestHeaders  http.Header          // Headers of the initial request
@@ -139,6 +152,11 @@ func (r *Result) printURLAndIPSection(s fmt.State) {
 	}
 	fmt.Fprintln(s, "IP")
 	fmt.Fprintf(s, "  %v\n", r.IPs)
+	if r.Proxy != "" {
+		fmt.Fprintln(s, "Proxy")
+		fmt.Fprintf(s, "  %s\n", r.Proxy)
+		fmt.Fprintf(s, "  %s\n", ProxyTimingCaveat)
+	}
 	fmt.Fprintln(s)
 }
 

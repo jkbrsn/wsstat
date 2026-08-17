@@ -320,21 +320,12 @@ func newBurstCloseServer(t *testing.T, frames []string) *url.URL {
 	return u
 }
 
-// TestStreamSubscriptionDrainsBufferOnServerClose asserts that every frame the server sent is
-// emitted, not just whichever ones the loop's select happened to pick before observing Done. The
-// core closes the subscription's update buffer before closing Done, so once the server has sent
-// its burst and closed, both channels are simultaneously ready with every frame still sitting in
-// the buffer; a select between ready cases is uniform-random (Go language spec), so a loop that
-// returns on Done without draining loses whatever the random pick skipped.
-//
-// The test forces this exact state deterministically instead of racing real scheduling: it opens
-// the subscription and waits for the server to finish and finalize (Done closed, every frame
-// already counted into the buffer) *before* ever starting the consumer loop. That guarantees
-// runSubscriptionLoop's very first select sees Done and Updates both ready with all frameCount
-// frames queued, so a buggy "return on Done" loop has roughly a 1-in-2^frameCount chance of
-// accidentally draining everything -- effectively a guaranteed failure, not a flaky one -- while
-// the fixed drain-to-exhaustion path always emits every frame regardless of which case the
-// select happens to pick.
+// TestStreamSubscriptionDrainsBufferOnServerClose asserts every frame the server sent is emitted,
+// not just the ones the loop's select happened to pick before observing Done. The core closes the
+// update buffer before closing Done, so both cases go ready together and a uniform-random select
+// loses whatever it skips. The test forces that state deterministically rather than racing the
+// scheduler: it waits for Done and confirms every frame is already buffered before starting the
+// consumer loop, so a "return on Done" loop fails with ~1-in-2^frameCount odds of a false pass.
 func TestStreamSubscriptionDrainsBufferOnServerClose(t *testing.T) {
 	// Not t.Parallel(): captureStdoutFrom swaps the package-level os.Stdout, which races
 	// against any other parallel test that also captures stdout (see the sibling

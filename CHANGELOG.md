@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Proxy reporting.** A run routed through `HTTP_PROXY`/`HTTPS_PROXY` now says so instead of presenting the proxy hop as the target: text output gains a `Proxy:` line and a warning, and `-o json` gains `target.proxy` plus the matching `warnings` entry. The new `Result.Proxy` field and the exported `ProxyTimingCaveat` string carry the same information to library consumers. Through an `http://` proxy the target TLS handshake happens inside net/http and is not measured (`tls_handshake` absent); through an `https://` proxy the TLS phase and certificates describe the *proxy* connection, not the target. Additive optional JSON field, so `schema_version` is unchanged per ADR 0003. See the README's "Proxies" section.
+
 ### Changed
 
 - (lib) `Subscribe` now returns the new `ErrSubscriptionConflict` sentinel when a subscription is already active on the connection, instead of silently breaking delivery. A subscription with no way to attribute frames claims all of them, so a second one left both silent and backed unclaimed frames up until the read pump blocked for good. Cancel the first subscription (and wait for its `Done`) before registering another, or dial a second connection. Exporting the matcher, which would make several subscriptions per connection genuinely work, is tracked for v4 in `docs/TODO.md`.
@@ -19,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (lib) `SubscriptionStats.MessageCount`/`ByteCount` and `Result.MessageCount` no longer count the error envelope delivered when a subscription ends, which over-reported by one and disagreed with `MeanInterArrival`.
 - (lib) A ping whose pong never arrives no longer unbalances the write/read ledgers. One failed `PingPong` used to zero `MessageRTT` and `MessageCount` for the rest of the connection's life; both ends are now recorded only on a completed round-trip.
 - `--file` capture failures now reach the exit code. A flush or close error (ENOSPC, quota) was discarded, so a silently truncated capture still exited 0.
+- `-k/--insecure` and `WithTLSConfig` now apply when a proxy is in use. The transport left `TLSClientConfig` unset, and net/http performs the target handshake itself on the proxied path, so a custom TLS config was ignored entirely — which failed the dial outright against any certificate not chaining to the system roots.
 - `check` now sends a user-supplied `Host` header on the version-reject probe. net/http drops the `Host` key from the header map, so the probe addressed the default virtual host while every WebSocket check addressed the override, mis-scoring `negotiation.version-reject`.
 
 ## [3.3.0] - 2026-07-23

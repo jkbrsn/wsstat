@@ -494,6 +494,97 @@ func TestSubscriptionSurvivesLateFirstFrame(t *testing.T) {
 	<-sub.Done()
 }
 
+func TestProxyForTarget(t *testing.T) {
+	// The transport sees the target as http/https, not ws/wss, so the mapping has to match or
+	// the HTTP_PROXY/HTTPS_PROXY split (and NO_PROXY matching) resolves against the wrong
+	// scheme. Credentials must be redacted because the value is printed.
+	proxied := func(scheme, host string) func(*http.Request) (*url.URL, error) {
+		return func(req *http.Request) (*url.URL, error) {
+			if req.URL.Scheme != scheme {
+				return nil, nil
+			}
+			return &url.URL{Scheme: "http", Host: host}, nil
+		}
+	}
+
+	tests := []struct {
+		name    string
+		target  string
+		resolve func(*http.Request) (*url.URL, error)
+		want    string
+	}{
+		{
+			name:    "wss maps to https",
+			target:  "wss://example.com/ws",
+			resolve: proxied("https", "proxy:8080"),
+			want:    "http://proxy:8080",
+		},
+		{
+			name:    "ws maps to http",
+			target:  "ws://example.com/ws",
+			resolve: proxied("http", "proxy:8080"),
+			want:    "http://proxy:8080",
+		},
+		{
+			name:    "wss does not match an http-only proxy",
+			target:  "wss://example.com/ws",
+			resolve: proxied("http", "proxy:8080"),
+			want:    "",
+		},
+		{
+			name:    "no proxy configured",
+			target:  "wss://example.com/ws",
+			resolve: func(*http.Request) (*url.URL, error) { return nil, nil },
+			want:    "",
+		},
+		{
+			name:   "credentials are redacted",
+			target: "wss://example.com/ws",
+			resolve: func(*http.Request) (*url.URL, error) {
+				return url.Parse("http://user:sekret@proxy:8080")
+			},
+			want: "http://user:xxxxx@proxy:8080",
+		},
+		{
+			name:   "resolver error yields no proxy",
+			target: "wss://example.com/ws",
+			resolve: func(*http.Request) (*url.URL, error) {
+				return nil, errors.New("bad proxy url")
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := url.Parse(tc.target)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, proxyForTargetVia(target, tc.resolve))
+		})
+	}
+
+	t.Run("nil target", func(t *testing.T) {
+		assert.Empty(t, proxyForTargetVia(nil, func(*http.Request) (*url.URL, error) {
+			t.Fatal("resolver must not be consulted for a nil target")
+			return nil, nil
+		}))
+	})
+}
+
+func TestResultFormatShowsProxyCaveat(t *testing.T) {
+	// A proxied run still reports timings, so %+v has to say what they measure.
+	target, err := url.Parse("wss://example.com/ws")
+	require.NoError(t, err)
+
+	direct := &Result{URL: target, IPs: []string{"10.0.0.1"}}
+	assert.NotContains(t, fmt.Sprintf("%+v", direct), "Proxy")
+
+	proxied := &Result{URL: target, IPs: []string{"10.0.0.1"}, Proxy: "http://proxy:8080"}
+	out := fmt.Sprintf("%+v", proxied)
+	assert.Contains(t, out, "http://proxy:8080")
+	assert.Contains(t, out, ProxyTimingCaveat)
+}
+
 func TestSubscribeRejectsSecondSubscription(t *testing.T) {
 	// A matcher-less subscription claims every frame, which only works while it is the sole
 	// subscription: a second one used to silence both (the dispatcher claims nothing for

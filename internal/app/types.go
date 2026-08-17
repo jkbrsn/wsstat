@@ -42,6 +42,10 @@ type timingTargetJSON struct {
 	Host string         `json:"host,omitempty"`
 	IPs  []string       `json:"ips,omitempty"`
 	TLS  *timingTLSJSON `json:"tls,omitempty"`
+	// Proxy is set when the handshake was routed through a proxy, in which case the sibling
+	// durations describe the hop to it rather than to the target and tls, when present,
+	// describes the proxy's own connection. See wsstat.Result.Proxy.
+	Proxy string `json:"proxy,omitempty"`
 }
 
 type timingTLSJSON struct {
@@ -200,6 +204,7 @@ func buildTimingTarget(result *wsstat.Result, fallback *url.URL) *timingTargetJS
 	if len(result.IPs) > 0 {
 		target.IPs = append([]string(nil), result.IPs...)
 	}
+	target.Proxy = result.Proxy
 	if result.TLSState != nil {
 		tlsInfo := &timingTLSJSON{
 			Version: tls.VersionName(result.TLSState.Version),
@@ -212,7 +217,8 @@ func buildTimingTarget(result *wsstat.Result, fallback *url.URL) *timingTargetJS
 		}
 		target.TLS = tlsInfo
 	}
-	if target.URL == "" && target.Host == "" && len(target.IPs) == 0 && target.TLS == nil {
+	if target.URL == "" && target.Host == "" && len(target.IPs) == 0 && target.TLS == nil &&
+		target.Proxy == "" {
 		return nil
 	}
 	return &target

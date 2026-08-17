@@ -52,11 +52,21 @@ func (c *Client) buildTimingSummaryFromResult(u *url.URL, result *wsstat.Result)
 // resultWarnings collects non-fatal standards warnings surfaced from a measurement Result, for
 // display in both text and JSON output. Returns nil when there is nothing to warn about.
 func resultWarnings(result *wsstat.Result) []string {
-	if result == nil || result.InvalidUTF8Frames == 0 {
+	if result == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf(
-		"%d inbound text frame(s) failed UTF-8 validation", result.InvalidUTF8Frames)}
+	var warnings []string
+	if result.InvalidUTF8Frames > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d inbound text frame(s) failed UTF-8 validation", result.InvalidUTF8Frames))
+	}
+	// The timings are still reported, so say plainly what they measure: silently attributing a
+	// proxy hop to the target is the failure mode worth warning about.
+	if result.Proxy != "" {
+		warnings = append(warnings, fmt.Sprintf("routed through proxy %s; %s",
+			result.Proxy, wsstat.ProxyTimingCaveat))
+	}
+	return warnings
 }
 
 // colorEnabled returns true if color output is enabled, based on both color mode and terminal
@@ -481,6 +491,9 @@ func (c *Client) printVerbose(result *wsstat.Result) {
 	fmt.Printf(printValueTemp, c.colorizeOrange("Target"), result.URL.Hostname())
 	for _, values := range result.IPs {
 		fmt.Printf(printValueTemp, c.colorizeOrange("IP"), values)
+	}
+	if result.Proxy != "" {
+		fmt.Printf(printValueTemp, c.colorizeOrange("Proxy"), result.Proxy)
 	}
 	fmt.Printf("%s: %d\n", c.colorizeOrange("Messages sent"), result.MessageCount)
 	for key, values := range result.RequestHeaders {

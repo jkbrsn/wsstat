@@ -336,6 +336,31 @@ wsstat stream --body compact --clip wss://example.org/stream
 `--body`, `--clip`, `-q`, `-v`, and `-vv` apply only to `-o text` and are
 rejected under `-o json|raw`.
 
+#### Proxies
+
+`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are honored (loopback and `localhost`
+targets are never proxied). A proxied run reports the proxy and warns that the
+per-phase timings no longer describe the target alone:
+
+```console
+$ wsstat -v wss://example.org/ws
+Proxy: http://proxy.corp:8080
+warning: routed through proxy http://proxy.corp:8080; DNS/TCP measure the hop to the proxy; TLS timings do not describe the target
+```
+
+Under `-o json` the same information appears as `target.proxy` plus a `warnings`
+entry. What the TLS numbers mean depends on the proxy's own scheme:
+
+| | DNS / TCP | TLS Handshake | Certificates |
+|---|---|---|---|
+| direct | target | target | target's |
+| via `http://` proxy | the proxy hop | not measured (absent) | none reported |
+| via `https://` proxy | the proxy hop | the **proxy** connection | the **proxy's** |
+
+`-k/--insecure` and custom TLS settings apply to the target handshake in all
+three cases. To measure the target itself rather than the route to it, unset the
+proxy variables or add the host to `NO_PROXY`.
+
 ### Exit Codes
 
 | Code | Meaning |

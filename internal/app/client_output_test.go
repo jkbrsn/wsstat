@@ -3,10 +3,13 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jkbrsn/wsstat/v3"
 	"github.com/jkbrsn/wsstat/v3/internal/app/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -397,5 +400,63 @@ func TestPrintResponseBodyRendering(t *testing.T) {
 			return client.PrintResponse(result)
 		})
 		assert.Contains(t, output, "Response: pong")
+	})
+}
+
+// TestProxyAnnotationInTimingOutput asserts a proxied run says so in both output contracts.
+// The timings are still reported, so the annotation is what keeps them from being read as the
+// target's: without it, dns_lookup/tcp_connection silently describe the proxy hop instead.
+func TestProxyAnnotationInTimingOutput(t *testing.T) {
+	target, err := url.Parse("wss://example.com/ws")
+	require.NoError(t, err)
+
+	t.Run("direct run is unannotated", func(t *testing.T) {
+		result := &wsstat.Result{URL: target, DNSLookup: time.Millisecond}
+		assert.Empty(t, resultWarnings(result))
+
+		summary := NewClient().buildTimingSummaryFromResult(target, result)
+		require.NotNil(t, summary.Target)
+		assert.Empty(t, summary.Target.Proxy)
+		assert.Empty(t, summary.Warnings)
+	})
+
+	t.Run("proxied run carries the proxy and the caveat", func(t *testing.T) {
+		result := &wsstat.Result{
+			URL:       target,
+			DNSLookup: time.Millisecond,
+			Proxy:     "http://proxy:8080",
+		}
+
+		warnings := resultWarnings(result)
+		require.Len(t, warnings, 1)
+		assert.Contains(t, warnings[0], "http://proxy:8080")
+		assert.Contains(t, warnings[0], wsstat.ProxyTimingCaveat)
+
+		summary := NewClient().buildTimingSummaryFromResult(target, result)
+		require.NotNil(t, summary.Target)
+		assert.Equal(t, "http://proxy:8080", summary.Target.Proxy)
+		require.Len(t, summary.Warnings, 1)
+
+		// The field must survive marshaling under the documented key.
+		encoded, err := json.Marshal(summary)
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		decodedTarget, ok := decoded["target"].(map[string]any)
+		require.True(t, ok, "timing record must carry a target object")
+		assert.Equal(t, "http://proxy:8080", decodedTarget["proxy"])
+		assert.Len(t, decoded["warnings"], 1)
+	})
+
+	t.Run("proxy warning coexists with the UTF-8 warning", func(t *testing.T) {
+		result := &wsstat.Result{
+			URL:               target,
+			Proxy:             "http://proxy:8080",
+			InvalidUTF8Frames: 2,
+		}
+		warnings := resultWarnings(result)
+		require.Len(t, warnings, 2)
+		assert.Contains(t, warnings[0], "UTF-8")
+		assert.Contains(t, warnings[1], "proxy")
 	})
 }

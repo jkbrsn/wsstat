@@ -560,6 +560,7 @@ func (ws *WSStat) DialContext(
 	ws.ctx, ws.cancel = context.WithCancel(ctx)
 
 	ws.result.URL = targetURL
+	ws.result.Proxy = proxyForTarget(targetURL)
 	// Option headers form the base; headers passed to this call override them per key.
 	headers := cloneHeaders(ws.headers)
 	for name, values := range customHeaders {
@@ -1089,6 +1090,13 @@ func newHTTPClient(
 		DisableKeepAlives: true,  // one connection per WSStat dial
 		ForceAttemptHTTP2: false, // WebSocket upgrade requires HTTP/1.1
 
+		// Only consulted on the proxied path, where net/http owns the target handshake and
+		// never calls DialTLSContext: connectMethod.scheme() reports the proxy's scheme, so
+		// the hasCustomTLSDialer branch is skipped. Without this the proxied handshake would
+		// run with a nil config, ignoring WithTLSConfig entirely — which fails the dial
+		// outright against any certificate that does not chain to the system roots.
+		TLSClientConfig: tlsConf,
+
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			target, err := resolveDialTargets(ctx, addr, timings, resolves)
 			if err != nil {
@@ -1140,6 +1148,44 @@ func newHTTPClient(
 		Transport: transport,
 		Timeout:   timeout, // overall handshake timeout
 	}
+}
+
+// proxyForTarget reports the proxy net/http will route the handshake through, with credentials
+// redacted so the value is safe to print, or "" when the dial is direct. The scheme is mapped
+// the way the transport sees it (ws→http, wss→https) so the HTTP_PROXY/HTTPS_PROXY split and
+// NO_PROXY matching resolve exactly as they will for the real request — including the rule that
+// loopback and localhost targets are never proxied.
+//
+// http.ProxyFromEnvironment reads the environment once per process, so a caller that mutates
+// the proxy variables after the process's first HTTP request sees neither the new proxy nor a
+// change here.
+func proxyForTarget(targetURL *url.URL) string {
+	return proxyForTargetVia(targetURL, http.ProxyFromEnvironment)
+}
+
+// proxyForTargetVia is proxyForTarget with the resolver injected, so the scheme mapping and
+// redaction are testable without mutating the environment (which ProxyFromEnvironment's
+// process-wide sync.Once would ignore anyway).
+func proxyForTargetVia(
+	targetURL *url.URL, resolve func(*http.Request) (*url.URL, error),
+) string {
+	if targetURL == nil {
+		return ""
+	}
+	probe := *targetURL
+	switch probe.Scheme {
+	case "wss":
+		probe.Scheme = "https"
+	case "ws":
+		probe.Scheme = "http"
+	default:
+		// Leave anything else alone; the resolver returns no proxy for it.
+	}
+	proxyURL, err := resolve(&http.Request{URL: &probe})
+	if err != nil || proxyURL == nil {
+		return ""
+	}
+	return proxyURL.Redacted()
 }
 
 // resolveDialTargets resolves the target address for dialing a WebSocket connection.
