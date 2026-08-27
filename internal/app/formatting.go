@@ -46,6 +46,23 @@ func formatDuration(d time.Duration) string {
 	return msString(d) + "ms"
 }
 
+// formatElapsed renders a wall-clock span in the largest fitting unit (ms, s, m, h). Used for
+// stream age and similar spans where millisecond precision reads like a latency figure.
+func formatElapsed(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "-"
+	case d < time.Second:
+		return msString(d) + "ms"
+	case d < time.Minute:
+		return fmt.Sprintf("%.2fs", d.Seconds())
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d/time.Minute), int(d%time.Minute/time.Second))
+	}
+	return fmt.Sprintf("%dh%02dm%02ds", int(d/time.Hour),
+		int(d%time.Hour/time.Minute), int(d%time.Minute/time.Second))
+}
+
 func handleConnectionError(err error, address string) error {
 	// A malformed TLS record during the handshake is reported distinctly.
 	var recordErr *tls.RecordHeaderError

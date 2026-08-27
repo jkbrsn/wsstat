@@ -312,7 +312,7 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 		fmt.Printf("  First event latency: %s\n", formatDuration(result.SubscriptionFirstEvent))
 	}
 	if result.SubscriptionLastEvent > 0 {
-		fmt.Printf("  Last event latency: %s\n", formatDuration(result.SubscriptionLastEvent))
+		fmt.Printf("  Last event: %s since dial\n", formatElapsed(result.SubscriptionLastEvent))
 	}
 	fmt.Printf("  Total messages: %d\n", result.MessageCount)
 

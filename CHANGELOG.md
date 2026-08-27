@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Subscription summary now prints `Last event: <span> since dial` instead of `Last event latency: <ms>`, with the span rendered in ms/s/m/h as appropriate. The value was always time from dial to the most recent message (stream age), not a latency; the label now says so. JSON `last_event_ms` is unchanged.
+
 ## [3.4.0] - 2026-08-17
 
 ### Added
