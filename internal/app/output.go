@@ -321,27 +321,43 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 	}
 	fmt.Printf("  Total bytes: %d\n", totalBytes)
 
-	if len(result.Subscriptions) > 0 {
-		ids := make([]string, 0, len(result.Subscriptions))
-		for id := range result.Subscriptions {
-			ids = append(ids, id)
-		}
-		slices.Sort(ids)
-		for _, id := range ids {
-			stats := result.Subscriptions[id]
-			fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
-			if stats.MeanInterArrival > 0 {
-				fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
-			}
-			if stats.Error != nil {
-				fmt.Printf(" (error: %v)", stats.Error)
-			}
-			fmt.Println()
-		}
-	}
+	printSubscriptionStats(result.Subscriptions)
 
 	if c.verbosityLevel >= 1 {
 		_ = c.PrintTimingResults(target, &MeasurementResult{Result: result})
+	}
+}
+
+// printSubscriptionStats prints per-subscription stats. The CLI runs one subscription per
+// connection, so a single subscription is presented flat; per-id rows remain for library
+// results that carry several.
+func printSubscriptionStats(subs map[string]wsstat.SubscriptionStats) {
+	if len(subs) == 1 {
+		for _, stats := range subs {
+			if stats.MeanInterArrival > 0 {
+				fmt.Printf("  Mean gap: %s\n", formatDuration(stats.MeanInterArrival))
+			}
+			if stats.Error != nil {
+				fmt.Printf("  Error: %v\n", stats.Error)
+			}
+		}
+		return
+	}
+	ids := make([]string, 0, len(subs))
+	for id := range subs {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		stats := subs[id]
+		fmt.Printf("  %s: %d msgs, %d bytes", id, stats.MessageCount, stats.ByteCount)
+		if stats.MeanInterArrival > 0 {
+			fmt.Printf(", mean gap %s", formatDuration(stats.MeanInterArrival))
+		}
+		if stats.Error != nil {
+			fmt.Printf(" (error: %v)", stats.Error)
+		}
+		fmt.Println()
 	}
 }
 
