@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded to Go 1.26.7.
 - Subscription summary now prints `Last event: <span> since dial` instead of `Last event latency: <ms>`, with the span rendered in ms/s/m/h as appropriate. The value was always time from dial to the most recent message (stream age), not a latency; the label now says so. JSON `last_event_ms` is unchanged. The summary also gains `Total bytes:` and `Mean gap:` lines, replacing the `subscription-1: ...` row (the CLI only ever runs one subscription per connection).
 
 ## [3.4.0] - 2026-08-17
