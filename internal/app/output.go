@@ -315,6 +315,11 @@ func (c *Client) printSubscriptionSummary(target *url.URL, result *wsstat.Result
 		fmt.Printf("  Last event: %s since dial\n", formatElapsed(result.SubscriptionLastEvent))
 	}
 	fmt.Printf("  Total messages: %d\n", result.MessageCount)
+	var totalBytes uint64
+	for _, stats := range result.Subscriptions {
+		totalBytes += stats.ByteCount
+	}
+	fmt.Printf("  Total bytes: %d\n", totalBytes)
 
 	if len(result.Subscriptions) > 0 {
 		ids := make([]string, 0, len(result.Subscriptions))
