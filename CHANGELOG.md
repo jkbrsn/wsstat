@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-08-27
+
 ### Changed
 
 - Upgraded to Go 1.26.7.
-- Subscription summary now prints `Last event: <span> since dial` instead of `Last event latency: <ms>`, with the span rendered in ms/s/m/h as appropriate. The value was always time from dial to the most recent message (stream age), not a latency; the label now says so. JSON `last_event_ms` is unchanged. The summary also gains `Total bytes:` and `Mean gap:` lines, replacing the `subscription-1: ...` row (the CLI only ever runs one subscription per connection).
+- **Subscription summary.** `Last event latency: <ms>` is now `Last event: <span> since dial`, rendered in ms/s/m/h; the value was always time from dial to the most recent message, not a latency. The summary also gains `Total bytes:` and `Mean gap:` lines, replacing the `subscription-1: ...` row (the CLI only ever runs one subscription per connection). JSON output is unchanged.
 
 ## [3.4.0] - 2026-08-17
 
@@ -197,7 +199,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (CLI) New option `--resolve`, allowing for direct IP targeting rather than DNS resolution.
 
-[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/jkbrsn/wsstat/compare/v3.4.1...HEAD
+[3.4.1]: https://github.com/jkbrsn/wsstat/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/jkbrsn/wsstat/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/jkbrsn/wsstat/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/jkbrsn/wsstat/compare/v3.1.1...v3.2.0
